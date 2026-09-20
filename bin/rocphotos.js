@@ -1,9 +1,13 @@
 #!/usr/bin/env node
+import fs from 'node:fs';
 import path from 'node:path';
+import ExcelJS from 'exceljs';
 import { createNodeFsAdapter } from '../src/adapters/nodeFs.js';
 import { generateThumbnail } from '../src/adapters/nodeThumbnail.js';
+import { openNodeSqlite } from '../src/adapters/nodeSqlite.js';
 import { walkCollection } from '../src/core/walker.js';
 import { extractExif } from '../src/core/exif.js';
+import { mediaTypeFor } from '../src/core/imageTypes.js';
 import {
   CRATE_FILE_NAME,
   loadOrCreateCrate,
@@ -20,6 +24,20 @@ import {
 } from '../src/core/htmlPreview.js';
 import { thumbnailPathFor } from '../src/core/thumbnails.js';
 import { loadExcludedDirectoryPatterns, compileDirectoryExclusionMatcher } from '../src/core/config.js';
+import {
+  INDEX_FILE_NAME,
+  ENTITY_TYPE_COLLECTION,
+  ENTITY_TYPE_IMAGE,
+  crateEntityId,
+  imageEntityId,
+  ensureSchema,
+  upsertRoCrate,
+  upsertEntity,
+  upsertFile,
+  listRoCrates,
+  listEntities,
+  listFiles,
+} from '../src/core/db/store.js';
 import { joinPath } from '../src/core/pathUtils.js';
 
 async function readExistingCrateJson(fsAdapter, dirPath) {
@@ -63,6 +81,11 @@ async function scan(rootDir) {
   const rootName = path.basename(rootDir);
   setDatasetName(rootCrate, rootName);
 
+  const db = openNodeSqlite(path.join(rootDir, INDEX_FILE_NAME));
+  ensureSchema(db);
+  upsertRoCrate(db, { id: '', path: '', name: rootName });
+  upsertEntity(db, { id: crateEntityId(''), roCrateId: '', entityType: ENTITY_TYPE_COLLECTION, name: rootName, memberOf: null });
+
   const subCrateSummaries = [];
   let rootImageRecords = null;
 
@@ -77,12 +100,42 @@ async function scan(rootDir) {
     const crateName = crateDirPath || rootName;
     setDatasetName(subCrate, crateName);
 
+    if (!isRoot) {
+      upsertRoCrate(db, { id: crateDirPath, path: crateDirPath, name: crateName });
+      upsertEntity(db, {
+        id: crateEntityId(crateDirPath),
+        roCrateId: crateDirPath,
+        entityType: ENTITY_TYPE_COLLECTION,
+        name: crateName,
+        memberOf: crateEntityId(''),
+      });
+    }
+
     const imageRecords = [];
     for (const imagePath of images) {
       const bytes = await fsAdapter.readFile(joinPath(crateDirPath, imagePath));
       const { exif, error } = await extractExif(bytes);
       const thumbnailPath = await ensureThumbnail(fsAdapter, crateDirPath, imagePath, bytes);
-      imageRecords.push(addImageEntity(subCrate, { path: imagePath, exif, exifError: error, thumbnailPath }));
+      const record = addImageEntity(subCrate, { path: imagePath, exif, exifError: error, thumbnailPath });
+      imageRecords.push(record);
+
+      const entityId = imageEntityId(crateDirPath, imagePath);
+      upsertEntity(db, {
+        id: entityId,
+        roCrateId: crateDirPath,
+        entityType: ENTITY_TYPE_IMAGE,
+        name: record.name,
+        description: record.description,
+        memberOf: crateEntityId(crateDirPath),
+      });
+      upsertFile(db, {
+        id: entityId,
+        entityId,
+        filename: record.name,
+        mediaType: mediaTypeFor(record.name),
+        size: bytes.length,
+        relativePath: entityId,
+      });
     }
 
     if (isRoot) {
@@ -102,6 +155,8 @@ async function scan(rootDir) {
     }
   }
 
+  db.close();
+
   await fsAdapter.writeFile(CRATE_FILE_NAME, serializeCrate(rootCrate));
   const rootHtml = rootImageRecords
     ? renderSubCratePreview({ name: rootName, images: rootImageRecords })
@@ -114,14 +169,80 @@ async function scan(rootDir) {
   }
 }
 
-const [, , command, targetDir] = process.argv;
+async function exportExcel(rootDir, outputPath) {
+  const dbPath = path.join(rootDir, INDEX_FILE_NAME);
+  if (!fs.existsSync(dbPath)) {
+    throw new Error(`No index found at ${dbPath} — run 'rocphotos scan ${rootDir}' first.`);
+  }
 
-if (command !== 'scan' || !targetDir) {
-  console.error('Usage: rocphotos scan <directory>');
+  const db = openNodeSqlite(dbPath);
+  const roCrates = listRoCrates(db);
+  const entities = listEntities(db);
+  const files = listFiles(db);
+  db.close();
+
+  const workbook = new ExcelJS.Workbook();
+
+  const roCratesSheet = workbook.addWorksheet('RO-Crates');
+  roCratesSheet.columns = [
+    { header: 'id', key: 'id', width: 30 },
+    { header: 'path', key: 'path', width: 30 },
+    { header: 'name', key: 'name', width: 30 },
+    { header: 'created_at', key: 'created_at', width: 24 },
+    { header: 'updated_at', key: 'updated_at', width: 24 },
+  ];
+  roCratesSheet.addRows(roCrates);
+
+  const entitiesSheet = workbook.addWorksheet('Entities');
+  entitiesSheet.columns = [
+    { header: 'id', key: 'id', width: 44 },
+    { header: 'ro_crate_id', key: 'ro_crate_id', width: 20 },
+    { header: 'entity_type', key: 'entity_type', width: 34 },
+    { header: 'name', key: 'name', width: 30 },
+    { header: 'description', key: 'description', width: 40 },
+    { header: 'member_of', key: 'member_of', width: 20 },
+    { header: 'metadata_license_id', key: 'metadata_license_id', width: 30 },
+    { header: 'content_license_id', key: 'content_license_id', width: 30 },
+    { header: 'access_metadata', key: 'access_metadata', width: 15 },
+    { header: 'access_content', key: 'access_content', width: 14 },
+  ];
+  entitiesSheet.addRows(entities);
+
+  const filesSheet = workbook.addWorksheet('Files');
+  filesSheet.columns = [
+    { header: 'id', key: 'id', width: 44 },
+    { header: 'entity_id', key: 'entity_id', width: 44 },
+    { header: 'filename', key: 'filename', width: 34 },
+    { header: 'media_type', key: 'media_type', width: 16 },
+    { header: 'size', key: 'size', width: 12 },
+    { header: 'relative_path', key: 'relative_path', width: 44 },
+    { header: 'access_content', key: 'access_content', width: 14 },
+  ];
+  filesSheet.addRows(files);
+
+  await workbook.xlsx.writeFile(outputPath);
+  console.log(`Wrote ${roCrates.length} RO-Crate(s), ${entities.length} entities, ${files.length} files to ${outputPath}`);
+}
+
+function fail(err) {
+  console.error(err.message ?? err);
   process.exit(1);
 }
 
-scan(path.resolve(targetDir)).catch((err) => {
-  console.error(err);
+function usage() {
+  console.error('Usage: rocphotos scan <directory>');
+  console.error('       rocphotos export-excel <directory> [output.xlsx]');
   process.exit(1);
-});
+}
+
+const [, , command, targetDir, extraArg] = process.argv;
+
+if (command === 'scan' && targetDir) {
+  scan(path.resolve(targetDir)).catch(fail);
+} else if (command === 'export-excel' && targetDir) {
+  const resolvedDir = path.resolve(targetDir);
+  const outputPath = path.resolve(extraArg || path.join(resolvedDir, 'rocphotos-index.xlsx'));
+  exportExcel(resolvedDir, outputPath).catch(fail);
+} else {
+  usage();
+}
