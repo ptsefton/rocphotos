@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RO-Crate Photo Manager</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
+    header { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    #status { color: #555; }
+    #results { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; margin-top: 1.5rem; }
+    figure { margin: 0; border: 1px solid #ddd; border-radius: 4px; padding: 0.5rem; }
+    figure img { width: 100%; height: 120px; object-fit: cover; border-radius: 2px; background: #eee; }
+    figcaption { font-size: 0.8rem; margin-top: 0.4rem; word-break: break-word; }
+    figcaption .crate-dir { color: #888; }
+    figcaption .error { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>RO-Crate Photo Manager</h1>
+  <header>
+    <button id="open-directory">Open Directory</button>
+    <button id="rescan" disabled>Rescan</button>
+    <label><input type="checkbox" id="always-rescan" /> Always rescan on open</label>
+  </header>
+  <div id="status">Choose a directory to begin.</div>
+  <div id="results"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

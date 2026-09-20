@@ -1,0 +1,11 @@
+# Never commit the user's real personal data used for manual testing.
+# Broad glob rather than a single directory name, since new private test
+# copies (e.g. private_small_set/) get created here from time to time.
+private_*/
+
+node_modules/
+dist/
+.DS_Store
+
+# Generated RO-Crate photo thumbnails
+thumbnails/

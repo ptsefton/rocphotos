@@ -1,0 +1,103 @@
+import { describe, it, expect } from 'vitest';
+import {
+  loadOrCreateCrate,
+  serializeCrate,
+  setDatasetName,
+  addSubCrateReference,
+  addImageEntity,
+} from '../src/core/crateBuilder.js';
+
+describe('setDatasetName', () => {
+  it('sets the root dataset name only when not already set', () => {
+    const crate = loadOrCreateCrate(null);
+    setDatasetName(crate, 'First');
+    setDatasetName(crate, 'Second');
+    expect(crate.rootDataset.name).toEqual(['First']);
+  });
+});
+
+describe('addSubCrateReference', () => {
+  it('adds a hasPart reference to the sub-crate directory, without duplicating it on repeat calls', () => {
+    const crate = loadOrCreateCrate(null);
+    addSubCrateReference(crate, '2024');
+    addSubCrateReference(crate, '2024');
+
+    const hasPart = crate.rootDataset.hasPart;
+    const matches = hasPart.filter((ref) => ref['@id'] === '2024/');
+    expect(matches).toHaveLength(1);
+  });
+});
+
+describe('addImageEntity', () => {
+  it('records an EXIF extraction error in the description property', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exifError: 'EXIF extraction failed: bad segment' });
+
+    const entity = crate.getEntity('photo.jpg');
+    expect(entity.description).toEqual(['EXIF extraction failed: bad segment']);
+    expect(crate.rootDataset.hasPart.map((r) => r['@id'])).toContain('photo.jpg');
+  });
+
+  it('maps EXIF fields, including lens make and model, onto dateCreated and exifData', () => {
+    const crate = loadOrCreateCrate(null);
+    const exif = {
+      DateTimeOriginal: new Date('2024-01-02T03:04:05Z'),
+      Make: 'Acme',
+      Model: 'X100',
+      LensMake: 'Acme Optics',
+      LensModel: 'X100 back camera 4.38mm f/1.73',
+    };
+    addImageEntity(crate, { path: 'photo.jpg', exif });
+
+    const entity = crate.getEntity('photo.jpg');
+    expect(entity.dateCreated).toEqual(['2024-01-02T03:04:05.000Z']);
+    const exifData = entity.exifData.map((ref) => {
+      const pv = crate.getEntity(ref['@id']);
+      return [pv.name[0], pv.value[0]];
+    });
+    expect(exifData).toEqual(expect.arrayContaining([
+      ['Make', 'Acme'],
+      ['Model', 'X100'],
+      ['LensMake', 'Acme Optics'],
+      ['LensModel', 'X100 back camera 4.38mm f/1.73'],
+    ]));
+  });
+
+  it('links a thumbnail entity via the schema.org thumbnail property', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', thumbnailPath: 'thumbnails/photo.jpg.thumb.jpg' });
+
+    const entity = crate.getEntity('photo.jpg');
+    expect(entity.thumbnail[0]['@id']).toEqual('thumbnails/photo.jpg.thumb.jpg');
+    const thumbEntity = crate.getEntity('thumbnails/photo.jpg.thumb.jpg');
+    expect(thumbEntity).toBeTruthy();
+  });
+
+  it('does not duplicate the hasPart entry when the same image is processed again on rescan', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Make: 'Acme' } });
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Make: 'Acme' } });
+
+    const matches = crate.rootDataset.hasPart.filter((ref) => ref['@id'] === 'photo.jpg');
+    expect(matches).toHaveLength(1);
+  });
+
+  it('reuses the same exifData PropertyValue node on rescan instead of accumulating orphans', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Make: 'Acme' } });
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Make: 'Replacement' } });
+
+    const graph = crate.toJSON()['@graph'];
+    const makeNodes = graph.filter((e) => e['@id'] === 'photo.jpg#exif-Make');
+    expect(makeNodes).toHaveLength(1);
+    expect(makeNodes[0].value).toEqual('Replacement');
+  });
+
+  it('round-trips through serialization and reloading', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Make: 'Acme' } });
+
+    const reloaded = loadOrCreateCrate(serializeCrate(crate));
+    expect(reloaded.getEntity('photo.jpg').name).toEqual(['photo.jpg']);
+  });
+});
