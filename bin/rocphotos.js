@@ -40,8 +40,12 @@ import {
   INDEX_FILE_NAME,
   ENTITY_TYPE_COLLECTION,
   ENTITY_TYPE_IMAGE,
+  ENTITY_TYPE_PERSON,
+  ENTITY_TYPE_PET,
   crateEntityId,
   imageEntityId,
+  personEntityId,
+  petEntityId,
   facetValuesFromRecord,
   ensureSchema,
   upsertRoCrate,
@@ -304,6 +308,18 @@ async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false } = {}
       setEntityFacetValues(db, entityId, 'lens', lens ? [lens] : []);
       setEntityFacetValues(db, entityId, 'keyword', record.keywords);
       setEntityFacetValues(db, entityId, 'rating', record.rating !== null ? [String(record.rating)] : []);
+      setEntityFacetValues(db, entityId, 'people', record.people);
+      setEntityFacetValues(db, entityId, 'pets', record.pets);
+      // A person/pet entity is recorded in the index the first time it is
+      // found; upserting on every later sighting (here, and in every other
+      // crate that also depicts them) is a no-op beyond that first time,
+      // since name is all there currently is to record about them.
+      for (const name of record.people) {
+        upsertEntity(db, { id: personEntityId(name), roCrateId: crateEntityId(crateDirPath), entityType: ENTITY_TYPE_PERSON, name });
+      }
+      for (const name of record.pets) {
+        upsertEntity(db, { id: petEntityId(name), roCrateId: crateEntityId(crateDirPath), entityType: ENTITY_TYPE_PET, name });
+      }
       upsertFile(db, {
         id: entityId,
         entityId,

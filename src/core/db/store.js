@@ -11,6 +11,15 @@ export const INDEX_FILE_NAME = 'rocphotos-index.sqlite';
 export const ENTITY_TYPE_COLLECTION = 'http://pcdm.org/models#Collection';
 export const ENTITY_TYPE_IMAGE = 'http://pcdm.org/models#Object';
 
+// A named face/pet region (see regionsFromExif) becomes its own entity,
+// rather than only a facet value, so it can be looked up as a first-class
+// thing in its own right. Person is a real schema.org type; schema.org
+// has no equivalent for a named pet, so Pet is an application-specific
+// type, matching how DEFAULT_LICENSE_ID below is also application-minted
+// rather than drawn from an external vocabulary.
+export const ENTITY_TYPE_PERSON = 'http://schema.org/Person';
+export const ENTITY_TYPE_PET = 'urn:rocphotos:type:Pet';
+
 // AROCAPI's Entity requires metadataLicenseId/contentLicenseId; this app has
 // no licensing or access-control model yet (single-user, local-only), so a
 // fixed placeholder stands in until a collection sets something else.
@@ -84,6 +93,50 @@ export function crateRelativeEntityId(roCrateId, collectionRelativeId) {
     return collectionRelativeId;
   }
   return collectionRelativeId.startsWith(roCrateId) ? collectionRelativeId.slice(roCrateId.length) : collectionRelativeId;
+}
+
+/**
+ * A stable slug for a person/pet's name, used as the last path segment
+ * of its entity id (see personEntityId/petEntityId): letters and digits
+ * only, so the exact same name always produces the exact same id across
+ * every crate and every rescan, regardless of which photo it was first
+ * seen on.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+function nameSlug(name) {
+  return name.trim().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+/**
+ * The entity id for a named face region, identifying that person across
+ * the whole collection regardless of which photo(s) tag them. Two
+ * different real people who happen to share an exact name are not
+ * distinguished (the tagging tool itself has the same limitation, since
+ * it also keys face groups by name). An `arcp://` URI is used rather
+ * than a path-based id (as crateEntityId/imageEntityId use), since a
+ * person is not located at any one place in the collection the way a
+ * crate directory or an image file is.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+export function personEntityId(name) {
+  return `arcp://name,rocphoto/person/${nameSlug(name)}`;
+}
+
+/**
+ * The entity id for a named pet region — see personEntityId. Pets and
+ * people are kept in separate id spaces (`.../pet/` vs `.../person/`)
+ * so that a pet and a person who happen to share the same name never
+ * collide into a single entity of an ambiguous type.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+export function petEntityId(name) {
+  return `arcp://name,rocphoto/pet/${nameSlug(name)}`;
 }
 
 /**
@@ -308,7 +361,7 @@ export function listFilesForEntity(driver, entityId) {
 // interpolated directly into SQL as a quoted literal, never bound as a
 // parameter or taken from arbitrary caller input, so every name reaching
 // SQL must first be checked against this list.
-const STORED_FACETS = ['camera', 'lens', 'keyword', 'rating'];
+const STORED_FACETS = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets'];
 
 function assertKnownFacet(facetName) {
   if (facetName !== 'year' && !STORED_FACETS.includes(facetName)) {

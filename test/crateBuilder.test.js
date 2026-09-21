@@ -201,6 +201,28 @@ describe('readImageRecord', () => {
     expect(readImageRecord(reloaded, 'a.jpg').rating).toEqual(4);
     expect(readImageRecord(reloaded, 'b.jpg').rating).toBeNull();
   });
+
+  it('reconstructs people and pets from the resolved about references, telling them apart by entity type', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, {
+      path: 'a.jpg',
+      exif: {
+        Regions: {
+          RegionList: [
+            { Name: 'Peter Malcolm Sefton', Type: 'Face' },
+            { Name: 'Rex', Type: 'Pet' },
+          ],
+        },
+      },
+    });
+    addImageEntity(crate, { path: 'b.jpg' });
+
+    const reloaded = loadOrCreateCrate(serializeCrate(crate));
+    expect(readImageRecord(reloaded, 'a.jpg').people).toEqual(['Peter Malcolm Sefton']);
+    expect(readImageRecord(reloaded, 'a.jpg').pets).toEqual(['Rex']);
+    expect(readImageRecord(reloaded, 'b.jpg').people).toEqual([]);
+    expect(readImageRecord(reloaded, 'b.jpg').pets).toEqual([]);
+  });
 });
 
 describe('addImageEntity keywords', () => {
@@ -245,5 +267,57 @@ describe('addImageEntity rating', () => {
     expect(crate.getEntity('a.jpg').rating).toBeUndefined();
     expect(crate.getEntity('b.jpg').rating).toBeUndefined();
     expect(crate.getEntity('c.jpg').rating).toBeUndefined();
+  });
+});
+
+describe('addImageEntity people and pets', () => {
+  it('records a named face region as a Person entity, linked from the image via about', () => {
+    const crate = loadOrCreateCrate(null);
+    const record = addImageEntity(crate, {
+      path: 'photo.jpg',
+      exif: { Regions: { RegionList: { Name: 'Peter Malcolm Sefton', Type: 'Face' } } },
+    });
+
+    expect(record.people).toEqual(['Peter Malcolm Sefton']);
+    expect(record.pets).toEqual([]);
+    const about = crate.getEntity('photo.jpg').about;
+    expect(about).toHaveLength(1);
+    const person = crate.getEntity(about[0]['@id']);
+    expect(person['@type']).toEqual(['Person']);
+    expect(person.name).toEqual(['Peter Malcolm Sefton']);
+  });
+
+  it('records a named pet region as a separate Pet entity, distinct from a person of the same name', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'a.jpg', exif: { Regions: { RegionList: { Name: 'Max', Type: 'Pet' } } } });
+    addImageEntity(crate, { path: 'b.jpg', exif: { Regions: { RegionList: { Name: 'Max', Type: 'Face' } } } });
+
+    const petAbout = crate.getEntity('a.jpg').about[0]['@id'];
+    const personAbout = crate.getEntity('b.jpg').about[0]['@id'];
+    expect(petAbout).not.toEqual(personAbout);
+    expect(crate.getEntity(petAbout)['@type']).toEqual(['Pet']);
+    expect(crate.getEntity(personAbout)['@type']).toEqual(['Person']);
+  });
+
+  it('excludes a region\'s name from keywords, since tagging tools write the same name into both', () => {
+    const crate = loadOrCreateCrate(null);
+    const record = addImageEntity(crate, {
+      path: 'photo.jpg',
+      exif: {
+        hierarchicalSubject: ['Bird', 'Peter Malcolm Sefton'],
+        Regions: { RegionList: { Name: 'Peter Malcolm Sefton', Type: 'Face' } },
+      },
+    });
+
+    expect(record.keywords).toEqual(['Bird']);
+    expect(record.people).toEqual(['Peter Malcolm Sefton']);
+  });
+
+  it('reuses the same Person entity across two images that depict them', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'a.jpg', exif: { Regions: { RegionList: { Name: 'Gail McGlinn', Type: 'Face' } } } });
+    addImageEntity(crate, { path: 'b.jpg', exif: { Regions: { RegionList: { Name: 'Gail McGlinn', Type: 'Face' } } } });
+
+    expect(crate.getEntity('a.jpg').about[0]['@id']).toEqual(crate.getEntity('b.jpg').about[0]['@id']);
   });
 });

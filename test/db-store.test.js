@@ -14,6 +14,8 @@ import {
   crateDirPathFromEntityId,
   imageEntityId,
   crateRelativeEntityId,
+  personEntityId,
+  petEntityId,
   facetValuesFromRecord,
   searchEntities,
   countSearchResults,
@@ -64,6 +66,23 @@ describe('crateRelativeEntityId', () => {
     const roCrateId = crateEntityId('');
     expect(crateRelativeEntityId(roCrateId, imageEntityId('', 'photo.jpg'))).toEqual('photo.jpg');
     expect(crateRelativeEntityId(roCrateId, roCrateId)).toEqual('./');
+  });
+
+  it('leaves a person/pet id unchanged too, since it is not path-based and so is already crate-relative', () => {
+    const roCrateId = crateEntityId('2025/03/10');
+    const personId = personEntityId('Peter Malcolm Sefton');
+    expect(crateRelativeEntityId(roCrateId, personId)).toEqual(personId);
+  });
+});
+
+describe('personEntityId / petEntityId', () => {
+  it('slugs a name into a stable id, the same regardless of which photo it came from', () => {
+    expect(personEntityId('Peter Malcolm Sefton')).toEqual('arcp://name,rocphoto/person/PeterMalcolmSefton');
+    expect(personEntityId('Peter Malcolm Sefton')).toEqual(personEntityId('Peter Malcolm Sefton'));
+  });
+
+  it('keeps a pet and a person of the same name in separate id spaces', () => {
+    expect(personEntityId('Max')).not.toEqual(petEntityId('Max'));
   });
 });
 
@@ -265,9 +284,9 @@ describe('search and facetCounts', () => {
     upsertRoCrate(db, { id: rootId, path: '.', name: 'root' });
 
     const images = [
-      { id: 'a.jpg', camera: 'Google Pixel 6a', lens: 'Pixel 6a back camera', dateCreated: '2025-03-10T00:00:00.000Z', keywords: ['Bird', 'Background'], rating: '5' },
-      { id: 'b.jpg', camera: 'Google Pixel 6a', lens: 'Pixel 6a front camera', dateCreated: '2025-06-01T00:00:00.000Z', keywords: [], rating: null },
-      { id: 'c.jpg', camera: 'Canon EOS R5', lens: 'RF 24-70mm', dateCreated: '2024-12-25T00:00:00.000Z', keywords: ['Bird'], rating: '5' },
+      { id: 'a.jpg', camera: 'Google Pixel 6a', lens: 'Pixel 6a back camera', dateCreated: '2025-03-10T00:00:00.000Z', keywords: ['Bird', 'Background'], rating: '5', people: ['Peter Malcolm Sefton'], pets: [] },
+      { id: 'b.jpg', camera: 'Google Pixel 6a', lens: 'Pixel 6a front camera', dateCreated: '2025-06-01T00:00:00.000Z', keywords: [], rating: null, people: [], pets: ['Rex'] },
+      { id: 'c.jpg', camera: 'Canon EOS R5', lens: 'RF 24-70mm', dateCreated: '2024-12-25T00:00:00.000Z', keywords: ['Bird'], rating: '5', people: ['Peter Malcolm Sefton'], pets: [] },
     ];
     for (const image of images) {
       upsertEntity(db, { id: image.id, roCrateId: rootId, entityType: ENTITY_TYPE_IMAGE, name: image.id, dateCreated: image.dateCreated });
@@ -275,6 +294,8 @@ describe('search and facetCounts', () => {
       setEntityFacetValues(db, image.id, 'lens', [image.lens]);
       setEntityFacetValues(db, image.id, 'keyword', image.keywords);
       setEntityFacetValues(db, image.id, 'rating', image.rating ? [image.rating] : []);
+      setEntityFacetValues(db, image.id, 'people', image.people);
+      setEntityFacetValues(db, image.id, 'pets', image.pets);
     }
   });
 
@@ -329,6 +350,17 @@ describe('search and facetCounts', () => {
 
     const counts = facetCounts(db, 'rating', {});
     expect(counts).toEqual([{ value: '5', count: 2 }]);
+  });
+
+  it('filters by people and by pets as separate facets, since a photo can have both, one, or neither', () => {
+    const byPerson = searchEntities(db, { people: 'Peter Malcolm Sefton' });
+    expect(byPerson.map((r) => r.id).sort()).toEqual(['a.jpg', 'c.jpg']);
+
+    const byPet = searchEntities(db, { pets: 'Rex' });
+    expect(byPet.map((r) => r.id)).toEqual(['b.jpg']);
+
+    expect(facetCounts(db, 'people', {})).toEqual([{ value: 'Peter Malcolm Sefton', count: 2 }]);
+    expect(facetCounts(db, 'pets', {})).toEqual([{ value: 'Rex', count: 1 }]);
   });
 
   it('does not let a facet\'s own selected value collapse its own counts to just that value', () => {

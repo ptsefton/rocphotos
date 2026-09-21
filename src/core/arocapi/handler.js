@@ -16,8 +16,10 @@ import { joinPath } from '../pathUtils.js';
 
 // The facets this deployment supports: camera and lens (from EXIF),
 // keyword (from IPTC/XMP, possibly several per image), rating (an XMP
-// star rating, 1-5), and year (derived from the image's dateCreated).
-const SUPPORTED_FACETS = ['camera', 'lens', 'keyword', 'rating', 'year'];
+// star rating, 1-5), people and pets (named MWG face/pet regions,
+// possibly several per image), and year (derived from the image's
+// dateCreated).
+const SUPPORTED_FACETS = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'year'];
 
 const CAPABILITIES = {
   apiVersion: '0.1.0-partial',
@@ -67,7 +69,7 @@ function fileToJson(row) {
 // two stay in sync.
 function filtersFrom(source) {
   const filters = {};
-  for (const key of ['entityType', 'memberOf', 'camera', 'lens', 'keyword', 'rating', 'year']) {
+  for (const key of ['entityType', 'memberOf', 'camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'year']) {
     if (source[key]) filters[key] = source[key];
   }
   return filters;

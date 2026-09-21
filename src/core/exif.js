@@ -17,6 +17,11 @@ const EXIF_FIELDS = [
 // see keywordsFromExif for why that barely matters once flattened.
 const KEYWORD_FIELDS = ['hierarchicalSubject', 'subject', 'Keywords'];
 
+// The Metadata Working Group (MWG) region field, carrying named face/pet
+// tags (and their bounding boxes, not currently extracted) as written by
+// tools such as Lightroom, digiKam, and Photo Mechanic.
+const REGION_FIELD = 'Regions';
+
 /**
  * Extracts a small set of EXIF/IPTC/XMP fields from image bytes. A
  * missing or empty EXIF segment (common for formats such as PNG) is not
@@ -45,7 +50,7 @@ export async function extractExif(bytes) {
     }
 
     const picked = {};
-    for (const key of [...EXIF_FIELDS, ...KEYWORD_FIELDS]) {
+    for (const key of [...EXIF_FIELDS, ...KEYWORD_FIELDS, REGION_FIELD]) {
       if (tags[key] !== undefined) {
         picked[key] = tags[key];
       }
@@ -100,4 +105,27 @@ export function ratingFromExif(exif) {
   if (!exif) return null;
   const rating = Number(exif.Rating);
   return Number.isFinite(rating) && rating > 0 ? rating : null;
+}
+
+/**
+ * Reads named MWG regions (face and pet tags) from EXIF, ignoring
+ * regions of any other type and any region left unnamed (a detected but
+ * unidentified face). Confirmed against real files that a keywording
+ * tool commonly writes the very same name into the keyword fields (see
+ * KEYWORD_FIELDS) as it writes into a region — callers should exclude a
+ * region's name from a photo's keywords once it is recorded here, rather
+ * than keeping both.
+ *
+ * @param {object|null} exif
+ * @returns {Array<{name: string, type: 'Face'|'Pet'}>}
+ */
+export function regionsFromExif(exif) {
+  const regionList = exif?.[REGION_FIELD]?.RegionList;
+  if (!regionList) return [];
+
+  const entries = Array.isArray(regionList) ? regionList : [regionList];
+  return entries
+    .filter((region) => region?.Name && (region.Type === 'Face' || region.Type === 'Pet'))
+    .map((region) => ({ name: String(region.Name).trim(), type: region.Type }))
+    .filter((region) => region.name.length > 0);
 }

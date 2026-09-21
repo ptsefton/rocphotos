@@ -10,8 +10,12 @@ import {
   setEntityFacetValues,
   crateEntityId,
   imageEntityId,
+  personEntityId,
+  petEntityId,
   ENTITY_TYPE_COLLECTION,
   ENTITY_TYPE_IMAGE,
+  ENTITY_TYPE_PERSON,
+  ENTITY_TYPE_PET,
 } from '../src/core/db/store.js';
 import { loadOrCreateCrate, serializeCrate, addImageEntity, addSubCrateReference } from '../src/core/crateBuilder.js';
 import { createFixtureTree, removeFixtureTree } from './helpers/tempDir.js';
@@ -38,7 +42,10 @@ beforeEach(async () => {
   subCrate.rootDataset.name = '2025/03/10';
   const photoRecord = addImageEntity(subCrate, {
     path: 'photo.jpg',
-    exif: { Make: 'Google', Model: 'Pixel 6a', LensModel: 'Pixel 6a back camera' },
+    exif: {
+      Make: 'Google', Model: 'Pixel 6a', LensModel: 'Pixel 6a back camera',
+      Regions: { RegionList: [{ Name: 'Peter Malcolm Sefton', Type: 'Face' }, { Name: 'Rex', Type: 'Pet' }] },
+    },
     thumbnailPath: 'thumbnails/photo.jpg.thumb.jpg',
     sourceModifiedAt: Date.now(),
   });
@@ -81,6 +88,10 @@ beforeEach(async () => {
   setEntityFacetValues(db, photoId, 'lens', ['Pixel 6a back camera']);
   setEntityFacetValues(db, photoId, 'keyword', ['Bird', 'Background']);
   setEntityFacetValues(db, photoId, 'rating', ['5']);
+  setEntityFacetValues(db, photoId, 'people', photoRecord.people);
+  setEntityFacetValues(db, photoId, 'pets', photoRecord.pets);
+  upsertEntity(db, { id: personEntityId('Peter Malcolm Sefton'), roCrateId: subCrateId, entityType: ENTITY_TYPE_PERSON, name: 'Peter Malcolm Sefton' });
+  upsertEntity(db, { id: petEntityId('Rex'), roCrateId: subCrateId, entityType: ENTITY_TYPE_PET, name: 'Rex' });
   upsertFile(db, { id: photoId, entityId: photoId, filename: 'photo.jpg', mediaType: 'image/jpeg', size: 16, relativePath: photoId });
 
   const undatedId = imageEntityId('2025/03/10', 'undated.jpg');
@@ -94,7 +105,7 @@ describe('GET /capabilities', () => {
   it('declares the supported facets', async () => {
     const res = await handleRequest({ method: 'GET', path: '/capabilities' });
     expect(res.status).toEqual(200);
-    expect(JSON.parse(res.body).search.facets).toEqual(['camera', 'lens', 'keyword', 'rating', 'year']);
+    expect(JSON.parse(res.body).search.facets).toEqual(['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'year']);
   });
 });
 
@@ -122,6 +133,17 @@ describe('GET /entities', () => {
     expect(parsed.total).toEqual(1);
     expect(parsed.entities[0].id).toEqual('2025/03/10/photo.jpg');
   });
+
+  it('filters by people and pets as separate facets from the query string', async () => {
+    const byPerson = await handleRequest({ method: 'GET', path: '/entities', query: { people: 'Peter Malcolm Sefton' } });
+    expect(JSON.parse(byPerson.body).total).toEqual(1);
+
+    const byPet = await handleRequest({ method: 'GET', path: '/entities', query: { pets: 'Rex' } });
+    expect(JSON.parse(byPet.body).total).toEqual(1);
+
+    const wrongPet = await handleRequest({ method: 'GET', path: '/entities', query: { pets: 'Peter Malcolm Sefton' } });
+    expect(JSON.parse(wrongPet.body).total).toEqual(0);
+  });
 });
 
 describe('GET /entity/{id}', () => {
@@ -134,6 +156,14 @@ describe('GET /entity/{id}', () => {
   it('returns 404 for an unknown id', async () => {
     const res = await handleRequest({ method: 'GET', path: `/entity/${encodeURIComponent('nope.jpg')}` });
     expect(res.status).toEqual(404);
+  });
+
+  it('resolves a Person entity, recorded once in the index despite being duplicated into every crate that depicts them', async () => {
+    const res = await handleRequest({ method: 'GET', path: `/entity/${encodeURIComponent(personEntityId('Peter Malcolm Sefton'))}` });
+    expect(res.status).toEqual(200);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.entityType).toEqual(ENTITY_TYPE_PERSON);
+    expect(parsed.name).toEqual('Peter Malcolm Sefton');
   });
 });
 
@@ -239,6 +269,17 @@ describe('POST /search', () => {
       { name: 'Background', count: 1 },
       { name: 'Bird', count: 1 },
     ]);
+  });
+
+  it('computes people and pets facet counts as separate facets', async () => {
+    const res = await handleRequest({
+      method: 'POST',
+      path: '/search',
+      body: { filters: { entityType: ENTITY_TYPE_IMAGE }, facets: ['people', 'pets'] },
+    });
+    const parsed = JSON.parse(res.body);
+    expect(parsed.facets.people).toEqual([{ name: 'Peter Malcolm Sefton', count: 1 }]);
+    expect(parsed.facets.pets).toEqual([{ name: 'Rex', count: 1 }]);
   });
 
   it('rejects an unsupported facet name', async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractExif, keywordsFromExif, ratingFromExif } from '../src/core/exif.js';
+import { extractExif, keywordsFromExif, ratingFromExif, regionsFromExif } from '../src/core/exif.js';
 
 describe('extractExif', () => {
   it('never throws, even for bytes that are not a recognisable image', async () => {
@@ -68,5 +68,42 @@ describe('ratingFromExif', () => {
   it('returns null when there is no Rating field, or exif is null', () => {
     expect(ratingFromExif({ Make: 'Google' })).toBeNull();
     expect(ratingFromExif(null)).toBeNull();
+  });
+});
+
+describe('regionsFromExif', () => {
+  it('reads a single named face region', () => {
+    const exif = { Regions: { RegionList: { Name: 'Peter Malcolm Sefton', Type: 'Face' } } };
+    expect(regionsFromExif(exif)).toEqual([{ name: 'Peter Malcolm Sefton', type: 'Face' }]);
+  });
+
+  it('reads several regions when RegionList is an array, keeping face and pet apart', () => {
+    const exif = {
+      Regions: {
+        RegionList: [
+          { Name: 'Gail McGlinn', Type: 'Face' },
+          { Name: 'Rex', Type: 'Pet' },
+        ],
+      },
+    };
+    expect(regionsFromExif(exif)).toEqual([
+      { name: 'Gail McGlinn', type: 'Face' },
+      { name: 'Rex', type: 'Pet' },
+    ]);
+  });
+
+  it('ignores an unnamed region (a detected but unidentified face)', () => {
+    const exif = { Regions: { RegionList: { Type: 'Face' } } };
+    expect(regionsFromExif(exif)).toEqual([]);
+  });
+
+  it('ignores a region of a type other than Face or Pet', () => {
+    const exif = { Regions: { RegionList: { Name: 'Something', Type: 'Focus' } } };
+    expect(regionsFromExif(exif)).toEqual([]);
+  });
+
+  it('returns an empty array when there are no regions, or exif is null', () => {
+    expect(regionsFromExif({ Make: 'Google' })).toEqual([]);
+    expect(regionsFromExif(null)).toEqual([]);
   });
 });

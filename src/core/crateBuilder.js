@@ -1,5 +1,6 @@
 import { ROCrate } from 'ro-crate';
-import { keywordsFromExif, ratingFromExif } from './exif.js';
+import { keywordsFromExif, ratingFromExif, regionsFromExif } from './exif.js';
+import { personEntityId, petEntityId } from './db/store.js';
 
 export const CRATE_FILE_NAME = 'ro-crate-metadata.json';
 
@@ -96,7 +97,7 @@ function unwrap(value) {
  * @param {string|null} [options.thumbnailPath] - thumbnail path, relative to the crate directory, if one was generated
  * @param {string|null} [options.thumbnailError] - error message from thumbnail generation, if it failed
  * @param {number|null} [options.sourceModifiedAt] - the source file's modification time (epoch ms) as of this processing pass, used to detect whether it needs reprocessing on a later scan
- * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null}}
+ * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null, people: string[], pets: string[]}}
  */
 export function addImageEntity(crate, {
   path,
@@ -111,8 +112,16 @@ export function addImageEntity(crate, {
   entity.name = fileName;
   const dateCreated = dateCreatedFromExif(exif);
   const exifEntries = [];
-  const keywords = exifError ? [] : keywordsFromExif(exif);
+  const regions = exifError ? [] : regionsFromExif(exif);
+  const regionNames = new Set(regions.map((region) => region.name));
+  // A region's name is also written into the keyword fields by the
+  // tagging tool itself (confirmed against real files) — once it is
+  // recorded as its own Person/Pet entity below, it is no longer also a
+  // plain keyword.
+  const keywords = (exifError ? [] : keywordsFromExif(exif)).filter((keyword) => !regionNames.has(keyword));
   const rating = exifError ? null : ratingFromExif(exif);
+  const people = regions.filter((region) => region.type === 'Face').map((region) => region.name);
+  const pets = regions.filter((region) => region.type === 'Pet').map((region) => region.name);
 
   if (!exifError && exif) {
     if (dateCreated) {
@@ -142,6 +151,19 @@ export function addImageEntity(crate, {
     if (rating !== null) {
       entity.rating = rating;
     }
+    if (regions.length > 0) {
+      // Duplicated into every crate that references them ("the RO-Crate
+      // way"): each crate's own ro-crate-metadata.json stays a complete,
+      // standalone description of what it contains, rather than relying
+      // on a Person/Pet node defined only in some other crate's file.
+      const about = regions.map((region) => {
+        const id = region.type === 'Face' ? personEntityId(region.name) : petEntityId(region.name);
+        const type = region.type === 'Face' ? 'Person' : 'Pet';
+        crate.addEntity({ '@id': id, '@type': type, name: region.name }, { replace: true });
+        return { '@id': id };
+      });
+      entity.about = about;
+    }
   }
 
   const description = [exifError, thumbnailError].filter(Boolean).join(' | ') || null;
@@ -163,7 +185,7 @@ export function addImageEntity(crate, {
   crate.addEntity(entity, { replace: true });
   crate.addValues(crate.rootId, 'hasPart', { '@id': path });
 
-  return { path, name: fileName, dateCreated, description, thumbnailPath, exifEntries, keywords, rating };
+  return { path, name: fileName, dateCreated, description, thumbnailPath, exifEntries, keywords, rating, people, pets };
 }
 
 /**
@@ -189,7 +211,7 @@ export function recordedModifiedTime(crate, path) {
  *
  * @param {ROCrate} crate
  * @param {string} path
- * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null}|null}
+ * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null, people: string[], pets: string[]}|null}
  */
 export function readImageRecord(crate, path) {
   const entity = crate.getEntity(path);
@@ -202,6 +224,18 @@ export function readImageRecord(crate, path) {
     value: unwrap(propertyValue.value),
   }));
 
+  // Likewise, each element of entity.about is already the resolved
+  // Person/Pet entity itself, so its own type tells apart which bucket
+  // it belongs in without needing a second, parallel property.
+  const people = [];
+  const pets = [];
+  for (const about of entity.about ?? []) {
+    const type = unwrap(about['@type']);
+    const name = unwrap(about.name);
+    if (type === 'Person') people.push(name);
+    else if (type === 'Pet') pets.push(name);
+  }
+
   return {
     path,
     name: unwrap(entity.name) ?? path.split('/').pop(),
@@ -211,5 +245,7 @@ export function readImageRecord(crate, path) {
     exifEntries,
     keywords: entity.keywords ?? [],
     rating: unwrap(entity.rating) ?? null,
+    people,
+    pets,
   };
 }
