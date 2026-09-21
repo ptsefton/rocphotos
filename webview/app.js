@@ -1,6 +1,12 @@
 const IMAGE_ENTITY_TYPE = 'http://pcdm.org/models#Object';
 const FACET_NAMES = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'year'];
 const FACET_LABELS = { camera: 'Camera', lens: 'Lens', keyword: 'Keywords', rating: 'Rating', people: 'People', pets: 'Pets', year: 'Year' };
+const FACET_ICONS = { people: '👤', pets: '🐕', keyword: '🏷️' };
+
+function labelWithIcon(facetName) {
+  const icon = FACET_ICONS[facetName];
+  return icon ? `${icon} ${FACET_LABELS[facetName]}` : FACET_LABELS[facetName];
+}
 
 const facetsEl = document.querySelector('#facets');
 const activeFiltersEl = document.querySelector('#active-filters');
@@ -81,7 +87,7 @@ function renderFacets(facets = {}) {
     group.className = 'facet-group';
 
     const heading = document.createElement('h2');
-    heading.textContent = FACET_LABELS[facetName];
+    heading.textContent = labelWithIcon(facetName);
     group.appendChild(heading);
 
     const valuesEl = document.createElement('div');
@@ -116,7 +122,7 @@ function renderActiveFilters() {
 
   for (const [facetName, value] of entries) {
     const chip = document.createElement('span');
-    chip.textContent = `${FACET_LABELS[facetName]}: ${value}`;
+    chip.textContent = `${labelWithIcon(facetName)}: ${value}`;
     const clear = document.createElement('button');
     clear.textContent = '×';
     clear.setAttribute('aria-label', `Clear ${FACET_LABELS[facetName]} filter`);
@@ -129,7 +135,8 @@ function renderActiveFilters() {
 function addViewerTag(facetName, value) {
   const tag = document.createElement('button');
   tag.className = 'viewer-tag';
-  tag.textContent = value;
+  const icon = FACET_ICONS[facetName];
+  tag.textContent = icon ? `${icon} ${value}` : value;
   tag.title = `Find more tagged "${value}"`;
   tag.addEventListener('click', () => applyFilterAndCloseViewer(facetName, value));
   viewerTagsEl.appendChild(tag);
