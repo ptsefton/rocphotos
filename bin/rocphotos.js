@@ -37,6 +37,7 @@ import {
   ENTITY_TYPE_COLLECTION,
   ENTITY_TYPE_IMAGE,
   crateEntityId,
+  crateDirPathFromEntityId,
   imageEntityId,
   crateRelativeEntityId,
   ensureSchema,
@@ -193,8 +194,16 @@ async function scan(rootDir, looseRootImagesOptions = {}) {
 
   const db = openNodeSqlite(path.join(rootDir, INDEX_FILE_NAME));
   ensureSchema(db);
-  upsertRoCrate(db, { id: '', path: '', name: rootName });
-  upsertEntity(db, { id: crateEntityId(''), roCrateId: '', entityType: ENTITY_TYPE_COLLECTION, name: rootName, memberOf: null });
+  // ro_crates.id and entities.ro_crate_id both use the crate entity id
+  // convention (crateEntityId: './' for root, '<path>/' for a sub-crate)
+  // rather than the raw directory path, so every crate-identifying column
+  // — ro_crates.id, entities.ro_crate_id, a crate's own entities.id, and
+  // entities.member_of — shares the one value for the same crate, and the
+  // root crate never shows as a blank cell. ro_crates.path keeps the real
+  // directory path for filesystem purposes, using '.' rather than an
+  // empty string for the root, for the same reason.
+  upsertRoCrate(db, { id: crateEntityId(''), path: '.', name: rootName });
+  upsertEntity(db, { id: crateEntityId(''), roCrateId: crateEntityId(''), entityType: ENTITY_TYPE_COLLECTION, name: rootName, memberOf: null });
 
   const subCrateSummaries = [];
   let rootImageRecords = null;
@@ -211,10 +220,10 @@ async function scan(rootDir, looseRootImagesOptions = {}) {
     setDatasetName(subCrate, crateName);
 
     if (!isRoot) {
-      upsertRoCrate(db, { id: crateDirPath, path: crateDirPath, name: crateName });
+      upsertRoCrate(db, { id: crateEntityId(crateDirPath), path: crateDirPath, name: crateName });
       upsertEntity(db, {
         id: crateEntityId(crateDirPath),
-        roCrateId: crateDirPath,
+        roCrateId: crateEntityId(crateDirPath),
         entityType: ENTITY_TYPE_COLLECTION,
         name: crateName,
         memberOf: crateEntityId(''),
@@ -251,7 +260,7 @@ async function scan(rootDir, looseRootImagesOptions = {}) {
       const entityId = imageEntityId(crateDirPath, imagePath);
       upsertEntity(db, {
         id: entityId,
-        roCrateId: crateDirPath,
+        roCrateId: crateEntityId(crateDirPath),
         entityType: ENTITY_TYPE_IMAGE,
         name: record.name,
         description: record.description,
@@ -325,7 +334,8 @@ function resolveEntityShallow(entity) {
 async function loadEntityCrateJson(fsAdapter, crateCache, roCrateId, entityId) {
   let crate = crateCache.get(roCrateId);
   if (!crate) {
-    const cratePath = joinPath(roCrateId, CRATE_FILE_NAME);
+    const crateDirPath = crateDirPathFromEntityId(roCrateId);
+    const cratePath = joinPath(crateDirPath, CRATE_FILE_NAME);
     const json = (await fsAdapter.exists(cratePath))
       ? Buffer.from(await fsAdapter.readFile(cratePath)).toString('utf8')
       : null;

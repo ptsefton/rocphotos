@@ -29,6 +29,24 @@ export function crateEntityId(crateDirPath) {
 }
 
 /**
+ * The inverse of crateEntityId: converts a crate entity id (also used as
+ * ro_crates.id and entities.ro_crate_id — see upsertRoCrate/upsertEntity)
+ * back to the plain directory path it was built from, for constructing an
+ * actual filesystem path. Not meant for display: prefer the entity id
+ * form (crateEntityId's output) everywhere a crate is being identified,
+ * so that ro_crates.id, entities.ro_crate_id, entities.id (for a crate's
+ * own Collection), and entities.member_of all use the one convention and
+ * a row can be traced across sheets/tables by matching ids directly,
+ * without a blank cell for the root crate.
+ *
+ * @param {string} crateEntId
+ * @returns {string}
+ */
+export function crateDirPathFromEntityId(crateEntId) {
+  return crateEntId === './' ? '' : crateEntId.slice(0, -1);
+}
+
+/**
  * The entity id for an image, as a path relative to the whole collection
  * root (not just its own crate directory), so ids are globally unique
  * across every crate in the one index rather than only within their own
@@ -43,29 +61,29 @@ export function imageEntityId(crateDirPath, imagePath) {
 }
 
 /**
- * The inverse of crateEntityId/imageEntityId: converts a collection-
- * relative entity id (as stored in the index, unique across the whole
- * collection) back to the crate-relative id actually used as that
- * entity's `@id` inside its own crate's ro-crate-metadata.json — needed
- * whenever an index row is used to look the entity back up in the real
- * crate file (see bin/rocphotos.js's --include-entity-crates export, and
- * the eventual AROCAPI /entity/{id}/metadata handler). A crate's ids are
- * always relative to itself (e.g. `photo.jpg`, or `./` for its own root
+ * The inverse of imageEntityId (and of crateEntityId, for a crate's own
+ * Collection entity): converts a collection-relative entity id (as
+ * stored in the index, unique across the whole collection) back to the
+ * crate-relative id actually used as that entity's `@id` inside its own
+ * crate's ro-crate-metadata.json — needed whenever an index row is used
+ * to look the entity back up in the real crate file (see
+ * bin/rocphotos.js's --include-entity-crates export, and the eventual
+ * AROCAPI /entity/{id}/metadata handler). A crate's ids are always
+ * relative to itself (e.g. `photo.jpg`, or `./` for its own root
  * Dataset), never prefixed with the crate's own directory path.
  *
- * @param {string} roCrateId - the crate directory path (entities.ro_crate_id / ro_crates.id)
+ * @param {string} roCrateId - the owning crate's entity id (entities.ro_crate_id / ro_crates.id — see crateEntityId)
  * @param {string} collectionRelativeId - the entity id as stored in the index (entities.id)
  * @returns {string}
  */
 export function crateRelativeEntityId(roCrateId, collectionRelativeId) {
-  if (collectionRelativeId === crateEntityId(roCrateId)) {
+  if (collectionRelativeId === roCrateId) {
     return './';
   }
-  if (roCrateId === '') {
+  if (roCrateId === './') {
     return collectionRelativeId;
   }
-  const prefix = `${roCrateId}/`;
-  return collectionRelativeId.startsWith(prefix) ? collectionRelativeId.slice(prefix.length) : collectionRelativeId;
+  return collectionRelativeId.startsWith(roCrateId) ? collectionRelativeId.slice(roCrateId.length) : collectionRelativeId;
 }
 
 /**
