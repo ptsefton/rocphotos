@@ -40,6 +40,17 @@ export function createBrowserFsAdapter(rootHandle) {
       return new Uint8Array(await file.arrayBuffer());
     },
 
+    async stat(relPath) {
+      const { parentPath, name } = splitParent(relPath);
+      const dirHandle = await getDirectoryHandle(rootHandle, parentPath);
+      const fileHandle = await dirHandle.getFileHandle(name);
+      const file = await fileHandle.getFile();
+      // File.lastModified is specified as integer milliseconds already,
+      // but floored defensively to match the adapter contract exactly
+      // (see nodeFs.js's stat for why sub-millisecond precision matters).
+      return { modifiedTime: Math.floor(file.lastModified), size: file.size };
+    },
+
     async exists(relPath) {
       const { parentPath, name } = splitParent(relPath);
       try {

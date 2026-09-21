@@ -12,6 +12,7 @@
  * @property {(dirPath: string) => Promise<Array<{name: string, isDirectory: boolean}>>} readDir
  * @property {(filePath: string) => Promise<Uint8Array>} readFile
  * @property {(filePath: string) => Promise<boolean>} exists
+ * @property {(filePath: string) => Promise<{modifiedTime: number, size: number}>} stat - modifiedTime is epoch milliseconds
  * @property {(filePath: string, data: Uint8Array|string) => Promise<void>} writeFile
  */
 

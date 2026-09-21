@@ -16,6 +16,8 @@ import {
   setDatasetName,
   addSubCrateReference,
   addImageEntity,
+  recordedModifiedTime,
+  readImageRecord,
 } from '../src/core/crateBuilder.js';
 import {
   PREVIEW_FILE_NAME,
@@ -55,26 +57,22 @@ async function readExistingCrateJson(fsAdapter, dirPath) {
   return null;
 }
 
-// Ensures a thumbnail exists for an image, reusing one already on disk
-// (whether left by a previous CLI run or by the browser SPA) rather than
-// regenerating it. Returns the thumbnail's path, relative to the crate
-// directory, or null if none exists and one could not be generated (some
-// formats are not supported by the installed libvips build).
-async function ensureThumbnail(fsAdapter, crateDirPath, imagePath, bytes) {
+// Attempts to generate a thumbnail from freshly-read image bytes. Only
+// called when the source file is already known to need (re)processing
+// (see recordedModifiedTime below) — staleness is decided once, up front,
+// rather than by checking the thumbnail file's own existence here, so a
+// format that fails to thumbnail is not retried on every scan: the error
+// is recorded on the image's crate entity (see addImageEntity) and only
+// revisited if the source file itself changes.
+async function generateThumbnailFor(fsAdapter, crateDirPath, imagePath, bytes) {
   const thumbnailPath = thumbnailPathFor(imagePath);
-  const fullThumbnailPath = joinPath(crateDirPath, thumbnailPath);
-
-  if (!(await fsAdapter.exists(fullThumbnailPath))) {
-    try {
-      const thumbnailBytes = await generateThumbnail(bytes);
-      await fsAdapter.writeFile(fullThumbnailPath, thumbnailBytes);
-    } catch (err) {
-      console.warn(`Could not generate thumbnail for ${joinPath(crateDirPath, imagePath)}: ${err.message}`);
-      return null;
-    }
+  try {
+    const thumbnailBytes = await generateThumbnail(bytes);
+    await fsAdapter.writeFile(joinPath(crateDirPath, thumbnailPath), thumbnailBytes);
+    return { thumbnailPath, error: null };
+  } catch (err) {
+    return { thumbnailPath: null, error: `Thumbnail generation failed: ${err.message}` };
   }
-
-  return thumbnailPath;
 }
 
 // Finds a directory name inside rootDir that doesn't already exist, so
@@ -89,14 +87,39 @@ function findAvailableFolderName(rootDir, baseName) {
   return candidate;
 }
 
-// Detects images sitting loose directly in the collection root (see
-// detectLooseRootImages) and, if any are found, interactively offers to
-// either move them into a new subfolder (so they become a normal
-// sub-collection crate) or record them in rocphotos.config.json so they
-// are ignored on this and future scans. Left unresolved, they would
-// silently make the whole root a single crate and hide every
-// subdirectory crate beneath it.
-async function resolveLooseRootImages(fsAdapter, rootDir, isExcludedDir, isExcludedFile) {
+// Moves each of `looseImages` (filenames in rootDir) into a new
+// subfolder `folderName` (which must not already exist — see
+// findAvailableFolderName).
+function moveLooseImages(rootDir, looseImages, folderName) {
+  fs.mkdirSync(path.join(rootDir, folderName));
+  for (const name of looseImages) {
+    fs.renameSync(path.join(rootDir, name), path.join(rootDir, folderName, name));
+  }
+  console.log(`Moved ${looseImages.length} image(s) into ${folderName}/.\n`);
+}
+
+/**
+ * Detects images sitting loose directly in the collection root (see
+ * detectLooseRootImages) and, if any are found, resolves them by either
+ * moving them into a new subfolder (so they become a normal
+ * sub-collection crate) or recording them in rocphotos.config.json so
+ * they are ignored on this and future scans. Left unresolved, they would
+ * silently make the whole root a single crate and hide every
+ * subdirectory crate beneath it.
+ *
+ * `options.mode`, if given ('move' or 'ignore'), resolves the situation
+ * immediately without prompting — for scripted or repeat use, once the
+ * user already knows what they want (see the --loose-root-images CLI
+ * flag). Without it, the choice — and, for a move, the destination
+ * folder name — is asked for interactively.
+ *
+ * @param {import('../src/core/fsAdapter.js').FsAdapter} fsAdapter
+ * @param {string} rootDir
+ * @param {(name: string) => boolean} isExcludedDir
+ * @param {(name: string) => boolean} isExcludedFile
+ * @param {{mode?: 'move'|'ignore', folderName?: string}} [options]
+ */
+async function resolveLooseRootImages(fsAdapter, rootDir, isExcludedDir, isExcludedFile, options = {}) {
   const looseImages = await detectLooseRootImages(fsAdapter, isExcludedDir, isExcludedFile);
   if (looseImages.length === 0) {
     return;
@@ -108,41 +131,54 @@ async function resolveLooseRootImages(fsAdapter, rootDir, isExcludedDir, isExclu
   }
   console.log('\nLeft as they are, these would make the whole root a single crate and prevent any of the subdirectories below from becoming their own crates.\n');
 
+  if (options.mode === 'move') {
+    moveLooseImages(rootDir, looseImages, findAvailableFolderName(rootDir, options.folderName || 'images'));
+    return;
+  }
+  if (options.mode === 'ignore') {
+    await addExcludedFiles(fsAdapter, looseImages);
+    console.log(`Added ${looseImages.length} filename(s) to excludeFiles in rocphotos.config.json.\n`);
+    return;
+  }
+
+  if (!process.stdin.isTTY) {
+    // Prompting needs a real interactive terminal: readline's sequential
+    // questions do not reliably resolve against a piped, non-TTY stdin
+    // (a 'close' event can fire mid-way through, once the piped input is
+    // exhausted). Fail clearly rather than hanging or silently exiting.
+    throw new Error('Not running in an interactive terminal: pass --loose-root-images=move or --loose-root-images=ignore instead of relying on the prompt.');
+  }
+
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  let answer;
   try {
-    answer = (await rl.question(
+    const answer = (await rl.question(
       'What would you like to do?\n'
-      + '  1) Move them into a new folder (e.g. "images/")\n'
+      + '  1) Move them into a new folder\n'
       + '  2) Ignore them (record in rocphotos.config.json)\n'
       + '  3) Do nothing, cancel this scan\n'
       + 'Choice [1/2/3]: ',
     )).trim();
+
+    if (answer === '1') {
+      const chosenName = (await rl.question('Folder name [images]: ')).trim() || 'images';
+      moveLooseImages(rootDir, looseImages, findAvailableFolderName(rootDir, chosenName));
+    } else if (answer === '2') {
+      await addExcludedFiles(fsAdapter, looseImages);
+      console.log(`Added ${looseImages.length} filename(s) to excludeFiles in rocphotos.config.json.\n`);
+    } else {
+      throw new Error('Scan cancelled: resolve the loose root images (move or configure them to be ignored), then re-run scan.');
+    }
   } finally {
     rl.close();
   }
-
-  if (answer === '1') {
-    const folderName = findAvailableFolderName(rootDir, 'images');
-    fs.mkdirSync(path.join(rootDir, folderName));
-    for (const name of looseImages) {
-      fs.renameSync(path.join(rootDir, name), path.join(rootDir, folderName, name));
-    }
-    console.log(`Moved ${looseImages.length} image(s) into ${folderName}/.\n`);
-  } else if (answer === '2') {
-    await addExcludedFiles(fsAdapter, looseImages);
-    console.log(`Added ${looseImages.length} filename(s) to excludeFiles in rocphotos.config.json.\n`);
-  } else {
-    throw new Error('Scan cancelled: resolve the loose root images (move or configure them to be ignored), then re-run scan.');
-  }
 }
 
-async function scan(rootDir) {
+async function scan(rootDir, looseRootImagesOptions = {}) {
   const fsAdapter = createNodeFsAdapter(rootDir);
   let isExcludedDir = compileNamePatternMatcher(await loadExcludedDirectoryPatterns(fsAdapter));
   let isExcludedFile = compileNamePatternMatcher(await loadExcludedFilePatterns(fsAdapter));
 
-  await resolveLooseRootImages(fsAdapter, rootDir, isExcludedDir, isExcludedFile);
+  await resolveLooseRootImages(fsAdapter, rootDir, isExcludedDir, isExcludedFile, looseRootImagesOptions);
   // Reload in case resolving just wrote a new excludeFiles entry.
   isExcludedDir = compileNamePatternMatcher(await loadExcludedDirectoryPatterns(fsAdapter));
   isExcludedFile = compileNamePatternMatcher(await loadExcludedFilePatterns(fsAdapter));
@@ -186,10 +222,29 @@ async function scan(rootDir) {
 
     const imageRecords = [];
     for (const imagePath of images) {
-      const bytes = await fsAdapter.readFile(joinPath(crateDirPath, imagePath));
-      const { exif, error } = await extractExif(bytes);
-      const thumbnailPath = await ensureThumbnail(fsAdapter, crateDirPath, imagePath, bytes);
-      const record = addImageEntity(subCrate, { path: imagePath, exif, exifError: error, thumbnailPath });
+      const fullImagePath = joinPath(crateDirPath, imagePath);
+      const { modifiedTime, size } = await fsAdapter.stat(fullImagePath);
+      const recordedTime = recordedModifiedTime(subCrate, imagePath);
+
+      let record;
+      if (recordedTime !== null && modifiedTime <= recordedTime) {
+        // Unchanged since it was last processed (successfully or not):
+        // reuse the existing entity rather than re-reading and
+        // re-parsing the file and re-attempting a thumbnail.
+        record = readImageRecord(subCrate, imagePath);
+      } else {
+        const bytes = await fsAdapter.readFile(fullImagePath);
+        const { exif, error: exifError } = await extractExif(bytes);
+        const { thumbnailPath, error: thumbnailError } = await generateThumbnailFor(fsAdapter, crateDirPath, imagePath, bytes);
+        record = addImageEntity(subCrate, {
+          path: imagePath,
+          exif,
+          exifError,
+          thumbnailPath,
+          thumbnailError,
+          sourceModifiedAt: modifiedTime,
+        });
+      }
       imageRecords.push(record);
 
       const entityId = imageEntityId(crateDirPath, imagePath);
@@ -206,7 +261,7 @@ async function scan(rootDir) {
         entityId,
         filename: record.name,
         mediaType: mediaTypeFor(record.name),
-        size: bytes.length,
+        size,
         relativePath: entityId,
       });
     }
@@ -303,15 +358,46 @@ function fail(err) {
 }
 
 function usage() {
-  console.error('Usage: rocphotos scan <directory>');
+  console.error('Usage: rocphotos scan <directory> [--loose-root-images=move|ignore] [--loose-root-images-folder=<name>]');
   console.error('       rocphotos export-excel <directory> [output.xlsx]');
+  console.error('');
+  console.error('--loose-root-images resolves images found loose in the collection root');
+  console.error('(alongside other subdirectories) without an interactive prompt: "move"');
+  console.error('moves them into a new folder ("images" by default, or --loose-root-images-folder),');
+  console.error('"ignore" records them in rocphotos.config.json so they are skipped.');
   process.exit(1);
 }
 
-const [, , command, targetDir, extraArg] = process.argv;
+// Splits argv into positional arguments and --key=value (or bare --key)
+// flags, in any order.
+function parseArgs(argv) {
+  const positional = [];
+  const flags = {};
+  for (const arg of argv) {
+    if (arg.startsWith('--')) {
+      const eq = arg.indexOf('=');
+      if (eq === -1) {
+        flags[arg.slice(2)] = true;
+      } else {
+        flags[arg.slice(2, eq)] = arg.slice(eq + 1);
+      }
+    } else {
+      positional.push(arg);
+    }
+  }
+  return { positional, flags };
+}
+
+const { positional, flags } = parseArgs(process.argv.slice(2));
+const [command, targetDir, extraArg] = positional;
 
 if (command === 'scan' && targetDir) {
-  scan(path.resolve(targetDir)).catch(fail);
+  const mode = flags['loose-root-images'];
+  if (mode !== undefined && mode !== 'move' && mode !== 'ignore') {
+    fail(new Error(`Invalid --loose-root-images value "${mode}" (expected "move" or "ignore")`));
+  } else {
+    scan(path.resolve(targetDir), { mode, folderName: flags['loose-root-images-folder'] }).catch(fail);
+  }
 } else if (command === 'export-excel' && targetDir) {
   const resolvedDir = path.resolve(targetDir);
   const outputPath = path.resolve(extraArg || path.join(resolvedDir, 'rocphotos-index.xlsx'));

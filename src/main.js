@@ -9,6 +9,8 @@ import {
   setDatasetName,
   addSubCrateReference,
   addImageEntity,
+  recordedModifiedTime,
+  readImageRecord,
 } from './core/crateBuilder.js';
 import {
   PREVIEW_FILE_NAME,
@@ -78,26 +80,44 @@ async function scanAndBuild() {
 
     const imageRecords = [];
     for (const imagePath of images) {
-      statusEl.textContent = `Processing ${joinPath(crateDirPath, imagePath)}...`;
-      const bytes = await fsAdapter.readFile(joinPath(crateDirPath, imagePath));
-      const { exif, error } = await extractExif(bytes);
+      const fullImagePath = joinPath(crateDirPath, imagePath);
+      const { modifiedTime } = await fsAdapter.stat(fullImagePath);
+      const recordedTime = recordedModifiedTime(subCrate, imagePath);
 
-      // Reuse a thumbnail already on disk (from a previous CLI or browser
-      // scan) instead of regenerating it on every rescan.
-      let thumbnailPath = thumbnailPathFor(imagePath);
+      let record;
       let thumbnailBytes = null;
-      const existingThumbnail = await fsAdapter.exists(joinPath(crateDirPath, thumbnailPath));
-      if (!existingThumbnail) {
+
+      if (recordedTime !== null && modifiedTime <= recordedTime) {
+        // Unchanged since it was last processed (successfully or not):
+        // reuse the existing entity rather than re-reading, re-parsing,
+        // and re-attempting a thumbnail for it.
+        record = readImageRecord(subCrate, imagePath);
+      } else {
+        statusEl.textContent = `Processing ${fullImagePath}...`;
+        const bytes = await fsAdapter.readFile(fullImagePath);
+        const { exif, error: exifError } = await extractExif(bytes);
+
+        let thumbnailPath = null;
+        let thumbnailError = null;
         try {
           thumbnailBytes = await generateThumbnail(bytes);
+          thumbnailPath = thumbnailPathFor(imagePath);
           await fsAdapter.writeFile(joinPath(crateDirPath, thumbnailPath), thumbnailBytes);
         } catch (thumbErr) {
-          console.warn(`Could not generate thumbnail for ${imagePath}:`, thumbErr);
-          thumbnailPath = null;
+          thumbnailError = `Thumbnail generation failed: ${thumbErr.message}`;
+          thumbnailBytes = null;
         }
+
+        record = addImageEntity(subCrate, {
+          path: imagePath,
+          exif,
+          exifError,
+          thumbnailPath,
+          thumbnailError,
+          sourceModifiedAt: modifiedTime,
+        });
       }
 
-      const record = addImageEntity(subCrate, { path: imagePath, exif, exifError: error, thumbnailPath });
       imageRecords.push(record);
       items.push({ ...record, crateDir: crateDirPath, thumbnailBytes });
     }
@@ -146,17 +166,15 @@ async function loadExisting() {
     const subCrate = loadOrCreateCrate(subJson);
     const subHasPart = subCrate.rootDataset.hasPart ?? [];
 
-    for (const partRef of subHasPart) {
-      const entity = subCrate.getEntity(partRef['@id']);
+    for (const entity of subHasPart) {
+      // link: true (see loadOrCreateCrate) resolves each hasPart
+      // reference to the full entity it points to.
       if (!entity || !typeIncludes(entity, 'ImageObject')) continue;
 
-      items.push({
-        crateDir,
-        name: entity.name,
-        description: entity.description ?? null,
-        thumbnailBytes: null,
-        thumbnailPath: entity.thumbnail?.['@id'] ?? null,
-      });
+      const record = readImageRecord(subCrate, entity['@id']);
+      if (!record) continue;
+
+      items.push({ ...record, crateDir, thumbnailBytes: null });
     }
   }
 

@@ -5,6 +5,8 @@ import {
   setDatasetName,
   addSubCrateReference,
   addImageEntity,
+  recordedModifiedTime,
+  readImageRecord,
 } from '../src/core/crateBuilder.js';
 
 describe('setDatasetName', () => {
@@ -99,5 +101,84 @@ describe('addImageEntity', () => {
 
     const reloaded = loadOrCreateCrate(serializeCrate(crate));
     expect(reloaded.getEntity('photo.jpg').name).toEqual(['photo.jpg']);
+  });
+
+  it('combines an EXIF error and a thumbnail generation error into one description, so a file\'s full error state lives in one place', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, {
+      path: 'photo.jpg',
+      exifError: 'EXIF extraction failed: bad segment',
+      thumbnailError: 'Thumbnail generation failed: unsupported format',
+    });
+
+    const entity = crate.getEntity('photo.jpg');
+    expect(entity.description[0]).toContain('EXIF extraction failed: bad segment');
+    expect(entity.description[0]).toContain('Thumbnail generation failed: unsupported format');
+  });
+
+  it('records a thumbnail error even when EXIF succeeded', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, {
+      path: 'photo.jpg',
+      exif: { Make: 'Acme' },
+      thumbnailError: 'Thumbnail generation failed: unsupported format',
+    });
+
+    const entity = crate.getEntity('photo.jpg');
+    expect(entity.description).toEqual(['Thumbnail generation failed: unsupported format']);
+    // EXIF processing still happened normally alongside the thumbnail failure.
+    expect(entity.exifData).toBeTruthy();
+  });
+
+  it('records the source file modification time as dateModified', () => {
+    const crate = loadOrCreateCrate(null);
+    const modifiedAt = new Date('2024-06-01T12:00:00.000Z').getTime();
+    addImageEntity(crate, { path: 'photo.jpg', sourceModifiedAt: modifiedAt });
+
+    expect(recordedModifiedTime(crate, 'photo.jpg')).toEqual(modifiedAt);
+  });
+});
+
+describe('recordedModifiedTime', () => {
+  it('returns null when the image has no entity yet', () => {
+    const crate = loadOrCreateCrate(null);
+    expect(recordedModifiedTime(crate, 'nonexistent.jpg')).toBeNull();
+  });
+
+  it('returns null when the entity exists but was never given a sourceModifiedAt', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Make: 'Acme' } });
+    expect(recordedModifiedTime(crate, 'photo.jpg')).toBeNull();
+  });
+});
+
+describe('readImageRecord', () => {
+  it('returns null when the image has no entity yet', () => {
+    const crate = loadOrCreateCrate(null);
+    expect(readImageRecord(crate, 'nonexistent.jpg')).toBeNull();
+  });
+
+  it('reconstructs the same record shape addImageEntity returns, from an existing entity', () => {
+    const crate = loadOrCreateCrate(null);
+    const exif = { DateTimeOriginal: new Date('2024-01-02T03:04:05Z'), Make: 'Acme', Model: 'X100' };
+    const original = addImageEntity(crate, { path: 'photo.jpg', exif, thumbnailPath: 'thumbnails/photo.jpg.thumb.jpg' });
+
+    const reloadedCrate = loadOrCreateCrate(serializeCrate(crate));
+    const record = readImageRecord(reloadedCrate, 'photo.jpg');
+
+    expect(record.name).toEqual(original.name);
+    expect(record.dateCreated).toEqual(original.dateCreated);
+    expect(record.thumbnailPath).toEqual(original.thumbnailPath);
+    expect(record.exifEntries.sort((a, b) => a.name.localeCompare(b.name))).toEqual(
+      original.exifEntries.sort((a, b) => a.name.localeCompare(b.name)),
+    );
+  });
+
+  it('reconstructs a recorded description (EXIF and/or thumbnail error)', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exifError: 'bad file' });
+
+    const record = readImageRecord(crate, 'photo.jpg');
+    expect(record.description).toEqual('bad file');
   });
 });

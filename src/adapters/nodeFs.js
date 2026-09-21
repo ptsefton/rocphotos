@@ -32,6 +32,17 @@ export function createNodeFsAdapter(rootDir) {
       }
     },
 
+    async stat(relPath) {
+      const stats = await fs.stat(resolve(relPath));
+      // Floored to whole milliseconds: mtimeMs carries sub-millisecond
+      // precision on some filesystems, which a round trip through an ISO
+      // date string (as recorded in the crate — see crateBuilder.js) does
+      // not preserve. Comparing an un-floored fresh value against the
+      // floored recorded one would then always see the file as "changed",
+      // even when it is not.
+      return { modifiedTime: Math.floor(stats.mtimeMs), size: stats.size };
+    },
+
     async writeFile(relPath, data) {
       const fullPath = resolve(relPath);
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
