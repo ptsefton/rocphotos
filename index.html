@@ -18,12 +18,18 @@
     #overview-section { margin-top: 1.5rem; border-top: 1px solid #ddd; padding-top: 1rem; }
     #overview-section h2 { font-size: 1rem; margin: 0 0 0.6rem; }
     #overview-controls { display: flex; gap: 0.6rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
-    #overview-list { list-style: none; padding: 0; margin: 0; max-height: 40vh; overflow-y: auto; border: 1px solid #eee; border-radius: 4px; }
-    #overview-list li { display: flex; align-items: center; gap: 0.6rem; padding: 0.35rem 0.6rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
-    #overview-list li:last-child { border-bottom: none; }
-    #overview-list .sub-path { flex: 1; }
-    #overview-list .image-count { color: #888; font-size: 0.8em; }
-    .status-badge { font-size: 0.72rem; padding: 0.1rem 0.5rem; border-radius: 10px; white-space: nowrap; }
+
+    #overview-tree { max-height: 55vh; overflow-y: auto; border: 1px solid #eee; border-radius: 4px; padding: 0.3rem 0.6rem; font-size: 0.88rem; }
+    #overview-tree ul { list-style: none; margin: 0; padding-left: 1.3rem; }
+    #overview-tree > ul { padding-left: 0; }
+    #overview-tree li { padding: 0.15rem 0; }
+    #overview-tree summary { cursor: pointer; }
+    #overview-tree summary::marker { color: #999; }
+    .tree-row { display: inline-flex; align-items: center; gap: 0.5rem; }
+    .tree-row .node-name { min-width: 3em; }
+    .tree-row .image-count { color: #888; font-size: 0.85em; }
+    .summary-badges { display: inline-flex; gap: 0.3rem; }
+    .status-badge { font-size: 0.7rem; padding: 0.08rem 0.5rem; border-radius: 9px; white-space: nowrap; }
     .status-badge.not-scanned { background: #eee; color: #555; }
     .status-badge.out-of-date { background: #fff1cc; color: #8a6100; }
     .status-badge.up-to-date { background: #e0f3e0; color: #1e6b1e; }
@@ -46,7 +52,7 @@
       <button id="refresh-overview">Refresh Status</button>
       <button id="process-selected">Process Selected</button>
     </div>
-    <ul id="overview-list"></ul>
+    <div id="overview-tree"></div>
   </section>
 
   <div id="results"></div>

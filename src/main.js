@@ -20,7 +20,7 @@ import {
 } from './core/htmlPreview.js';
 import { thumbnailPathFor } from './core/thumbnails.js';
 import { loadExcludedDirectoryPatterns, loadExcludedFilePatterns, compileNamePatternMatcher } from './core/config.js';
-import { buildOverview, saveOverview, loadOverview } from './core/overview.js';
+import { buildOverview, buildOverviewTree, saveOverview, loadOverview } from './core/overview.js';
 import { joinPath } from './core/pathUtils.js';
 import { mediaTypeFor } from './core/imageTypes.js';
 import { openBrowserSqlite } from './adapters/browserSqlite.js';
@@ -54,7 +54,7 @@ const alwaysRescanCheckbox = document.querySelector('#always-rescan');
 const statusEl = document.querySelector('#status');
 const resultsEl = document.querySelector('#results');
 const overviewSectionEl = document.querySelector('#overview-section');
-const overviewListEl = document.querySelector('#overview-list');
+const overviewTreeEl = document.querySelector('#overview-tree');
 const selectAllButton = document.querySelector('#select-all');
 const selectNoneButton = document.querySelector('#select-none');
 const refreshOverviewButton = document.querySelector('#refresh-overview');
@@ -345,43 +345,161 @@ async function renderItems(items) {
 }
 
 const STATUS_LABELS = { 'not-scanned': 'Not scanned', 'out-of-date': 'Out of date', 'up-to-date': 'Up to date' };
+const SUMMARY_LABELS = { notScanned: 'not scanned', outOfDate: 'out of date', upToDate: 'up to date' };
 
-function renderOverview(overview) {
-  overviewListEl.innerHTML = '';
-  for (const sub of overview.subCollections) {
-    const li = document.createElement('li');
+function summaryBadges(summary) {
+  const wrap = document.createElement('span');
+  wrap.className = 'summary-badges';
+  for (const key of ['notScanned', 'outOfDate', 'upToDate']) {
+    if (summary[key] === 0) continue;
+    const badge = document.createElement('span');
+    badge.className = `status-badge ${key.replace(/([A-Z])/g, '-$1').toLowerCase()}`;
+    badge.textContent = `${summary[key]} ${SUMMARY_LABELS[key]}`;
+    wrap.appendChild(badge);
+  }
+  return wrap;
+}
+
+// Recomputes one folder's own checkbox (checked/indeterminate) purely
+// from its descendant crates' current checkbox state, without touching
+// them — the counterpart to a folder checkbox's own change handler
+// (below), which does the opposite: pushes its state down to its
+// descendants. Keeping these as two separate, one-directional functions
+// avoids a folder's checkbox ever re-triggering its own "push down"
+// handler while it is only meant to be reflecting what is already there.
+function syncFolderCheckbox(details) {
+  const folderCheckbox = details.querySelector(':scope > summary input[type="checkbox"]');
+  const crateBoxes = [...details.querySelectorAll('input[type="checkbox"][data-path]')];
+  const checkedCount = crateBoxes.filter((c) => c.checked).length;
+  folderCheckbox.checked = crateBoxes.length > 0 && checkedCount === crateBoxes.length;
+  folderCheckbox.indeterminate = checkedCount > 0 && checkedCount < crateBoxes.length;
+}
+
+// After a crate's (or a folder's, once it has pushed its own state down
+// to its descendants) checkbox changes, every ancestor folder's checkbox
+// above it needs to reflect that too, all the way up, so a folder shows
+// at a glance whether it is fully, partly, or not at all selected
+// without expanding it.
+function updateAncestorCheckboxes(fromEl) {
+  let details = fromEl.closest('li')?.parentElement.closest('details');
+  while (details) {
+    syncFolderCheckbox(details);
+    details = details.parentElement.closest('details');
+  }
+}
+
+// A tree, even a large one, is rendered collapsed except wherever the
+// user has already chosen to expand it — collected here before a
+// re-render (after "Refresh Status" or "Process Selected") clears the
+// DOM, and restored once the new tree is built, so re-rendering does not
+// keep collapsing a collection the user is partway through drilling into.
+function currentlyExpandedPaths() {
+  return new Set([...overviewTreeEl.querySelectorAll('details[open]')].map((el) => el.dataset.path));
+}
+
+function renderOverviewNode(node, expandedPaths) {
+  const li = document.createElement('li');
+
+  if (!node.isCrate) {
+    const details = document.createElement('details');
+    details.dataset.path = node.path;
+    if (expandedPaths.has(node.path)) details.open = true;
+
+    const summary = document.createElement('summary');
+    const row = document.createElement('span');
+    row.className = 'tree-row';
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
-    checkbox.dataset.path = sub.path;
-    // Pre-selected when there is work to do; a sub-collection already
-    // up to date has nothing to gain from being processed again.
-    checkbox.checked = sub.status !== 'up-to-date';
-    li.appendChild(checkbox);
+    checkbox.addEventListener('click', (event) => event.stopPropagation());
+    checkbox.addEventListener('change', () => {
+      details.querySelectorAll('input[type="checkbox"][data-path]').forEach((c) => { c.checked = checkbox.checked; });
+      checkbox.indeterminate = false;
+      updateAncestorCheckboxes(checkbox);
+    });
+    row.appendChild(checkbox);
 
-    const pathEl = document.createElement('span');
-    pathEl.className = 'sub-path';
-    pathEl.textContent = sub.path || '(root)';
-    li.appendChild(pathEl);
+    const nameEl = document.createElement('span');
+    nameEl.className = 'node-name';
+    nameEl.textContent = node.name || '(root)';
+    row.appendChild(nameEl);
+    row.appendChild(summaryBadges(node.summary));
 
-    const countEl = document.createElement('span');
-    countEl.className = 'image-count';
-    countEl.textContent = `${sub.imageCount} image${sub.imageCount === 1 ? '' : 's'}`;
-    li.appendChild(countEl);
+    summary.appendChild(row);
+    details.appendChild(summary);
 
-    const badge = document.createElement('span');
-    badge.className = `status-badge ${sub.status}`;
-    badge.textContent = STATUS_LABELS[sub.status];
-    li.appendChild(badge);
+    const childList = document.createElement('ul');
+    for (const child of node.children) {
+      childList.appendChild(renderOverviewNode(child, expandedPaths));
+    }
+    details.appendChild(childList);
+    li.appendChild(details);
 
-    overviewListEl.appendChild(li);
+    // Children are rendered (and their own checkboxes already set) above
+    // this point, so the folder's own checkbox can now be derived from
+    // them — bottom-up, one folder at a time, never pushing state back
+    // down (that would wipe out each child's individually-computed
+    // pre-selection the moment its parent folder was rendered).
+    syncFolderCheckbox(details);
+    return li;
   }
+
+  const row = document.createElement('label');
+  row.className = 'tree-row';
+
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.dataset.path = node.path;
+  // Pre-selected when there is work to do; a crate already up to date
+  // has nothing to gain from being processed again.
+  checkbox.checked = node.status !== 'up-to-date';
+  checkbox.addEventListener('change', () => updateAncestorCheckboxes(checkbox));
+  row.appendChild(checkbox);
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'node-name';
+  nameEl.textContent = node.name || '(root)';
+  row.appendChild(nameEl);
+
+  const countEl = document.createElement('span');
+  countEl.className = 'image-count';
+  countEl.textContent = `${node.imageCount} image${node.imageCount === 1 ? '' : 's'}`;
+  row.appendChild(countEl);
+
+  const badge = document.createElement('span');
+  badge.className = `status-badge ${node.status}`;
+  badge.textContent = STATUS_LABELS[node.status];
+  row.appendChild(badge);
+
+  li.appendChild(row);
+  return li;
+}
+
+function renderOverview(overview) {
+  const expandedPaths = currentlyExpandedPaths();
+  overviewTreeEl.innerHTML = '';
+
+  const tree = buildOverviewTree(overview.subCollections);
+  if (tree.isCrate) {
+    // The whole collection is flat (the root itself is the only crate):
+    // nothing to nest, so it is rendered as a single row, not a tree.
+    const list = document.createElement('ul');
+    list.appendChild(renderOverviewNode(tree, expandedPaths));
+    overviewTreeEl.appendChild(list);
+  } else {
+    const list = document.createElement('ul');
+    for (const child of tree.children) {
+      list.appendChild(renderOverviewNode(child, expandedPaths));
+    }
+    overviewTreeEl.appendChild(list);
+  }
+
   overviewSectionEl.hidden = overview.subCollections.length === 0;
 }
 
 function selectedOverviewPaths() {
   return new Set(
-    [...overviewListEl.querySelectorAll('input[type="checkbox"]:checked')].map((el) => el.dataset.path),
+    [...overviewTreeEl.querySelectorAll('input[type="checkbox"][data-path]:checked')].map((el) => el.dataset.path),
   );
 }
 
@@ -456,13 +574,18 @@ openButton.addEventListener('click', () => {
   });
 });
 
-selectAllButton.addEventListener('click', () => {
-  overviewListEl.querySelectorAll('input[type="checkbox"]').forEach((el) => { el.checked = true; });
-});
+function setAllCrateCheckboxes(checked) {
+  // Only the crate (leaf) checkboxes are set directly; every folder
+  // checkbox is then re-derived from them (see syncFolderCheckbox) —
+  // each computes purely from its own descendant crates, so the order
+  // this runs in does not matter, unlike a folder's own change handler,
+  // which pushes state the other way (down to its descendants).
+  overviewTreeEl.querySelectorAll('input[type="checkbox"][data-path]').forEach((el) => { el.checked = checked; });
+  overviewTreeEl.querySelectorAll('details').forEach(syncFolderCheckbox);
+}
 
-selectNoneButton.addEventListener('click', () => {
-  overviewListEl.querySelectorAll('input[type="checkbox"]').forEach((el) => { el.checked = false; });
-});
+selectAllButton.addEventListener('click', () => setAllCrateCheckboxes(true));
+selectNoneButton.addEventListener('click', () => setAllCrateCheckboxes(false));
 
 refreshOverviewButton.addEventListener('click', () => {
   showOverview({ forceRefresh: true }).catch((err) => {
