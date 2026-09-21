@@ -7,12 +7,22 @@ CREATE TABLE IF NOT EXISTS ro_crates (
   updated_at TEXT NOT NULL
 );
 
+-- description is the entity's own real caption (IPTC Caption-Abstract /
+-- XMP dc:description), if it has one; processing_error is unrelated — an
+-- EXIF/thumbnail extraction failure, if one occurred (see crateBuilder.js;
+-- the two used to share this one column, meaning a caption and an error
+-- could never coexist). title (IPTC ObjectName / XMP dc:title) always has
+-- a value, falling back to the filename when the file has no title of
+-- its own — unlike description, which is simply absent when there is
+-- nothing to show.
 CREATE TABLE IF NOT EXISTS entities (
   id TEXT PRIMARY KEY,
   ro_crate_id TEXT NOT NULL REFERENCES ro_crates(id),
   entity_type TEXT NOT NULL,
   name TEXT,
+  title TEXT,
   description TEXT,
+  processing_error TEXT,
   member_of TEXT,
   metadata_license_id TEXT,
   content_license_id TEXT,

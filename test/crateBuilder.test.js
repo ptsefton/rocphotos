@@ -9,6 +9,8 @@ import {
   readImageRecord,
   setImageKeywords,
   setImageRating,
+  setImageTitle,
+  setImageDescription,
   removeImageEntity,
 } from '../src/core/crateBuilder.js';
 
@@ -34,12 +36,12 @@ describe('addSubCrateReference', () => {
 });
 
 describe('addImageEntity', () => {
-  it('records an EXIF extraction error in the description property', () => {
+  it('records an EXIF extraction error in the processingError property', () => {
     const crate = loadOrCreateCrate(null);
     addImageEntity(crate, { path: 'photo.jpg', exifError: 'EXIF extraction failed: bad segment' });
 
     const entity = crate.getEntity('photo.jpg');
-    expect(entity.description).toEqual(['EXIF extraction failed: bad segment']);
+    expect(entity.processingError).toEqual(['EXIF extraction failed: bad segment']);
     expect(crate.rootDataset.hasPart.map((r) => r['@id'])).toContain('photo.jpg');
   });
 
@@ -106,7 +108,7 @@ describe('addImageEntity', () => {
     expect(reloaded.getEntity('photo.jpg').name).toEqual(['photo.jpg']);
   });
 
-  it('combines an EXIF error and a thumbnail generation error into one description, so a file\'s full error state lives in one place', () => {
+  it('combines an EXIF error and a thumbnail generation error into one processingError, so a file\'s full error state lives in one place', () => {
     const crate = loadOrCreateCrate(null);
     addImageEntity(crate, {
       path: 'photo.jpg',
@@ -115,8 +117,8 @@ describe('addImageEntity', () => {
     });
 
     const entity = crate.getEntity('photo.jpg');
-    expect(entity.description[0]).toContain('EXIF extraction failed: bad segment');
-    expect(entity.description[0]).toContain('Thumbnail generation failed: unsupported format');
+    expect(entity.processingError[0]).toContain('EXIF extraction failed: bad segment');
+    expect(entity.processingError[0]).toContain('Thumbnail generation failed: unsupported format');
   });
 
   it('records a thumbnail error even when EXIF succeeded', () => {
@@ -128,7 +130,7 @@ describe('addImageEntity', () => {
     });
 
     const entity = crate.getEntity('photo.jpg');
-    expect(entity.description).toEqual(['Thumbnail generation failed: unsupported format']);
+    expect(entity.processingError).toEqual(['Thumbnail generation failed: unsupported format']);
     // EXIF processing still happened normally alongside the thumbnail failure.
     expect(entity.exifData).toBeTruthy();
   });
@@ -177,12 +179,12 @@ describe('readImageRecord', () => {
     );
   });
 
-  it('reconstructs a recorded description (EXIF and/or thumbnail error)', () => {
+  it('reconstructs a recorded processingError (EXIF and/or thumbnail error)', () => {
     const crate = loadOrCreateCrate(null);
     addImageEntity(crate, { path: 'photo.jpg', exifError: 'bad file' });
 
     const record = readImageRecord(crate, 'photo.jpg');
-    expect(record.description).toEqual('bad file');
+    expect(record.processingError).toEqual('bad file');
   });
 
   it('reconstructs keywords, and defaults to an empty array when none were recorded', () => {
@@ -270,6 +272,58 @@ describe('addImageEntity rating', () => {
     expect(crate.getEntity('a.jpg').rating).toBeUndefined();
     expect(crate.getEntity('b.jpg').rating).toBeUndefined();
     expect(crate.getEntity('c.jpg').rating).toBeUndefined();
+  });
+});
+
+describe('addImageEntity title and description', () => {
+  it('uses the IPTC ObjectName / XMP dc:title as the title when present', () => {
+    const crate = loadOrCreateCrate(null);
+    const record = addImageEntity(crate, { path: 'photo.jpg', exif: { ObjectName: 'Sunset over the lake' } });
+
+    expect(record.title).toEqual('Sunset over the lake');
+    expect(crate.getEntity('photo.jpg').title).toEqual(['Sunset over the lake']);
+  });
+
+  it('falls back to the filename as the title when there is no IPTC/XMP title', () => {
+    const crate = loadOrCreateCrate(null);
+    const record = addImageEntity(crate, { path: 'sub/photo.jpg', exif: { Make: 'Acme' } });
+
+    expect(record.title).toEqual('photo.jpg');
+    expect(crate.getEntity('sub/photo.jpg').title).toEqual(['photo.jpg']);
+  });
+
+  it('falls back to the filename as the title even when EXIF extraction failed entirely', () => {
+    const crate = loadOrCreateCrate(null);
+    const record = addImageEntity(crate, { path: 'photo.jpg', exifError: 'bad file' });
+
+    expect(record.title).toEqual('photo.jpg');
+    expect(crate.getEntity('photo.jpg').title).toEqual(['photo.jpg']);
+  });
+
+  it('records a real IPTC/XMP caption as description, independent of any processingError', () => {
+    const crate = loadOrCreateCrate(null);
+    const record = addImageEntity(crate, { path: 'photo.jpg', exif: { Caption: 'A heron at the lake' } });
+
+    expect(record.description).toEqual('A heron at the lake');
+    expect(record.processingError).toBeNull();
+    expect(crate.getEntity('photo.jpg').description).toEqual(['A heron at the lake']);
+  });
+
+  it('leaves description unset when there is no caption, unlike title which always has a fallback', () => {
+    const crate = loadOrCreateCrate(null);
+    const record = addImageEntity(crate, { path: 'photo.jpg', exif: { Make: 'Acme' } });
+
+    expect(record.description).toBeNull();
+    expect(crate.getEntity('photo.jpg').description).toBeUndefined();
+  });
+
+  it('clears a stale description on rescan once the file no longer has a caption', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Caption: 'A heron at the lake' } });
+    expect(crate.getEntity('photo.jpg').description).toEqual(['A heron at the lake']);
+
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Make: 'Acme' } });
+    expect(crate.getEntity('photo.jpg').description).toBeUndefined();
   });
 });
 
@@ -433,6 +487,42 @@ describe('setImageRating', () => {
 
     setImageRating(crate, 'photo.jpg', null);
     expect(crate.getEntity('photo.jpg').rating).toBeUndefined();
+  });
+});
+
+describe('setImageTitle', () => {
+  it('sets a title independent of EXIF', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg' });
+
+    setImageTitle(crate, 'photo.jpg', 'My holiday photo');
+    expect(readImageRecord(crate, 'photo.jpg').title).toEqual('My holiday photo');
+  });
+
+  it('falls back to the filename rather than leaving the title blank when cleared', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { ObjectName: 'My holiday photo' } });
+
+    setImageTitle(crate, 'photo.jpg', '');
+    expect(readImageRecord(crate, 'photo.jpg').title).toEqual('photo.jpg');
+  });
+});
+
+describe('setImageDescription', () => {
+  it('sets a description independent of EXIF', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg' });
+
+    setImageDescription(crate, 'photo.jpg', 'A heron at the lake');
+    expect(readImageRecord(crate, 'photo.jpg').description).toEqual('A heron at the lake');
+  });
+
+  it('clears a previously-set description rather than leaving it stale', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Caption: 'A heron at the lake' } });
+
+    setImageDescription(crate, 'photo.jpg', null);
+    expect(crate.getEntity('photo.jpg').description).toBeUndefined();
   });
 });
 

@@ -46,6 +46,7 @@ beforeEach(async () => {
       Make: 'Google', Model: 'Pixel 6a', LensModel: 'Pixel 6a back camera',
       Keywords: ['Bird', 'Background'],
       Rating: 5,
+      Caption: 'A heron at the lake',
       Regions: { RegionList: [{ Name: 'Peter Malcolm Sefton', Type: 'Face' }, { Name: 'Rex', Type: 'Pet' }] },
     },
     thumbnailPath: 'thumbnails/photo.jpg.thumb.jpg',
@@ -84,6 +85,7 @@ beforeEach(async () => {
   const photoId = imageEntityId('2025/03/10', 'photo.jpg');
   upsertEntity(db, {
     id: photoId, roCrateId: subCrateId, entityType: ENTITY_TYPE_IMAGE, name: 'photo.jpg', memberOf: subCrateId,
+    title: photoRecord.title, description: photoRecord.description, processingError: photoRecord.processingError,
     dateCreated: photoRecord.dateCreated,
   });
   setEntityFacetValues(db, photoId, 'camera', ['Google Pixel 6a']);
@@ -129,6 +131,16 @@ describe('GET /entities', () => {
     const undated = parsed.entities.find((e) => e.id === '2025/03/10/undated.jpg');
     expect(photo.rating).toEqual(5);
     expect(undated.rating).toBeNull();
+  });
+
+  it('includes each entity\'s own title (falling back to its filename) and real caption', async () => {
+    const res = await handleRequest({ method: 'GET', path: '/entities', query: { entityType: ENTITY_TYPE_IMAGE } });
+    const parsed = JSON.parse(res.body);
+    const photo = parsed.entities.find((e) => e.id === '2025/03/10/photo.jpg');
+    const undated = parsed.entities.find((e) => e.id === '2025/03/10/undated.jpg');
+    expect(photo.title).toEqual('photo.jpg'); // no ObjectName in its EXIF, so falls back to the filename
+    expect(photo.description).toEqual('A heron at the lake');
+    expect(undated.description).toBeUndefined();
   });
 
   it('filters by a keyword facet from the query string', async () => {
@@ -410,6 +422,77 @@ describe('POST /edit/rating', () => {
       path: `/entity/${encodeURIComponent('2025/03/10/photo.jpg')}/metadata`,
     });
     expect(JSON.parse(after.body).rating).toEqual([2]);
+  });
+});
+
+describe('POST /edit/title', () => {
+  it('sets a title, reflected immediately in the crate metadata and the entity listing', async () => {
+    const res = await handleRequest({
+      method: 'POST',
+      path: '/edit/title',
+      body: { ids: ['2025/03/10/photo.jpg'], title: 'A better title' },
+    });
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body)).toEqual({ updated: ['2025/03/10/photo.jpg'], errors: [] });
+
+    const metadataRes = await handleRequest({
+      method: 'GET',
+      path: `/entity/${encodeURIComponent('2025/03/10/photo.jpg')}/metadata`,
+    });
+    expect(JSON.parse(metadataRes.body).title).toEqual(['A better title']);
+
+    const listRes = await handleRequest({ method: 'GET', path: '/entities', query: { entityType: ENTITY_TYPE_IMAGE } });
+    const photo = JSON.parse(listRes.body).entities.find((e) => e.id === '2025/03/10/photo.jpg');
+    expect(photo.title).toEqual('A better title');
+  });
+
+  it('falls back to the filename rather than an empty title when cleared', async () => {
+    await handleRequest({ method: 'POST', path: '/edit/title', body: { ids: ['2025/03/10/photo.jpg'], title: '' } });
+
+    const metadataRes = await handleRequest({
+      method: 'GET',
+      path: `/entity/${encodeURIComponent('2025/03/10/photo.jpg')}/metadata`,
+    });
+    expect(JSON.parse(metadataRes.body).title).toEqual(['photo.jpg']);
+  });
+
+  it('reports an unknown id as an error rather than failing the whole request', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/edit/title', body: { ids: ['nope.jpg'], title: 'X' } });
+    const parsed = JSON.parse(res.body);
+    expect(parsed.updated).toEqual([]);
+    expect(parsed.errors).toEqual([{ id: 'nope.jpg', message: 'Not found' }]);
+  });
+});
+
+describe('POST /edit/description', () => {
+  it('sets a description, reflected immediately in the crate metadata and the entity listing', async () => {
+    const res = await handleRequest({
+      method: 'POST',
+      path: '/edit/description',
+      body: { ids: ['2025/03/10/undated.jpg'], description: 'A quiet morning' },
+    });
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body)).toEqual({ updated: ['2025/03/10/undated.jpg'], errors: [] });
+
+    const metadataRes = await handleRequest({
+      method: 'GET',
+      path: `/entity/${encodeURIComponent('2025/03/10/undated.jpg')}/metadata`,
+    });
+    expect(JSON.parse(metadataRes.body).description).toEqual(['A quiet morning']);
+
+    const listRes = await handleRequest({ method: 'GET', path: '/entities', query: { entityType: ENTITY_TYPE_IMAGE } });
+    const undated = JSON.parse(listRes.body).entities.find((e) => e.id === '2025/03/10/undated.jpg');
+    expect(undated.description).toEqual('A quiet morning');
+  });
+
+  it('clears a description when given an empty string, rather than leaving it stale', async () => {
+    await handleRequest({ method: 'POST', path: '/edit/description', body: { ids: ['2025/03/10/photo.jpg'], description: '' } });
+
+    const metadataRes = await handleRequest({
+      method: 'GET',
+      path: `/entity/${encodeURIComponent('2025/03/10/photo.jpg')}/metadata`,
+    });
+    expect(JSON.parse(metadataRes.body).description).toBeUndefined();
   });
 });
 

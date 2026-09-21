@@ -1,5 +1,5 @@
 import { ROCrate } from 'ro-crate';
-import { keywordsFromExif, ratingFromExif, regionsFromExif } from './exif.js';
+import { keywordsFromExif, ratingFromExif, regionsFromExif, titleFromExif, descriptionFromExif } from './exif.js';
 import { personEntityId, petEntityId } from './db/store.js';
 
 export const CRATE_FILE_NAME = 'ro-crate-metadata.json';
@@ -75,6 +75,15 @@ function unwrap(value) {
   return Array.isArray(value) ? value[0] : value;
 }
 
+// A title always has some value: the image's own IPTC/XMP title if it
+// has one, its filename otherwise — never left blank, unlike keywords or
+// a caption, which have no sensible fallback and are just absent when
+// there is nothing to show.
+function titleOrFallback(fileName, title) {
+  const trimmed = title?.trim();
+  return trimmed || fileName;
+}
+
 /**
  * Adds or updates an ImageObject entity (and its linked thumbnail entity,
  * if one is supplied) within a sub-collection crate, and lists it in the
@@ -82,12 +91,15 @@ function unwrap(value) {
  *
  * Recording errors: an EXIF extraction error and a thumbnail generation
  * error are two distinct things that can each independently go wrong for
- * the same file; both are folded into the single `description` property
- * (joined together if both occurred) rather than tracked in separate
- * fields or a separate log file, so a file's full error state lives in
- * one place in the crate itself — readable by readImageRecord below,
- * shown in the generated HTML preview, and usable by a caller to decide
- * whether a file is worth attempting again.
+ * the same file; both are folded into the single `processingError`
+ * property (joined together if both occurred) rather than tracked in
+ * separate fields or a separate log file, so a file's full error state
+ * lives in one place in the crate itself — readable by readImageRecord
+ * below, shown in the generated HTML preview, and usable by a caller to
+ * decide whether a file is worth attempting again. This is distinct from
+ * `description`, the image's own real IPTC/XMP caption (if any) — the
+ * two used to share one property, which meant a processing error and a
+ * real caption could never coexist; they are now independent.
  *
  * @param {ROCrate} crate
  * @param {object} options
@@ -97,7 +109,7 @@ function unwrap(value) {
  * @param {string|null} [options.thumbnailPath] - thumbnail path, relative to the crate directory, if one was generated
  * @param {string|null} [options.thumbnailError] - error message from thumbnail generation, if it failed
  * @param {number|null} [options.sourceModifiedAt] - the source file's modification time (epoch ms) as of this processing pass, used to detect whether it needs reprocessing on a later scan
- * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null, people: string[], pets: string[], regions: Array<{name: string, type: 'Face'|'Pet', area: {x: number, y: number, w: number, h: number}|null}>}}
+ * @returns {{path: string, name: string, title: string, dateCreated: string|null, description: string|null, processingError: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null, people: string[], pets: string[], regions: Array<{name: string, type: 'Face'|'Pet', area: {x: number, y: number, w: number, h: number}|null}>}}
  */
 export function addImageEntity(crate, {
   path,
@@ -122,6 +134,8 @@ export function addImageEntity(crate, {
   const rating = exifError ? null : ratingFromExif(exif);
   const people = regions.filter((region) => region.type === 'Face').map((region) => region.name);
   const pets = regions.filter((region) => region.type === 'Pet').map((region) => region.name);
+  const title = titleOrFallback(fileName, exifError ? null : titleFromExif(exif));
+  const description = exifError ? null : descriptionFromExif(exif);
 
   if (!exifError && exif) {
     if (dateCreated) {
@@ -200,9 +214,26 @@ export function addImageEntity(crate, {
     }
   }
 
-  const description = [exifError, thumbnailError].filter(Boolean).join(' | ') || null;
+  // Outside the exif-success block above: a title always has a value
+  // (see titleOrFallback) regardless of whether EXIF extraction
+  // succeeded, so it is always set, never cleared. A caption, like
+  // keywords or a rating, is only ever present when the file actually
+  // has one, so has nothing to fall back to when EXIF failed.
+  entity.title = title;
   if (description) {
     entity.description = description;
+  } else if ('description' in entity) {
+    delete entity.description;
+  }
+
+  const processingError = [exifError, thumbnailError].filter(Boolean).join(' | ') || null;
+  if (processingError) {
+    entity.processingError = processingError;
+  } else if ('processingError' in entity) {
+    // A file that failed once and now processes cleanly must not keep
+    // showing its old error forever — the same class of stale-property
+    // bug already fixed for keywords/rating above.
+    delete entity.processingError;
   }
 
   if (thumbnailPath) {
@@ -219,7 +250,7 @@ export function addImageEntity(crate, {
   crate.addEntity(entity, { replace: true });
   crate.addValues(crate.rootId, 'hasPart', { '@id': path });
 
-  return { path, name: fileName, dateCreated, description, thumbnailPath, exifEntries, keywords, rating, people, pets, regions };
+  return { path, name: fileName, title, dateCreated, description, processingError, thumbnailPath, exifEntries, keywords, rating, people, pets, regions };
 }
 
 /**
@@ -245,7 +276,7 @@ export function recordedModifiedTime(crate, path) {
  *
  * @param {ROCrate} crate
  * @param {string} path
- * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null, people: string[], pets: string[], regions: Array<{name: string, type: 'Face'|'Pet', area: {x: number, y: number, w: number, h: number}|null}>}|null}
+ * @returns {{path: string, name: string, title: string, dateCreated: string|null, description: string|null, processingError: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null, people: string[], pets: string[], regions: Array<{name: string, type: 'Face'|'Pet', area: {x: number, y: number, w: number, h: number}|null}>}|null}
  */
 export function readImageRecord(crate, path) {
   const entity = crate.getEntity(path);
@@ -284,8 +315,10 @@ export function readImageRecord(crate, path) {
   return {
     path,
     name: unwrap(entity.name) ?? path.split('/').pop(),
+    title: unwrap(entity.title) ?? titleOrFallback(path.split('/').pop(), null),
     dateCreated: unwrap(entity.dateCreated) ?? null,
     description: unwrap(entity.description) ?? null,
+    processingError: unwrap(entity.processingError) ?? null,
     thumbnailPath: unwrap(entity.thumbnail)?.['@id'] ?? null,
     exifEntries,
     keywords: entity.keywords ?? [],
@@ -334,6 +367,43 @@ export function setImageRating(crate, path, rating) {
     entity.rating = rating;
   } else if ('rating' in entity) {
     delete entity.rating;
+  }
+}
+
+/**
+ * Replaces an image's title outright — see setImageKeywords for the same
+ * reasoning about surviving an ordinary rescan. Falls back to the
+ * image's own filename (see titleOrFallback) if given an empty title,
+ * the same as a freshly-scanned image with no IPTC/XMP title of its own,
+ * rather than leaving it blank.
+ *
+ * @param {ROCrate} crate
+ * @param {string} path
+ * @param {string|null} title
+ */
+export function setImageTitle(crate, path, title) {
+  const entity = crate.getEntity(path);
+  if (!entity) return;
+  entity.title = titleOrFallback(path.split('/').pop(), title);
+}
+
+/**
+ * Replaces an image's free-text caption outright — see setImageKeywords
+ * for the same reasoning about surviving an ordinary rescan. Unlike a
+ * title, a caption has no fallback: given empty, it is cleared entirely.
+ *
+ * @param {ROCrate} crate
+ * @param {string} path
+ * @param {string|null} description
+ */
+export function setImageDescription(crate, path, description) {
+  const entity = crate.getEntity(path);
+  if (!entity) return;
+  const trimmed = description?.trim();
+  if (trimmed) {
+    entity.description = trimmed;
+  } else if ('description' in entity) {
+    delete entity.description;
   }
 }
 

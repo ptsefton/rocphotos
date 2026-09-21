@@ -22,6 +22,20 @@ const KEYWORD_FIELDS = ['hierarchicalSubject', 'subject', 'Keywords'];
 // tools such as Lightroom, digiKam, and Photo Mechanic.
 const REGION_FIELD = 'Regions';
 
+// IPTC ObjectName / XMP dc:title — a short title, distinct from a longer
+// free-text caption (see DESCRIPTION_FIELDS). exifr's IPTC dictionary
+// keys this 'ObjectName'; its XMP equivalent comes through as 'title'.
+const TITLE_FIELDS = ['ObjectName', 'title'];
+
+// IPTC Caption-Abstract (keyed 'Caption' in exifr's own IPTC dictionary,
+// not the literal IPTC field name) / XMP dc:description. Confirmed
+// against real files that some cameras (Olympus, at least) write a
+// boilerplate value here ("OLYMPUS DIGITAL CAMERA") on every photo
+// rather than a real caption — extracted the same as any other value;
+// telling that apart from an intentional caption is left to the person
+// reviewing/editing it.
+const DESCRIPTION_FIELDS = ['Caption', 'description'];
+
 /**
  * Extracts a small set of EXIF/IPTC/XMP fields from image bytes. A
  * missing or empty EXIF segment (common for formats such as PNG) is not
@@ -50,7 +64,7 @@ export async function extractExif(bytes) {
     }
 
     const picked = {};
-    for (const key of [...EXIF_FIELDS, ...KEYWORD_FIELDS, REGION_FIELD]) {
+    for (const key of [...EXIF_FIELDS, ...KEYWORD_FIELDS, REGION_FIELD, ...TITLE_FIELDS, ...DESCRIPTION_FIELDS]) {
       if (tags[key] !== undefined) {
         picked[key] = tags[key];
       }
@@ -137,4 +151,52 @@ export function regionsFromExif(exif) {
         : null,
     }))
     .filter((region) => region.name.length > 0);
+}
+
+// An XMP LangAlt value (title/description) is a plain string when there
+// is exactly one language, but comes through as {lang, value} (a single
+// alternative) or an array of those (several languages) otherwise —
+// confirmed against a real file's XMP description. Always resolves to
+// the one plain string this application actually uses, preferring
+// 'x-default' when several languages are present.
+function flattenLangAlt(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  if (Array.isArray(value)) {
+    const preferred = value.find((entry) => entry?.lang === 'x-default') ?? value[0];
+    return flattenLangAlt(preferred);
+  }
+  if (typeof value === 'object' && 'value' in value) {
+    return flattenLangAlt(value.value);
+  }
+  return null;
+}
+
+/**
+ * The image's own short title (IPTC ObjectName / XMP dc:title), if any —
+ * distinct from a longer free-text caption (see descriptionFromExif).
+ *
+ * @param {object|null} exif
+ * @returns {string|null}
+ */
+export function titleFromExif(exif) {
+  if (!exif) return null;
+  const source = TITLE_FIELDS.map((key) => exif[key]).find((value) => value !== undefined);
+  return flattenLangAlt(source);
+}
+
+/**
+ * The image's own free-text caption (IPTC Caption-Abstract / XMP
+ * dc:description), if any.
+ *
+ * @param {object|null} exif
+ * @returns {string|null}
+ */
+export function descriptionFromExif(exif) {
+  if (!exif) return null;
+  const source = DESCRIPTION_FIELDS.map((key) => exif[key]).find((value) => value !== undefined);
+  return flattenLangAlt(source);
 }

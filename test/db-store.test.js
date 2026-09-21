@@ -88,6 +88,36 @@ describe('personEntityId / petEntityId', () => {
   });
 });
 
+describe('ensureSchema migration', () => {
+  it('adds title and processing_error to an entities table created before they existed', () => {
+    const db = openNodeSqlite(':memory:');
+    // A faithful stand-in for an index built by an older version of the
+    // app, before title/processing_error existed — CREATE TABLE IF NOT
+    // EXISTS alone would never add columns to this already-existing table.
+    db.exec(`
+      CREATE TABLE ro_crates (id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE entities (
+        id TEXT PRIMARY KEY, ro_crate_id TEXT NOT NULL, entity_type TEXT NOT NULL, name TEXT, description TEXT,
+        member_of TEXT, metadata_license_id TEXT, content_license_id TEXT,
+        access_metadata INTEGER NOT NULL DEFAULT 1, access_content INTEGER NOT NULL DEFAULT 1, date_created TEXT
+      );
+      CREATE TABLE files (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, filename TEXT NOT NULL, media_type TEXT, size INTEGER, relative_path TEXT NOT NULL, access_content INTEGER NOT NULL DEFAULT 1);
+      CREATE TABLE entity_facets (entity_id TEXT NOT NULL, facet_name TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (entity_id, facet_name, value));
+    `);
+
+    ensureSchema(db);
+
+    const columns = db.all('PRAGMA table_info(entities)').map((row) => row.name);
+    expect(columns).toEqual(expect.arrayContaining(['title', 'processing_error']));
+  });
+
+  it('is safe to call repeatedly without erroring once the columns already exist', () => {
+    const db = openNodeSqlite(':memory:');
+    ensureSchema(db);
+    expect(() => ensureSchema(db)).not.toThrow();
+  });
+});
+
 describe('db store', () => {
   let db;
 

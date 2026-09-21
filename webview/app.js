@@ -25,6 +25,7 @@ const viewerEl = document.querySelector('#viewer');
 const viewerImageEl = document.querySelector('#viewer-image');
 const viewerRatingEl = document.querySelector('#viewer-rating');
 const viewerCaptionEl = document.querySelector('#viewer-caption');
+const viewerDescriptionEl = document.querySelector('#viewer-description');
 const viewerTagsEl = document.querySelector('#viewer-tags');
 const viewerFacesEl = document.querySelector('#viewer-faces');
 const viewerFacesToggleEl = document.querySelector('#viewer-faces-toggle');
@@ -210,11 +211,13 @@ function renderViewerRating(rating) {
 async function openViewer(entity) {
   currentViewerEntityId = entity.id;
   viewerImageEl.src = entityUrl('/api/file', entity.id);
-  viewerImageEl.alt = entity.name;
-  viewerCaptionEl.textContent = entity.name;
-  // entity.rating comes from the same search result the grid tile itself
-  // was rendered from (see entityToJson in the handler), so this can be
-  // shown immediately rather than waiting on the metadata fetch below.
+  viewerImageEl.alt = entity.title;
+  // entity.title/description/rating all come from the same search result
+  // the grid tile itself was rendered from (see entityToJson in the
+  // handler), so these can be shown immediately rather than waiting on
+  // the metadata fetch below.
+  viewerCaptionEl.textContent = entity.title;
+  viewerDescriptionEl.textContent = entity.description ?? '';
   renderViewerRating(entity.rating);
   viewerTagsEl.innerHTML = '';
   currentFaceRegions = [];
@@ -362,7 +365,7 @@ function renderGrid(entities) {
 
     const img = document.createElement('img');
     img.src = entityUrl('/api/entity', entity.id) + '/thumbnail';
-    img.alt = entity.name;
+    img.alt = entity.title;
     img.loading = 'lazy';
     img.addEventListener('error', () => {
       // No thumbnail available (see the handler's /entity/{id}/thumbnail
@@ -377,7 +380,7 @@ function renderGrid(entities) {
     }));
 
     const caption = document.createElement('figcaption');
-    caption.textContent = entity.name;
+    caption.textContent = entity.title;
     figure.appendChild(caption);
 
     figure.addEventListener('click', () => openViewer(entity));
@@ -623,6 +626,37 @@ document.querySelector('#viewer-add-keyword').addEventListener('click', async ()
     for (const keyword of keywords) {
       addViewerTag('keyword', keyword);
     }
+    await search();
+  } catch (err) {
+    window.alert(`Could not apply that change: ${err.message}`);
+  }
+});
+
+document.querySelector('#viewer-edit-title').addEventListener('click', async () => {
+  const title = window.prompt('Title for this image (leave blank to reset to its filename):', viewerCaptionEl.textContent);
+  if (title === null) return; // cancelled
+  try {
+    await postEdit('/edit/title', { ids: [currentViewerEntityId], title });
+    // Set directly on the still-open viewer, same reason as the keyword
+    // and rating handlers above: search() below only refreshes the grid.
+    // Read back via a fresh metadata fetch rather than trusting `title`
+    // directly, since an empty title resolves to the filename server-side
+    // (see setImageTitle), not to a blank caption.
+    const response = await fetch(entityUrl('/api/entity', currentViewerEntityId) + '/metadata');
+    const metadata = await response.json();
+    viewerCaptionEl.textContent = metadata.title?.[0] ?? viewerCaptionEl.textContent;
+    await search();
+  } catch (err) {
+    window.alert(`Could not apply that change: ${err.message}`);
+  }
+});
+
+document.querySelector('#viewer-edit-description').addEventListener('click', async () => {
+  const description = window.prompt('Description for this image (leave blank to clear it):', viewerDescriptionEl.textContent);
+  if (description === null) return; // cancelled
+  try {
+    await postEdit('/edit/description', { ids: [currentViewerEntityId], description });
+    viewerDescriptionEl.textContent = description.trim();
     await search();
   } catch (err) {
     window.alert(`Could not apply that change: ${err.message}`);

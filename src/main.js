@@ -249,7 +249,9 @@ async function scanAndBuild(selectedPaths) {
           roCrateId: crateEntityId(crateDirPath),
           entityType: ENTITY_TYPE_IMAGE,
           name: record.name,
+          title: record.title,
           description: record.description,
+          processingError: record.processingError,
           memberOf: crateEntityId(crateDirPath),
           dateCreated: record.dateCreated,
         });
@@ -332,10 +334,10 @@ async function renderItems(items) {
 
     const caption = document.createElement('figcaption');
     caption.innerHTML = `${item.name}<br><span class="crate-dir">${item.crateDir || '(root)'}</span>`;
-    if (item.description) {
+    if (item.processingError) {
       const errorLine = document.createElement('div');
       errorLine.className = 'error';
-      errorLine.textContent = item.description;
+      errorLine.textContent = item.processingError;
       caption.appendChild(errorLine);
     }
     figure.appendChild(caption);

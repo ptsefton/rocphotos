@@ -21,8 +21,8 @@ describe('renderSubCratePreview', () => {
     const html = renderSubCratePreview({
       name: '2025-03-10',
       images: [
-        { path: 'a.jpg', name: 'a.jpg', dateCreated: '2025-03-10T00:00:00.000Z', description: null, thumbnailPath: 'thumbnails/a.jpg.thumb.jpg' },
-        { path: 'b.jpg', name: 'b.jpg', dateCreated: null, description: 'EXIF extraction failed: bad segment', thumbnailPath: null },
+        { path: 'a.jpg', name: 'a.jpg', dateCreated: '2025-03-10T00:00:00.000Z', processingError: null, thumbnailPath: 'thumbnails/a.jpg.thumb.jpg' },
+        { path: 'b.jpg', name: 'b.jpg', dateCreated: null, processingError: 'EXIF extraction failed: bad segment', thumbnailPath: null },
       ],
     });
 
@@ -35,7 +35,7 @@ describe('renderSubCratePreview', () => {
   it('escapes HTML-significant characters in names and error text', () => {
     const html = renderSubCratePreview({
       name: 'Album',
-      images: [{ path: '<x>.jpg', name: '<x>.jpg', dateCreated: null, description: '<script>bad</script>', thumbnailPath: null }],
+      images: [{ path: '<x>.jpg', name: '<x>.jpg', dateCreated: null, processingError: '<script>bad</script>', thumbnailPath: null }],
     });
 
     expect(html).not.toContain('<script>bad</script>');
@@ -51,7 +51,7 @@ describe('renderSubCratePreview', () => {
         path: 'sub dir/Photo #5 100% done?.jpg',
         name: 'Photo #5 100% done?.jpg',
         dateCreated: null,
-        description: null,
+        processingError: null,
         thumbnailPath: null,
       }],
     });
@@ -62,7 +62,7 @@ describe('renderSubCratePreview', () => {
   it('opens each thumbnail into an in-page, full-screen viewer rather than linking straight to the file', () => {
     const html = renderSubCratePreview({
       name: 'Album',
-      images: [{ path: 'a.jpg', name: 'a.jpg', dateCreated: null, description: null, thumbnailPath: 'thumbnails/a.jpg.thumb.jpg' }],
+      images: [{ path: 'a.jpg', name: 'a.jpg', dateCreated: null, processingError: null, thumbnailPath: 'thumbnails/a.jpg.thumb.jpg' }],
     });
 
     expect(html).toContain('<a href="#viewer-0">');
@@ -79,7 +79,7 @@ describe('renderSubCratePreview', () => {
         path: 'a.jpg',
         name: 'a.jpg',
         dateCreated: null,
-        description: null,
+        processingError: null,
         thumbnailPath: null,
         exifEntries: [{ name: 'Model', value: 'Pixel 6a' }],
       }],
@@ -94,7 +94,7 @@ describe('renderSubCratePreview', () => {
   it('omits the EXIF details element entirely when there is no EXIF data', () => {
     const html = renderSubCratePreview({
       name: 'Album',
-      images: [{ path: 'a.jpg', name: 'a.jpg', dateCreated: null, description: null, thumbnailPath: null }],
+      images: [{ path: 'a.jpg', name: 'a.jpg', dateCreated: null, processingError: null, thumbnailPath: null }],
     });
 
     expect(html).not.toContain('class="exif"');

@@ -13,6 +13,7 @@ import {
   setEntityFacetValues,
   deleteEntityById,
   getEntityRating,
+  upsertEntity,
 } from '../db/store.js';
 import {
   CRATE_FILE_NAME,
@@ -21,6 +22,8 @@ import {
   readImageRecord,
   setImageKeywords,
   setImageRating,
+  setImageTitle,
+  setImageDescription,
   removeImageEntity,
 } from '../crateBuilder.js';
 import { loadEntityFromCrate } from '../entityCrate.js';
@@ -64,7 +67,9 @@ function entityToJson(store, row) {
     id: row.id,
     name: row.name,
     entityType: row.entity_type,
+    title: row.title ?? undefined,
     description: row.description ?? undefined,
+    processingError: row.processing_error ?? undefined,
     memberOf: row.member_of ? { id: row.member_of } : undefined,
     metadataLicenseId: row.metadata_license_id,
     contentLicenseId: row.content_license_id,
@@ -160,6 +165,30 @@ export function createHandler({ store, fsAdapter }) {
       // avoidable extra parse of the file it was just built from.
       crateCache.set(roCrateId, crate);
     }
+  }
+
+  // title/description/processingError are plain entities columns, not
+  // entity_facets rows (see schema.js) — upsertEntity always needs a
+  // full row, so editing just one of them starts from what is already
+  // there (an existing entities row, from getEntityById) and overrides
+  // only the field(s) actually being edited.
+  function upsertEntityFromRow(row, overrides) {
+    upsertEntity(store, {
+      id: row.id,
+      roCrateId: row.ro_crate_id,
+      entityType: row.entity_type,
+      name: row.name,
+      title: row.title,
+      description: row.description,
+      processingError: row.processing_error,
+      memberOf: row.member_of,
+      metadataLicenseId: row.metadata_license_id,
+      contentLicenseId: row.content_license_id,
+      accessMetadata: !!row.access_metadata,
+      accessContent: !!row.access_content,
+      dateCreated: row.date_created,
+      ...overrides,
+    });
   }
 
   async function handleRequest({ method, path, query = {}, body = null }) {
@@ -334,6 +363,59 @@ export function createHandler({ store, fsAdapter }) {
         const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
         setImageRating(crate, crateRelativeId, rating);
         setEntityFacetValues(store, id, 'rating', rating !== null ? [String(rating)] : []);
+        updated.push(id);
+      }
+
+      await saveEditedCrates(cache);
+      await persistStore(store);
+      return json(200, { updated, errors });
+    }
+
+    if (method === 'POST' && path === '/edit/title') {
+      const ids = Array.isArray(body?.ids) ? body.ids : [];
+      const cache = new Map();
+      const updated = [];
+      const errors = [];
+
+      for (const id of ids) {
+        const row = getEntityById(store, id);
+        if (!row) {
+          errors.push({ id, message: 'Not found' });
+          continue;
+        }
+        const crate = await loadCrateForEdit(cache, row.ro_crate_id);
+        const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
+        setImageTitle(crate, crateRelativeId, body?.title);
+        // Read back rather than trusting body.title directly: an empty
+        // title falls back to the filename (see setImageTitle), and the
+        // index should record that resolved value, not a blank one.
+        const updatedTitle = readImageRecord(crate, crateRelativeId)?.title ?? row.title;
+        upsertEntityFromRow(row, { title: updatedTitle });
+        updated.push(id);
+      }
+
+      await saveEditedCrates(cache);
+      await persistStore(store);
+      return json(200, { updated, errors });
+    }
+
+    if (method === 'POST' && path === '/edit/description') {
+      const ids = Array.isArray(body?.ids) ? body.ids : [];
+      const description = typeof body?.description === 'string' ? body.description.trim() || null : null;
+      const cache = new Map();
+      const updated = [];
+      const errors = [];
+
+      for (const id of ids) {
+        const row = getEntityById(store, id);
+        if (!row) {
+          errors.push({ id, message: 'Not found' });
+          continue;
+        }
+        const crate = await loadCrateForEdit(cache, row.ro_crate_id);
+        const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
+        setImageDescription(crate, crateRelativeId, description);
+        upsertEntityFromRow(row, { description });
         updated.push(id);
       }
 

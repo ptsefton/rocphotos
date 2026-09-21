@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractExif, keywordsFromExif, ratingFromExif, regionsFromExif } from '../src/core/exif.js';
+import { extractExif, keywordsFromExif, ratingFromExif, regionsFromExif, titleFromExif, descriptionFromExif } from '../src/core/exif.js';
 
 describe('extractExif', () => {
   it('never throws, even for bytes that are not a recognisable image', async () => {
@@ -116,5 +116,44 @@ describe('regionsFromExif', () => {
   it('returns an empty array when there are no regions, or exif is null', () => {
     expect(regionsFromExif({ Make: 'Google' })).toEqual([]);
     expect(regionsFromExif(null)).toEqual([]);
+  });
+});
+
+describe('titleFromExif', () => {
+  it('reads a plain-string IPTC ObjectName', () => {
+    expect(titleFromExif({ ObjectName: 'Sunset over the lake' })).toEqual('Sunset over the lake');
+  });
+
+  it('reads an XMP dc:title expressed as a {lang, value} pair', () => {
+    expect(titleFromExif({ title: { lang: 'x-default', value: 'Sunset over the lake' } })).toEqual('Sunset over the lake');
+  });
+
+  it('prefers ObjectName over title when both are present', () => {
+    expect(titleFromExif({ ObjectName: 'IPTC title', title: 'XMP title' })).toEqual('IPTC title');
+  });
+
+  it('returns null when there is no title field, or exif is null', () => {
+    expect(titleFromExif({ Make: 'Google' })).toBeNull();
+    expect(titleFromExif(null)).toBeNull();
+  });
+});
+
+describe('descriptionFromExif', () => {
+  it('reads a plain-string IPTC caption (exifr\'s own "Caption" key for Caption-Abstract)', () => {
+    expect(descriptionFromExif({ Caption: 'A heron at the lake' })).toEqual('A heron at the lake');
+  });
+
+  it('reads an XMP dc:description expressed as a {lang, value} pair, confirmed against a real file', () => {
+    expect(descriptionFromExif({ description: { lang: 'x-default', value: 'OLYMPUS DIGITAL CAMERA' } })).toEqual('OLYMPUS DIGITAL CAMERA');
+  });
+
+  it('picks the x-default entry when several languages are present', () => {
+    const description = [{ lang: 'fr', value: 'Bonjour' }, { lang: 'x-default', value: 'Hello' }];
+    expect(descriptionFromExif({ description })).toEqual('Hello');
+  });
+
+  it('returns null when there is no description field, or exif is null', () => {
+    expect(descriptionFromExif({ Make: 'Google' })).toBeNull();
+    expect(descriptionFromExif(null)).toBeNull();
   });
 });

@@ -147,6 +147,19 @@ export function petEntityId(name) {
  */
 export function ensureSchema(driver) {
   driver.exec(SCHEMA_SQL);
+
+  // Migration for an index built before title/processing_error existed:
+  // CREATE TABLE IF NOT EXISTS above does not add columns to an
+  // already-existing table. Added via ALTER TABLE rather than requiring
+  // a --fresh rescan, since everything else about the index stays valid
+  // across this change.
+  const existingColumns = new Set(driver.all('PRAGMA table_info(entities)').map((row) => row.name));
+  if (!existingColumns.has('title')) {
+    driver.exec('ALTER TABLE entities ADD COLUMN title TEXT');
+  }
+  if (!existingColumns.has('processing_error')) {
+    driver.exec('ALTER TABLE entities ADD COLUMN processing_error TEXT');
+  }
 }
 
 /**
@@ -189,7 +202,9 @@ export function facetValuesFromRecord(record) {
  * @param {string} entity.roCrateId
  * @param {string} entity.entityType
  * @param {string} entity.name
- * @param {string|null} [entity.description]
+ * @param {string|null} [entity.title] - the entity's own title (falls back to its filename — see crateBuilder.js's titleOrFallback); always populated for an image, meaningless for other entity types
+ * @param {string|null} [entity.description] - the entity's own real caption, if it has one — distinct from processingError, which the two used to share
+ * @param {string|null} [entity.processingError]
  * @param {string|null} [entity.memberOf]
  * @param {string} [entity.metadataLicenseId]
  * @param {string} [entity.contentLicenseId]
@@ -202,7 +217,9 @@ export function upsertEntity(driver, {
   roCrateId,
   entityType,
   name,
+  title = null,
   description = null,
+  processingError = null,
   memberOf = null,
   metadataLicenseId = DEFAULT_LICENSE_ID,
   contentLicenseId = DEFAULT_LICENSE_ID,
@@ -212,15 +229,17 @@ export function upsertEntity(driver, {
 }) {
   driver.run(
     `INSERT INTO entities (
-       id, ro_crate_id, entity_type, name, description, member_of,
+       id, ro_crate_id, entity_type, name, title, description, processing_error, member_of,
        metadata_license_id, content_license_id, access_metadata, access_content,
        date_created
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        ro_crate_id = excluded.ro_crate_id,
        entity_type = excluded.entity_type,
        name = excluded.name,
+       title = excluded.title,
        description = excluded.description,
+       processing_error = excluded.processing_error,
        member_of = excluded.member_of,
        metadata_license_id = excluded.metadata_license_id,
        content_license_id = excluded.content_license_id,
@@ -228,7 +247,7 @@ export function upsertEntity(driver, {
        access_content = excluded.access_content,
        date_created = excluded.date_created`,
     [
-      id, roCrateId, entityType, name, description, memberOf,
+      id, roCrateId, entityType, name, title, description, processingError, memberOf,
       metadataLicenseId, contentLicenseId, accessMetadata ? 1 : 0, accessContent ? 1 : 0,
       dateCreated,
     ],

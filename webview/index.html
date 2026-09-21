@@ -70,6 +70,8 @@
     .face-box { position: absolute; border: 2px solid #ffcc00; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6); }
     .face-box-label { position: absolute; top: 100%; left: -2px; margin-top: 2px; background: #ffcc00; color: #222; font-size: 0.7rem; padding: 1px 4px; border-radius: 2px; white-space: nowrap; }
     #viewer-caption { color: #eee; font-size: 0.9rem; text-align: center; }
+    #viewer-description { color: #ccc; font-size: 0.85rem; text-align: center; max-width: 40rem; white-space: pre-wrap; }
+    #viewer-description:empty { display: none; }
     #viewer-rating { display: flex; justify-content: center; }
     #viewer-tags { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center; max-width: 80vw; }
     .viewer-tag { background: #333; color: #eee; border: none; border-radius: 12px; padding: 0.2rem 0.7rem; font-size: 0.78rem; cursor: pointer; }
@@ -113,9 +115,12 @@
     <div id="viewer-controls">
       <button id="viewer-faces-toggle" disabled>Show faces</button>
       <button id="viewer-add-keyword">Add keyword</button>
+      <button id="viewer-edit-title">Edit title</button>
+      <button id="viewer-edit-description">Edit description</button>
       <button id="viewer-delete">Delete</button>
     </div>
     <div id="viewer-caption"></div>
+    <div id="viewer-description"></div>
     <div id="viewer-tags"></div>
   </div>
 

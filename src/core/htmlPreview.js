@@ -134,8 +134,8 @@ export function renderSubCratePreview({ name, images, backLink = null }) {
     const fullSrc = encodePath(image.path);
     const dateLabel = formatDate(image.dateCreated);
     const captionSuffix = dateLabel ? ` &mdash; ${escapeHtml(dateLabel)}` : '';
-    const errorHtml = image.description
-      ? `<div class="error">${escapeHtml(image.description)}</div>`
+    const errorHtml = image.processingError
+      ? `<div class="error">${escapeHtml(image.processingError)}</div>`
       : '';
     const exifTableHtml = renderExifTable(image.exifEntries);
     const exifDetailsHtml = exifTableHtml
