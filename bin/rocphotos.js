@@ -175,7 +175,35 @@ async function resolveLooseRootImages(fsAdapter, rootDir, isExcludedDir, isExclu
   }
 }
 
-async function scan(rootDir, looseRootImagesOptions = {}) {
+// Deletes the SQLite index and the root crate's own metadata/preview, so
+// the next scan rebuilds both entirely from what is currently on disk.
+// Needed because both are purely additive today: a hasPart reference (or
+// an entities/ro_crates row) for a sub-collection whose directory has
+// since been deleted, moved, or renamed is never pruned by an ordinary
+// scan, only ever added to. Sub-crate files are left untouched — any
+// that still physically exist are picked up normally by the walk that
+// follows (including the mtime-skip optimisation within them); any that
+// no longer exist simply will not be found by that walk, so they cannot
+// end up back in the rebuilt root or index either way.
+function resetRootAndIndex(rootDir) {
+  const removed = [];
+  for (const name of [INDEX_FILE_NAME, CRATE_FILE_NAME, PREVIEW_FILE_NAME]) {
+    const fullPath = path.join(rootDir, name);
+    if (fs.existsSync(fullPath)) {
+      fs.rmSync(fullPath);
+      removed.push(name);
+    }
+  }
+  if (removed.length > 0) {
+    console.log(`--fresh: removed ${removed.join(', ')} from ${rootDir}\n`);
+  }
+}
+
+async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false } = {}) {
+  if (fresh) {
+    resetRootAndIndex(rootDir);
+  }
+
   const fsAdapter = createNodeFsAdapter(rootDir);
   let isExcludedDir = compileNamePatternMatcher(await loadExcludedDirectoryPatterns(fsAdapter));
   let isExcludedFile = compileNamePatternMatcher(await loadExcludedFilePatterns(fsAdapter));
@@ -423,8 +451,15 @@ function fail(err) {
 }
 
 function usage() {
-  console.error('Usage: rocphotos scan <directory> [--loose-root-images=move|ignore] [--loose-root-images-folder=<name>]');
+  console.error('Usage: rocphotos scan <directory> [--fresh] [--loose-root-images=move|ignore] [--loose-root-images-folder=<name>]');
   console.error('       rocphotos export-excel <directory> [output.xlsx] [--include-entity-crates]');
+  console.error('');
+  console.error('--fresh deletes the SQLite index and the root crate\'s own metadata/preview');
+  console.error('before scanning, so stale references to a sub-collection that has since been');
+  console.error('deleted, moved, or renamed are not carried forward (they are otherwise only');
+  console.error('ever added to, never pruned). Sub-crate files are left alone: anything still');
+  console.error('on disk is picked up normally by the scan that follows, including its cached');
+  console.error('thumbnails and skip-if-unchanged behaviour.');
   console.error('');
   console.error('--loose-root-images resolves images found loose in the collection root');
   console.error('(alongside other subdirectories) without an interactive prompt: "move"');
@@ -466,7 +501,11 @@ if (command === 'scan' && targetDir) {
   if (mode !== undefined && mode !== 'move' && mode !== 'ignore') {
     fail(new Error(`Invalid --loose-root-images value "${mode}" (expected "move" or "ignore")`));
   } else {
-    scan(path.resolve(targetDir), { mode, folderName: flags['loose-root-images-folder'] }).catch(fail);
+    scan(
+      path.resolve(targetDir),
+      { mode, folderName: flags['loose-root-images-folder'] },
+      { fresh: Boolean(flags.fresh) },
+    ).catch(fail);
   }
 } else if (command === 'export-excel' && targetDir) {
   const resolvedDir = path.resolve(targetDir);
