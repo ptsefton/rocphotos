@@ -11,9 +11,14 @@ function labelWithIcon(facetName) {
 const facetsEl = document.querySelector('#facets');
 const activeFiltersEl = document.querySelector('#active-filters');
 const statusEl = document.querySelector('#status');
+const selectAllButtonEl = document.querySelector('#select-all');
 const gridEl = document.querySelector('#grid');
 const selectionBarEl = document.querySelector('#selection-bar');
 const selectionCountEl = document.querySelector('#selection-count');
+const keywordDialogEl = document.querySelector('#keyword-dialog');
+const keywordDialogDescriptionEl = document.querySelector('#keyword-dialog-description');
+const keywordChipListEl = document.querySelector('#keyword-chip-list');
+const keywordInputEl = document.querySelector('#keyword-input');
 const viewerEl = document.querySelector('#viewer');
 const viewerImageEl = document.querySelector('#viewer-image');
 const viewerCaptionEl = document.querySelector('#viewer-caption');
@@ -38,6 +43,12 @@ let currentViewerEntityId = null;
 // rating filter) or even still be on screen, so carrying the same ids
 // forward into a new result set would be more surprising than useful.
 let selectedIds = new Set();
+
+// The ids currently rendered in the grid, for "Select All" — only ever
+// selects what is actually on screen for the current search, not every
+// entity matching it (the search itself is capped at 200 results; there
+// is no pagination yet for "all" to mean more than that).
+let currentEntityIds = [];
 
 // Every search implicitly scopes to images: this is a photo browser, not
 // a general entity browser, so sub-collection Dataset entities never show
@@ -273,6 +284,7 @@ window.addEventListener('resize', () => {
 
 function renderGrid(entities) {
   gridEl.innerHTML = '';
+  currentEntityIds = entities.map((entity) => entity.id);
   for (const entity of entities) {
     const figure = document.createElement('figure');
 
@@ -321,6 +333,96 @@ function promptKeyword(actionLabel, description) {
   return keyword?.trim() || null;
 }
 
+// The keywords added so far in the currently-open dialog (via the (+)
+// button or Enter), separate from whatever is still sitting, uncommitted,
+// in the text input.
+let pendingKeywords = [];
+
+function renderKeywordChips() {
+  keywordChipListEl.innerHTML = '';
+  for (const keyword of pendingKeywords) {
+    const chip = document.createElement('span');
+    chip.className = 'keyword-chip';
+    chip.textContent = keyword;
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '×';
+    remove.setAttribute('aria-label', `Remove "${keyword}"`);
+    remove.addEventListener('click', () => {
+      pendingKeywords = pendingKeywords.filter((k) => k !== keyword);
+      renderKeywordChips();
+    });
+    chip.appendChild(remove);
+
+    keywordChipListEl.appendChild(chip);
+  }
+}
+
+function addPendingKeywordFromInput() {
+  const value = keywordInputEl.value.trim();
+  keywordInputEl.value = '';
+  keywordInputEl.focus();
+  if (!value || pendingKeywords.includes(value)) return;
+  pendingKeywords = [...pendingKeywords, value];
+  renderKeywordChips();
+}
+
+document.querySelector('#keyword-add-button').addEventListener('click', addPendingKeywordFromInput);
+keywordInputEl.addEventListener('keydown', (event) => {
+  // Enter adds the typed keyword to the list rather than submitting the
+  // dialog — matching the (+) button, so a keyboard-only user is not
+  // stuck with one keyword at a time either.
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    addPendingKeywordFromInput();
+  }
+});
+
+document.querySelector('#keyword-dialog-cancel').addEventListener('click', () => {
+  keywordDialogEl.close('cancel');
+});
+
+let keywordDialogResolve = null;
+
+keywordDialogEl.addEventListener('close', () => {
+  if (keywordDialogEl.returnValue !== 'submit') {
+    keywordDialogResolve?.(null);
+    keywordDialogResolve = null;
+    return;
+  }
+  // Whatever is still sitting in the input, not yet added via (+), is
+  // included as a courtesy — typing one keyword and hitting "Add"
+  // directly is a very plausible single-keyword flow, and it would be
+  // surprising for that to silently do nothing.
+  const trailing = keywordInputEl.value.trim();
+  const keywords = trailing && !pendingKeywords.includes(trailing) ? [...pendingKeywords, trailing] : pendingKeywords;
+  keywordDialogResolve?.(keywords);
+  keywordDialogResolve = null;
+});
+
+/**
+ * Opens the multi-keyword entry dialog and resolves with the list of
+ * keywords entered (each added via the (+) button, Enter, or left in the
+ * input when submitted), or null if cancelled. An empty list (submitted
+ * with nothing entered) is possible and is left for the caller to treat
+ * as "nothing to do".
+ *
+ * @param {string} description - e.g. "3 image(s)" or "this image"
+ * @returns {Promise<string[]|null>}
+ */
+function promptKeywords(description) {
+  return new Promise((resolve) => {
+    keywordDialogResolve = resolve;
+    keywordDialogDescriptionEl.textContent = `Add keyword(s) for ${description}:`;
+    keywordInputEl.value = '';
+    pendingKeywords = [];
+    renderKeywordChips();
+    keywordDialogEl.showModal();
+    keywordInputEl.focus();
+  });
+}
+
 function promptRating(description) {
   const input = window.prompt(`Set rating (1-5, or leave blank to clear) for ${description}:`);
   if (input === null) return undefined; // cancelled
@@ -343,16 +445,22 @@ async function runEditAction(action) {
   }
 }
 
+selectAllButtonEl.addEventListener('click', () => {
+  selectedIds = new Set(currentEntityIds);
+  gridEl.querySelectorAll('input[type="checkbox"]').forEach((el) => { el.checked = true; });
+  renderSelectionBar();
+});
+
 document.querySelector('#selection-clear').addEventListener('click', () => {
   selectedIds = new Set();
   gridEl.querySelectorAll('input[type="checkbox"]').forEach((el) => { el.checked = false; });
   renderSelectionBar();
 });
 
-document.querySelector('#selection-add-keyword').addEventListener('click', () => {
-  const keyword = promptKeyword('Add keyword', `${selectedIds.size} image(s)`);
-  if (!keyword) return;
-  runEditAction(() => postEdit('/edit/keywords', { ids: [...selectedIds], add: [keyword] }));
+document.querySelector('#selection-add-keyword').addEventListener('click', async () => {
+  const keywords = await promptKeywords(`${selectedIds.size} image(s)`);
+  if (!keywords || keywords.length === 0) return;
+  runEditAction(() => postEdit('/edit/keywords', { ids: [...selectedIds], add: keywords }));
 });
 
 document.querySelector('#selection-remove-keyword').addEventListener('click', () => {
@@ -377,10 +485,10 @@ viewerEl.addEventListener('click', (event) => {
   if (event.target === viewerEl) closeViewer();
 });
 
-document.querySelector('#viewer-add-keyword').addEventListener('click', () => {
-  const keyword = promptKeyword('Add keyword', 'this image');
-  if (!keyword) return;
-  runEditAction(() => postEdit('/edit/keywords', { ids: [currentViewerEntityId], add: [keyword] }));
+document.querySelector('#viewer-add-keyword').addEventListener('click', async () => {
+  const keywords = await promptKeywords('this image');
+  if (!keywords || keywords.length === 0) return;
+  runEditAction(() => postEdit('/edit/keywords', { ids: [currentViewerEntityId], add: keywords }));
 });
 
 document.querySelector('#viewer-set-rating').addEventListener('click', () => {
