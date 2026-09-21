@@ -60,8 +60,10 @@ At scan time, the application also builds a SQLite index, `rocphotos-index.sqlit
 The schema is a minimal subset of the [AROCAPI specification](https://github.com/crate-works/ro-crate-api), drawn from the [PCDM](http://pcdm.org/models) vocabulary:
 
 - `ro_crates(id, path, name, created_at, updated_at)` — one row per crate directory (the root and every sub-collection crate).
-- `entities(id, ro_crate_id, entity_type, name, description, member_of, metadata_license_id, content_license_id, access_metadata, access_content)` — one row per crate-as-Collection and one row per image-as-Object.
+- `entities(id, ro_crate_id, entity_type, name, description, member_of, metadata_license_id, content_license_id, access_metadata, access_content, date_created, camera, lens)` — one row per crate-as-Collection and one row per image-as-Object.
 - `files(id, entity_id, filename, media_type, size, relative_path, access_content)` — the actual image bytes backing an Object entity.
+
+`date_created`, `camera`, and `lens` (indexed columns, populated only for image entities) are the current, deliberately small set of faceted-search fields, derived from EXIF at scan time: `camera` combines `Make` and `Model` ("Google Pixel 6a"); `lens` prefers `LensModel`, since it is typically already a full description ("Pixel 6a back camera 4.38mm f/1.73"), falling back to `LensMake` alone otherwise; `date_created` mirrors the image's RO-Crate `dateCreated`. A facet's own currently-selected value never narrows that facet's own counts (only every *other* active filter does), so switching between values of the same facet stays possible. Further facets (subject, people, and so on, once that metadata exists) are expected to follow the same pattern: an indexed column plus a facet-name entry, rather than a more general but heavier entity-attribute table, unless the set of facets grows enough to justify that.
 
 Entity types follow PCDM's aggregation model: the root and every sub-collection crate are `http://pcdm.org/models#Collection`; every image is a `http://pcdm.org/models#Object` whose `member_of` points to the `id` of the Collection entity for the crate directory it belongs to. Entity `id` values reuse the same collection-relative path convention already used elsewhere (for example `2025/03/10/` for a sub-collection crate, `2025/03/10/photo.jpg` for an image, `./` for the root), so they are unique across the whole index without needing a separately minted URI scheme.
 
@@ -69,9 +71,17 @@ Entity types follow PCDM's aggregation model: the root and every sub-collection 
 
 AROCAPI requires a `metadataLicenseId`/`contentLicenseId` and access flags on every entity; since this application has no licensing or access-control model yet, a fixed placeholder license id is used and access is always recorded as open, pending any future multi-user or publishing use case.
 
-The index is populated via Node's built-in `node:sqlite` module (no native dependency) from the command line; a browser-side equivalent (backed by an in-memory WASM SQLite build, loaded from and saved back to the same physical file via the File System Access API) is planned but not yet implemented, so the index is currently a CLI/desktop-mode-only feature. Serving AROCAPI's read endpoints (`/entities`, `/entity/{id}`, `/files`, `/ro-crates`, etc.) over this index — via a local HTTP server for the CLI/desktop mode, and via a Service Worker intercepting same-origin `fetch` calls for the browser-tab mode — is planned but not yet implemented.
+The index is populated via Node's built-in `node:sqlite` module (no native dependency) from the command line; a browser-side equivalent (backed by an in-memory WASM SQLite build, loaded from and saved back to the same physical file via the File System Access API) is planned but not yet implemented, so building the index is currently a CLI/desktop-mode-only operation.
 
-A companion command, `rocphotos export-excel <directory>`, dumps the index to a three-sheet `.xlsx` workbook (RO-Crates, Entities, Files), for manual review without any SQL knowledge required.
+A companion command, `rocphotos export-excel <directory>`, dumps the index to a three-sheet `.xlsx` workbook (RO-Crates, Entities, Files), for manual review without any SQL knowledge required. A further `--include-entity-crates` option adds a fourth sheet with each entity's full, resolved RO-Crate JSON-LD document (its own "mini crate", per AROCAPI — the same document `GET /entity/{id}/metadata` below returns), including EXIF detail that has no column of its own in the Entities sheet; this makes the workbook much larger and is meant for debugging, not routine review.
+
+#### AROCAPI Endpoints and the Web View
+
+A read-only AROCAPI request handler serves the index: `GET /capabilities`, `GET /entities` (filterable by `entityType`, `memberOf`, and the facet fields, as query parameters), `GET /entity/{id}`, `GET /entity/{id}/metadata` (an entity's full, resolved JSON-LD document, as above), `GET /files`, `GET /file/{id}` (the actual image bytes), `GET /ro-crates`, `GET /ro-crate/{id}` (with its materialised entity ids), `GET /ro-crate/{id}/metadata` (that crate's `ro-crate-metadata.json`, served verbatim), and `POST /search` (filters plus a list of requested facets, returning matching entities and, for each requested facet, its value/count breakdown). An id that itself contains `/` (nearly every entity and file id does) is passed as a single, percent-encoded path segment. There is no write/deposit support: every crate is still created and updated only by scanning, never through this API.
+
+A companion `GET /entity/{id}/thumbnail` route, not part of AROCAPI itself, serves an entity's thumbnail bytes (resolved from its crate data, the same way `/entity/{id}/metadata` is), so the web view below can load a small preview per image rather than the full-size original.
+
+This handler is written as a pure function of a SQLite driver and a filesystem adapter, with no HTTP or browser dependencies of its own, so the same handler can be reused by more than one transport. Today, `rocphotos serve <directory>` (desktop mode; see Section 4.1) hosts it over plain `node:http`, bound to `127.0.0.1` only, under `/api/*`, alongside a small static web view (`webview/`) that queries `/api/search` to browse and facet-filter the collection by camera, lens, and year, showing thumbnails and a full-screen viewer for the original image. Hosting the same handler from inside the browser-tab mode, via a Service Worker intercepting same-origin `fetch` calls so the same web view works there without any server process, is planned but not yet implemented — that mode's browser-side SQLite driver (mentioned above) would need to exist first.
 
 ### 3.3 Thumbnails
 
@@ -98,8 +108,9 @@ Each source photo's `ImageObject` entity is linked to its corresponding thumbnai
 
 A future release will have:
 
-- Serving AROCAPI's read endpoints over the SQLite index (see Section 3.2), both from a local server (CLI/desktop mode) and from a Service Worker inside the browser-tab mode.
-- Person entities in the index and in each crate, extracted from identified face regions in image metadata; once that is working, further constructs such as events (weddings, festivals, parties) and arbitrary contextual descriptions around the collection.
+- Serving the AROCAPI web view and its endpoints from inside the browser-tab mode too (a Service Worker plus a browser-side SQLite driver), so the same web view works there without a server process. The CLI/desktop mode already has this (Section 3.2).
+- `POST /search`'s write-side counterpart (deposits) is deliberately out of scope: crates are, and should stay, created and updated only by scanning.
+- Person entities in the index and in each crate, extracted from identified face regions in image metadata; once that is working, further constructs such as events (weddings, festivals, parties) and arbitrary contextual descriptions around the collection. These would extend the facet set the same way camera/lens/date did.
 - Metadata editing, with options to write back to images.
 - Face and possibly subject recognition, using open interoperability conventions for writing face regions into images and/or the file system.
 - An RO-Crate MASP ("Machine Actionable Schemas and Profiles", as used in [collection2crate](https://github.com/Language-Research-Technology/collection2crate)) for this photo collection structure, to be authored once a representative set of example crates has been produced by the application.
@@ -110,9 +121,9 @@ A future release will have:
 
 The application is a single-page application (SPA) that executes in three modes:
 
-1. Entirely within the Google Chrome browser: no server-side component, with file access via the File System Access API. All processing, including file access, metadata extraction, and RO-Crate manifest generation, is performed client-side.
-2. As a long-running local process, started from the command line and left running, that serves the same SPA plus the AROCAPI HTTP endpoints (see Section 3.2) over `127.0.0.1` only, opened in a normal Chrome tab. This mode shares its implementation with the command-line tools (mode 3) rather than being a separately packaged native application.
-3. As a set of command-line tools (`rocphotos scan`, `rocphotos export-excel`, and, in future, `rocphotos serve`) for scanning directories, building the SQLite index, and exporting it for review, with full, unrestricted filesystem access via Node.js.
+1. Entirely within the Google Chrome browser: no server-side component, with file access via the File System Access API. All processing, including file access, metadata extraction, and RO-Crate manifest generation, is performed client-side. This mode covers scanning and building the collection; browsing it by the AROCAPI web view described in Section 3.2 is not yet available here (that needs the browser-side Service Worker/SQLite driver noted there).
+2. As a long-running local process, started from the command line and left running, that serves the AROCAPI web view (Section 3.2) plus its HTTP endpoints, over `127.0.0.1` only, opened in a normal Chrome tab. This is a second, separate frontend from mode 1's scanning SPA, sharing the same underlying index and crates. This mode shares its implementation with the command-line tools (mode 3) rather than being a separately packaged native application.
+3. As a set of command-line tools (`rocphotos scan`, `rocphotos export-excel`, `rocphotos serve`) for scanning directories, building the SQLite index, exporting it for review, and serving it (mode 2), with full, unrestricted filesystem access via Node.js.
 
 ### 4.2 File System Access
 

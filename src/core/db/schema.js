@@ -17,7 +17,10 @@ CREATE TABLE IF NOT EXISTS entities (
   metadata_license_id TEXT,
   content_license_id TEXT,
   access_metadata INTEGER NOT NULL DEFAULT 1,
-  access_content INTEGER NOT NULL DEFAULT 1
+  access_content INTEGER NOT NULL DEFAULT 1,
+  date_created TEXT,
+  camera TEXT,
+  lens TEXT
 );
 
 CREATE TABLE IF NOT EXISTS files (
@@ -32,5 +35,8 @@ CREATE TABLE IF NOT EXISTS files (
 
 CREATE INDEX IF NOT EXISTS idx_entities_ro_crate_id ON entities(ro_crate_id);
 CREATE INDEX IF NOT EXISTS idx_entities_member_of ON entities(member_of);
+CREATE INDEX IF NOT EXISTS idx_entities_camera ON entities(camera);
+CREATE INDEX IF NOT EXISTS idx_entities_lens ON entities(lens);
+CREATE INDEX IF NOT EXISTS idx_entities_date_created ON entities(date_created);
 CREATE INDEX IF NOT EXISTS idx_files_entity_id ON files(entity_id);
 `;

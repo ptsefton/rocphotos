@@ -111,6 +111,26 @@ export function upsertRoCrate(driver, { id, path, name }) {
 }
 
 /**
+ * Derives the facet column values (see schema.js: entities.camera,
+ * entities.lens, entities.date_created) from a record as returned by
+ * addImageEntity or readImageRecord, so both the fresh-processing and
+ * the unchanged-file-reuse path in a scan populate them the same way.
+ * `camera` combines Make and Model ("Google Pixel 6a"); `lens` prefers
+ * LensModel, since it is typically already a full description (e.g.
+ * "Pixel 6a back camera 4.38mm f/1.73"), falling back to LensMake alone
+ * if that is all that is available.
+ *
+ * @param {{dateCreated: string|null, exifEntries: Array<{name: string, value: string}>}} record
+ * @returns {{dateCreated: string|null, camera: string|null, lens: string|null}}
+ */
+export function facetValuesFromRecord(record) {
+  const exifByName = Object.fromEntries((record.exifEntries ?? []).map((entry) => [entry.name, entry.value]));
+  const camera = [exifByName.Make, exifByName.Model].filter(Boolean).join(' ') || null;
+  const lens = exifByName.LensModel || exifByName.LensMake || null;
+  return { dateCreated: record.dateCreated ?? null, camera, lens };
+}
+
+/**
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
  * @param {object} entity
  * @param {string} entity.id
@@ -123,6 +143,9 @@ export function upsertRoCrate(driver, { id, path, name }) {
  * @param {string} [entity.contentLicenseId]
  * @param {boolean} [entity.accessMetadata]
  * @param {boolean} [entity.accessContent]
+ * @param {string|null} [entity.dateCreated] - see facetValuesFromRecord
+ * @param {string|null} [entity.camera]
+ * @param {string|null} [entity.lens]
  */
 export function upsertEntity(driver, {
   id,
@@ -135,12 +158,16 @@ export function upsertEntity(driver, {
   contentLicenseId = DEFAULT_LICENSE_ID,
   accessMetadata = true,
   accessContent = true,
+  dateCreated = null,
+  camera = null,
+  lens = null,
 }) {
   driver.run(
     `INSERT INTO entities (
        id, ro_crate_id, entity_type, name, description, member_of,
-       metadata_license_id, content_license_id, access_metadata, access_content
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       metadata_license_id, content_license_id, access_metadata, access_content,
+       date_created, camera, lens
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        ro_crate_id = excluded.ro_crate_id,
        entity_type = excluded.entity_type,
@@ -150,10 +177,14 @@ export function upsertEntity(driver, {
        metadata_license_id = excluded.metadata_license_id,
        content_license_id = excluded.content_license_id,
        access_metadata = excluded.access_metadata,
-       access_content = excluded.access_content`,
+       access_content = excluded.access_content,
+       date_created = excluded.date_created,
+       camera = excluded.camera,
+       lens = excluded.lens`,
     [
       id, roCrateId, entityType, name, description, memberOf,
       metadataLicenseId, contentLicenseId, accessMetadata ? 1 : 0, accessContent ? 1 : 0,
+      dateCreated, camera, lens,
     ],
   );
 }
@@ -194,7 +225,155 @@ export function listEntities(driver) {
   return driver.all('SELECT * FROM entities ORDER BY id');
 }
 
+/**
+ * Every entity whose metadata is recorded in a given RO-Crate (i.e. that
+ * crate's own Collection entity, plus every image it directly contains).
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} roCrateId
+ */
+export function listEntitiesForRoCrate(driver, roCrateId) {
+  return driver.all('SELECT * FROM entities WHERE ro_crate_id = ? ORDER BY id', [roCrateId]);
+}
+
+/** @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver */
+export function getRoCrateById(driver, id) {
+  return driver.get('SELECT * FROM ro_crates WHERE id = ?', [id]);
+}
+
 /** @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver */
 export function listFiles(driver) {
   return driver.all('SELECT * FROM files ORDER BY id');
+}
+
+/**
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} id
+ */
+export function getEntityById(driver, id) {
+  return driver.get('SELECT * FROM entities WHERE id = ?', [id]);
+}
+
+/**
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} id
+ */
+export function getFileById(driver, id) {
+  return driver.get('SELECT * FROM files WHERE id = ?', [id]);
+}
+
+/**
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} entityId
+ */
+export function listFilesForEntity(driver, entityId) {
+  return driver.all('SELECT * FROM files WHERE entity_id = ? ORDER BY id', [entityId]);
+}
+
+// The facet dimensions supported for search, per the request scope: camera
+// and lens (each a plain column) and year (derived from date_created).
+// Kept as an explicit whitelist — never build this SQL fragment from a
+// caller-supplied field name directly — since it is interpolated into a
+// GROUP BY/SELECT clause rather than bound as a parameter.
+const FACET_COLUMNS = {
+  camera: 'camera',
+  lens: 'lens',
+  year: "substr(date_created, 1, 4)",
+};
+
+/**
+ * Builds a `WHERE ... ` fragment (or '') and its bound parameters from a
+ * search filter set. `excludeFacet`, when given, omits that one facet's
+ * own filter from the clause — used when counting values for that facet
+ * itself, so its counts reflect every other active filter without being
+ * collapsed onto whichever single value is already selected for it.
+ *
+ * @param {object} filters
+ * @param {string} [filters.entityType]
+ * @param {string} [filters.memberOf]
+ * @param {string} [filters.camera]
+ * @param {string} [filters.lens]
+ * @param {string} [filters.year] - a 4-digit year
+ * @param {string} [excludeFacet] - 'camera' | 'lens' | 'year'
+ */
+function buildSearchWhere(filters, excludeFacet = null) {
+  const clauses = [];
+  const params = [];
+
+  if (filters.entityType) {
+    clauses.push('entity_type = ?');
+    params.push(filters.entityType);
+  }
+  if (filters.memberOf) {
+    clauses.push('member_of = ?');
+    params.push(filters.memberOf);
+  }
+  if (filters.camera && excludeFacet !== 'camera') {
+    clauses.push('camera = ?');
+    params.push(filters.camera);
+  }
+  if (filters.lens && excludeFacet !== 'lens') {
+    clauses.push('lens = ?');
+    params.push(filters.lens);
+  }
+  if (filters.year && excludeFacet !== 'year') {
+    clauses.push(`${FACET_COLUMNS.year} = ?`);
+    params.push(filters.year);
+  }
+
+  return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', params };
+}
+
+/**
+ * Entities matching a filter set, most recently dated first.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {object} [filters] - see buildSearchWhere
+ * @param {{limit?: number, offset?: number}} [page]
+ */
+export function searchEntities(driver, filters = {}, { limit = 100, offset = 0 } = {}) {
+  const { where, params } = buildSearchWhere(filters);
+  return driver.all(
+    `SELECT * FROM entities ${where} ORDER BY date_created DESC, id ASC LIMIT ? OFFSET ?`,
+    [...params, limit, offset],
+  );
+}
+
+/**
+ * The total number of entities matching a filter set (ignoring paging).
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {object} [filters] - see buildSearchWhere
+ */
+export function countSearchResults(driver, filters = {}) {
+  const { where, params } = buildSearchWhere(filters);
+  return driver.get(`SELECT COUNT(*) as count FROM entities ${where}`, params).count;
+}
+
+/**
+ * Value/count pairs for one facet dimension ('camera', 'lens', or
+ * 'year'), most common first, computed against every *other* active
+ * filter but not the facet's own (see buildSearchWhere), so selecting a
+ * value for a different facet narrows these counts, but a facet never
+ * narrows its own counts down to just its currently selected value.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {'camera'|'lens'|'year'} facetName
+ * @param {object} [filters] - see buildSearchWhere
+ * @returns {Array<{value: string, count: number}>}
+ */
+export function facetCounts(driver, facetName, filters = {}) {
+  const column = FACET_COLUMNS[facetName];
+  if (!column) {
+    throw new Error(`Unknown facet "${facetName}"`);
+  }
+
+  const { where, params } = buildSearchWhere(filters, facetName);
+  const notNullClause = `${column} IS NOT NULL`;
+  const fullWhere = where ? `${where} AND ${notNullClause}` : `WHERE ${notNullClause}`;
+
+  return driver.all(
+    `SELECT ${column} as value, COUNT(*) as count FROM entities ${fullWhere} GROUP BY ${column} ORDER BY count DESC, value ASC`,
+    params,
+  );
 }

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import readline from 'node:readline/promises';
+import { fileURLToPath } from 'node:url';
 import ExcelJS from 'exceljs';
 import { createNodeFsAdapter } from '../src/adapters/nodeFs.js';
 import { generateThumbnail } from '../src/adapters/nodeThumbnail.js';
@@ -9,6 +11,7 @@ import { openNodeSqlite } from '../src/adapters/nodeSqlite.js';
 import { walkCollection, detectLooseRootImages } from '../src/core/walker.js';
 import { extractExif } from '../src/core/exif.js';
 import { mediaTypeFor } from '../src/core/imageTypes.js';
+import { createHandler } from '../src/core/arocapi/handler.js';
 import {
   CRATE_FILE_NAME,
   loadOrCreateCrate,
@@ -26,6 +29,7 @@ import {
   earliestDate,
 } from '../src/core/htmlPreview.js';
 import { thumbnailPathFor } from '../src/core/thumbnails.js';
+import { loadEntityFromCrate } from '../src/core/entityCrate.js';
 import {
   loadExcludedDirectoryPatterns,
   loadExcludedFilePatterns,
@@ -37,9 +41,8 @@ import {
   ENTITY_TYPE_COLLECTION,
   ENTITY_TYPE_IMAGE,
   crateEntityId,
-  crateDirPathFromEntityId,
   imageEntityId,
-  crateRelativeEntityId,
+  facetValuesFromRecord,
   ensureSchema,
   upsertRoCrate,
   upsertEntity,
@@ -293,6 +296,7 @@ async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false } = {}
         name: record.name,
         description: record.description,
         memberOf: crateEntityId(crateDirPath),
+        ...facetValuesFromRecord(record),
       });
       upsertFile(db, {
         id: entityId,
@@ -333,45 +337,6 @@ async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false } = {}
   for (const { path: crateDirPath, images } of crateDirs) {
     console.log(`  ${crateDirPath || '(root)'}: ${images.length} image(s)`);
   }
-}
-
-// Resolves an entity's own properties one level deep (e.g. each element
-// of exifData or thumbnail becomes the full referenced entity, not a bare
-// {'@id': ...} stub) into a plain, JSON.stringify-able object. Needed
-// because an entity's own JSON.stringify/toJSON deliberately returns the
-// *unresolved* form — the correct behaviour for what gets written to
-// disk — which link: true's resolution does not apply to; only direct
-// property access on the entity does.
-function resolveEntityShallow(entity) {
-  const plain = {};
-  for (const key of Object.keys(entity)) {
-    plain[key] = entity[key];
-  }
-  return plain;
-}
-
-// Per AROCAPI, an entity's full metadata is its own "mini crate" — the
-// GET /entity/{id}/metadata endpoint returns the whole JSON-LD document
-// for that entity, not just the handful of flat columns mirrored into the
-// entities table (which has no room for, say, every EXIF PropertyValue).
-// This loads that full entity object straight out of the crate file it
-// actually lives in, resolving nested references (thumbnail, exifData)
-// rather than leaving them as bare {'@id': ...} stubs, caching each crate
-// file so it is only read and parsed once no matter how many of its
-// entities are looked up.
-async function loadEntityCrateJson(fsAdapter, crateCache, roCrateId, entityId) {
-  let crate = crateCache.get(roCrateId);
-  if (!crate) {
-    const crateDirPath = crateDirPathFromEntityId(roCrateId);
-    const cratePath = joinPath(crateDirPath, CRATE_FILE_NAME);
-    const json = (await fsAdapter.exists(cratePath))
-      ? Buffer.from(await fsAdapter.readFile(cratePath)).toString('utf8')
-      : null;
-    crate = loadOrCreateCrate(json);
-    crateCache.set(roCrateId, crate);
-  }
-  const entity = crate.getEntity(crateRelativeEntityId(roCrateId, entityId));
-  return entity ? JSON.stringify(resolveEntityShallow(entity)) : null;
 }
 
 async function exportExcel(rootDir, outputPath, { includeEntityCrates = false } = {}) {
@@ -436,13 +401,98 @@ async function exportExcel(rootDir, outputPath, { includeEntityCrates = false } 
       { header: 'crate_json', key: 'crate_json', width: 120 },
     ];
     for (const entity of entities) {
-      const crateJson = await loadEntityCrateJson(fsAdapter, crateCache, entity.ro_crate_id, entity.id);
-      entityCratesSheet.addRow({ id: entity.id, ro_crate_id: entity.ro_crate_id, crate_json: crateJson });
+      const resolved = await loadEntityFromCrate(fsAdapter, crateCache, entity.ro_crate_id, entity.id);
+      entityCratesSheet.addRow({ id: entity.id, ro_crate_id: entity.ro_crate_id, crate_json: resolved ? JSON.stringify(resolved) : null });
     }
   }
 
   await workbook.xlsx.writeFile(outputPath);
   console.log(`Wrote ${roCrates.length} RO-Crate(s), ${entities.length} entities, ${files.length} files to ${outputPath}`);
+}
+
+const WEBVIEW_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'webview');
+const STATIC_MEDIA_TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk) => { data += chunk; });
+    req.on('end', () => {
+      if (!data) {
+        resolve(null);
+        return;
+      }
+      try {
+        resolve(JSON.parse(data));
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function serveStaticFile(res, pathname) {
+  const relPath = pathname === '/' ? 'index.html' : pathname.slice(1);
+  const filePath = path.normalize(path.join(WEBVIEW_DIR, relPath));
+  if (!filePath.startsWith(WEBVIEW_DIR)) {
+    res.writeHead(403);
+    res.end();
+    return;
+  }
+  try {
+    const bytes = await fs.promises.readFile(filePath);
+    res.writeHead(200, { 'Content-Type': STATIC_MEDIA_TYPES[path.extname(filePath)] || 'application/octet-stream' });
+    res.end(bytes);
+  } catch {
+    res.writeHead(404);
+    res.end('Not found');
+  }
+}
+
+// Serves the AROCAPI handler under /api/*, and the static web view (see
+// webview/) everywhere else, over plain node:http bound to 127.0.0.1
+// only — a single-user, local convenience server, never reachable from
+// another machine. This is "desktop mode": the same SPA/web view as the
+// browser-tab mode, just kept running by a background process instead of
+// a one-off dev-server session, opened in a normal Chrome tab.
+async function serve(rootDir, { port = 8420 } = {}) {
+  const dbPath = path.join(rootDir, INDEX_FILE_NAME);
+  if (!fs.existsSync(dbPath)) {
+    throw new Error(`No index found at ${dbPath} — run 'rocphotos scan ${rootDir}' first.`);
+  }
+
+  const fsAdapter = createNodeFsAdapter(rootDir);
+  const store = openNodeSqlite(dbPath);
+  const handleRequest = createHandler({ store, fsAdapter });
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, 'http://127.0.0.1');
+      if (url.pathname.startsWith('/api/') || url.pathname === '/api') {
+        const query = Object.fromEntries(url.searchParams);
+        const body = req.method === 'POST' ? await readJsonBody(req) : null;
+        const apiPath = url.pathname.slice(4) || '/';
+        const result = await handleRequest({ method: req.method, path: apiPath, query, body });
+        res.writeHead(result.status, result.headers);
+        res.end(result.body instanceof Uint8Array ? Buffer.from(result.body) : result.body);
+      } else if (req.method === 'GET') {
+        await serveStaticFile(res, url.pathname);
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+  });
+
+  server.listen(port, '127.0.0.1', () => {
+    console.log(`Serving ${rootDir}`);
+    console.log(`  Web view: http://127.0.0.1:${port}/`);
+    console.log(`  API:      http://127.0.0.1:${port}/api/...`);
+  });
 }
 
 function fail(err) {
@@ -453,6 +503,10 @@ function fail(err) {
 function usage() {
   console.error('Usage: rocphotos scan <directory> [--fresh] [--loose-root-images=move|ignore] [--loose-root-images-folder=<name>]');
   console.error('       rocphotos export-excel <directory> [output.xlsx] [--include-entity-crates]');
+  console.error('       rocphotos serve <directory> [--port=8420]');
+  console.error('');
+  console.error('serve requires the directory to already have been scanned (it reads the');
+  console.error('SQLite index, it does not build it) and binds to 127.0.0.1 only.');
   console.error('');
   console.error('--fresh deletes the SQLite index and the root crate\'s own metadata/preview');
   console.error('before scanning, so stale references to a sub-collection that has since been');
@@ -511,6 +565,9 @@ if (command === 'scan' && targetDir) {
   const resolvedDir = path.resolve(targetDir);
   const outputPath = path.resolve(extraArg || path.join(resolvedDir, 'rocphotos-index.xlsx'));
   exportExcel(resolvedDir, outputPath, { includeEntityCrates: Boolean(flags['include-entity-crates']) }).catch(fail);
+} else if (command === 'serve' && targetDir) {
+  const port = flags.port ? Number(flags.port) : 8420;
+  serve(path.resolve(targetDir), { port }).catch(fail);
 } else {
   usage();
 }
