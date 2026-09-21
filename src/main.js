@@ -22,6 +22,30 @@ import { thumbnailPathFor } from './core/thumbnails.js';
 import { loadExcludedDirectoryPatterns, loadExcludedFilePatterns, compileNamePatternMatcher } from './core/config.js';
 import { buildOverview, saveOverview, loadOverview } from './core/overview.js';
 import { joinPath } from './core/pathUtils.js';
+import { mediaTypeFor } from './core/imageTypes.js';
+import { openBrowserSqlite } from './adapters/browserSqlite.js';
+import {
+  INDEX_FILE_NAME,
+  ENTITY_TYPE_COLLECTION,
+  ENTITY_TYPE_IMAGE,
+  ENTITY_TYPE_PERSON,
+  ENTITY_TYPE_PET,
+  crateEntityId,
+  imageEntityId,
+  personEntityId,
+  petEntityId,
+  facetValuesFromRecord,
+  ensureSchema,
+  upsertRoCrate,
+  upsertEntity,
+  setEntityFacetValues,
+  upsertFile,
+} from './core/db/store.js';
+// Vite resolves this to the built asset's final URL; sql.js's browser
+// build needs to be told where to find its .wasm file explicitly rather
+// than guessing a path relative to itself, which does not survive
+// bundling.
+import sqlWasmUrl from 'sql.js/dist/sql-wasm-browser.wasm?url';
 
 const ALWAYS_RESCAN_KEY = 'rocphotos.alwaysRescan';
 
@@ -35,8 +59,47 @@ const selectAllButton = document.querySelector('#select-all');
 const selectNoneButton = document.querySelector('#select-none');
 const refreshOverviewButton = document.querySelector('#refresh-overview');
 const processSelectedButton = document.querySelector('#process-selected');
+const browseLinkWrapEl = document.querySelector('#browse-link-wrap');
 
 let fsAdapter = null;
+
+// src/sw.js is a Service Worker (see there for what it does): it lands at
+// a fixed /sw.js in the production build, but Vite's dev server serves
+// unbundled source at its real path instead.
+const SERVICE_WORKER_URL = import.meta.env.DEV ? '/src/sw.js' : '/sw.js';
+
+async function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    // scope must be explicit: a Service Worker's default scope is its own
+    // script's directory, which in dev is /src/ (the script is served at
+    // /src/sw.js there) — that would leave /webview/, where the requests
+    // this worker exists to intercept actually come from, uncontrolled.
+    await navigator.serviceWorker.register(SERVICE_WORKER_URL, { type: 'module', scope: '/' });
+    await navigator.serviceWorker.ready;
+  } catch (err) {
+    console.error('Service Worker registration failed; the /webview browsing view will not work.', err);
+  }
+}
+
+// On the very first visit (no Service Worker installed yet), this page
+// load is not yet "controlled" even once registration/activation
+// finishes — clients.claim() in sw.js's activate handler takes control
+// of it without needing a reload, but there is a short window where
+// .controller is still null while that happens. Waiting once for
+// 'controllerchange' covers that window without a fixed delay.
+async function notifyServiceWorker(message) {
+  if (!('serviceWorker' in navigator)) return;
+  if (!navigator.serviceWorker.controller) {
+    await new Promise((resolve) => {
+      navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true });
+      setTimeout(resolve, 3000);
+    });
+  }
+  navigator.serviceWorker.controller?.postMessage(message);
+}
+
+registerServiceWorker();
 
 alwaysRescanCheckbox.checked = localStorage.getItem(ALWAYS_RESCAN_KEY) === 'true';
 alwaysRescanCheckbox.addEventListener('change', () => {
@@ -74,6 +137,13 @@ function excludeMatchers() {
  *
  * @param {Set<string>|null} selectedPaths - null means "process everything" (used by "Always process everything on open")
  */
+async function openIndex() {
+  const bytes = (await fsAdapter.exists(INDEX_FILE_NAME)) ? await fsAdapter.readFile(INDEX_FILE_NAME) : null;
+  const { driver, export: exportIndex } = await openBrowserSqlite(bytes, { locateFile: () => sqlWasmUrl });
+  ensureSchema(driver);
+  return { driver, exportIndex };
+}
+
 async function scanAndBuild(selectedPaths) {
   const [isExcludedDir, isExcludedFile] = await excludeMatchers();
   const { crateDirs } = await walkCollection(fsAdapter, isExcludedDir, isExcludedFile);
@@ -81,6 +151,16 @@ async function scanAndBuild(selectedPaths) {
   const rootCrateJson = await readExistingCrateJson('');
   const rootCrate = loadOrCreateCrate(rootCrateJson);
   setDatasetName(rootCrate, 'Photo Collection');
+
+  // The index is a materialised view of what scanning writes to the
+  // crate JSON, same as the CLI's (see bin/rocphotos.js) — rows are only
+  // ever added/updated here for a sub-collection actually processed this
+  // run (shouldProcess below); one already scanned but left unselected
+  // keeps whatever rows it already has from whenever it was last
+  // processed (by this app or by the CLI), rather than being re-touched.
+  const { driver: indexDb, exportIndex } = await openIndex();
+  upsertRoCrate(indexDb, { id: crateEntityId(''), path: '.', name: 'Photo Collection' });
+  upsertEntity(indexDb, { id: crateEntityId(''), roCrateId: crateEntityId(''), entityType: ENTITY_TYPE_COLLECTION, name: 'Photo Collection' });
 
   const items = [];
   const subCrateSummaries = [];
@@ -105,10 +185,22 @@ async function scanAndBuild(selectedPaths) {
     const crateName = crateDirPath || 'Photo Collection';
     setDatasetName(subCrate, crateName);
 
+    if (!isRoot && shouldProcess) {
+      upsertRoCrate(indexDb, { id: crateEntityId(crateDirPath), path: crateDirPath, name: crateName });
+      upsertEntity(indexDb, {
+        id: crateEntityId(crateDirPath),
+        roCrateId: crateEntityId(crateDirPath),
+        entityType: ENTITY_TYPE_COLLECTION,
+        name: crateName,
+        memberOf: crateEntityId(''),
+      });
+    }
+
     const imageRecords = [];
     for (const imagePath of images) {
       let record;
       let thumbnailBytes = null;
+      let size = null;
 
       if (!shouldProcess) {
         // Already scanned, but not selected this run: reuse its existing
@@ -118,7 +210,9 @@ async function scanAndBuild(selectedPaths) {
         if (!record) continue;
       } else {
         const fullImagePath = joinPath(crateDirPath, imagePath);
-        const { modifiedTime } = await fsAdapter.stat(fullImagePath);
+        const stat = await fsAdapter.stat(fullImagePath);
+        const modifiedTime = stat.modifiedTime;
+        size = stat.size;
         const recordedTime = recordedModifiedTime(subCrate, imagePath);
 
         if (recordedTime !== null && modifiedTime <= recordedTime) {
@@ -148,6 +242,38 @@ async function scanAndBuild(selectedPaths) {
             sourceModifiedAt: modifiedTime,
           });
         }
+
+        const entityId = imageEntityId(crateDirPath, imagePath);
+        upsertEntity(indexDb, {
+          id: entityId,
+          roCrateId: crateEntityId(crateDirPath),
+          entityType: ENTITY_TYPE_IMAGE,
+          name: record.name,
+          description: record.description,
+          memberOf: crateEntityId(crateDirPath),
+          dateCreated: record.dateCreated,
+        });
+        const { camera, lens } = facetValuesFromRecord(record);
+        setEntityFacetValues(indexDb, entityId, 'camera', camera ? [camera] : []);
+        setEntityFacetValues(indexDb, entityId, 'lens', lens ? [lens] : []);
+        setEntityFacetValues(indexDb, entityId, 'keyword', record.keywords);
+        setEntityFacetValues(indexDb, entityId, 'rating', record.rating !== null ? [String(record.rating)] : []);
+        setEntityFacetValues(indexDb, entityId, 'people', record.people);
+        setEntityFacetValues(indexDb, entityId, 'pets', record.pets);
+        for (const name of record.people) {
+          upsertEntity(indexDb, { id: personEntityId(name), roCrateId: crateEntityId(crateDirPath), entityType: ENTITY_TYPE_PERSON, name });
+        }
+        for (const name of record.pets) {
+          upsertEntity(indexDb, { id: petEntityId(name), roCrateId: crateEntityId(crateDirPath), entityType: ENTITY_TYPE_PET, name });
+        }
+        upsertFile(indexDb, {
+          id: entityId,
+          entityId,
+          filename: record.name,
+          mediaType: mediaTypeFor(record.name),
+          size,
+          relativePath: entityId,
+        });
       }
 
       imageRecords.push(record);
@@ -176,6 +302,9 @@ async function scanAndBuild(selectedPaths) {
     ? renderSubCratePreview({ name: 'Photo Collection', images: rootImageRecords })
     : renderRootCratePreview({ name: 'Photo Collection', subCrates: subCrateSummaries });
   await fsAdapter.writeFile(PREVIEW_FILE_NAME, rootHtml);
+
+  await fsAdapter.writeFile(INDEX_FILE_NAME, exportIndex());
+  indexDb.close();
 
   return items;
 }
@@ -278,10 +407,17 @@ async function showOverview({ forceRefresh = false } = {}) {
 async function openDirectory() {
   const handle = await window.showDirectoryPicker();
   fsAdapter = createBrowserFsAdapter(handle);
+  // The Service Worker cannot call showDirectoryPicker itself (no user
+  // gesture in that context), so the handle this page just obtained is
+  // handed to it directly — FileSystemDirectoryHandle is structured-clone
+  // safe, including across postMessage to a Service Worker.
+  await notifyServiceWorker({ type: 'set-root', handle });
+  browseLinkWrapEl.hidden = false;
 
   if (alwaysRescanCheckbox.checked) {
     statusEl.textContent = 'Processing everything...';
     const items = await scanAndBuild(null);
+    await notifyServiceWorker({ type: 'index-updated' });
     await renderItems(items);
     await showOverview({ forceRefresh: true });
     statusEl.textContent = `${items.length} image(s) across ${new Set(items.map((i) => i.crateDir)).size} crate(s).`;
@@ -301,6 +437,7 @@ async function processSelected() {
 
   try {
     const items = await scanAndBuild(selectedPaths);
+    await notifyServiceWorker({ type: 'index-updated' });
     await renderItems(items);
     await showOverview({ forceRefresh: true });
     statusEl.textContent = `${items.length} image(s) across ${new Set(items.map((i) => i.crateDir)).size} crate(s).`;
