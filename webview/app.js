@@ -165,8 +165,11 @@ async function openViewer(entity) {
       else if (about['@type'] === 'Pet') addViewerTag('pets', about.name);
     }
 
+    // A pet is tagged the same way as a person (Type: "Pet" rather than
+    // "Face" — MWG has no separate "animal face" region type), so it
+    // belongs in the same overlay.
     currentFaceRegions = (metadata.regions ?? []).filter(
-      (region) => region.regionType === 'Face' && region.xPosition !== undefined,
+      (region) => (region.regionType === 'Face' || region.regionType === 'Pet') && region.xPosition !== undefined,
     );
     viewerFacesToggleEl.disabled = currentFaceRegions.length === 0;
   } catch {
