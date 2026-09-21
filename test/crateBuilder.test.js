@@ -7,6 +7,9 @@ import {
   addImageEntity,
   recordedModifiedTime,
   readImageRecord,
+  setImageKeywords,
+  setImageRating,
+  removeImageEntity,
 } from '../src/core/crateBuilder.js';
 
 describe('setDatasetName', () => {
@@ -389,5 +392,82 @@ describe('addImageEntity people and pets', () => {
     expect(readImageRecord(reloaded, 'photo.jpg').regions).toEqual([
       { name: 'Gail McGlinn', type: 'Face', area: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 } },
     ]);
+  });
+});
+
+describe('setImageKeywords', () => {
+  it('replaces whatever keywords were there, independent of EXIF', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Keywords: ['Bird'] } });
+
+    setImageKeywords(crate, 'photo.jpg', ['Bird', 'Sunset']);
+    expect(readImageRecord(crate, 'photo.jpg').keywords.sort()).toEqual(['Bird', 'Sunset']);
+  });
+
+  it('clears a previously-set keywords property rather than leaving it stale', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Keywords: ['Bird'] } });
+
+    setImageKeywords(crate, 'photo.jpg', []);
+    expect(crate.getEntity('photo.jpg').keywords).toBeUndefined();
+  });
+
+  it('does nothing for an image with no entity yet', () => {
+    const crate = loadOrCreateCrate(null);
+    expect(() => setImageKeywords(crate, 'nonexistent.jpg', ['Bird'])).not.toThrow();
+  });
+});
+
+describe('setImageRating', () => {
+  it('sets a rating independent of EXIF', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg' });
+
+    setImageRating(crate, 'photo.jpg', 4);
+    expect(readImageRecord(crate, 'photo.jpg').rating).toEqual(4);
+  });
+
+  it('clears a previously-set rating rather than leaving it stale', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Rating: 5 } });
+
+    setImageRating(crate, 'photo.jpg', null);
+    expect(crate.getEntity('photo.jpg').rating).toBeUndefined();
+  });
+});
+
+describe('removeImageEntity', () => {
+  it('removes the entity, its hasPart reference, and its own EXIF and region nodes', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, {
+      path: 'photo.jpg',
+      exif: { Make: 'Acme', Regions: { RegionList: { Name: 'Gail McGlinn', Type: 'Face' } } },
+      thumbnailPath: 'thumbnails/photo.jpg.thumb.jpg',
+    });
+
+    removeImageEntity(crate, 'photo.jpg');
+
+    expect(crate.getEntity('photo.jpg')).toBeUndefined();
+    expect(crate.getEntity('photo.jpg#exif-Make')).toBeUndefined();
+    expect(crate.getEntity('photo.jpg#region-0')).toBeUndefined();
+    expect(crate.getEntity('thumbnails/photo.jpg.thumb.jpg')).toBeUndefined();
+    expect(crate.rootDataset.hasPart?.some((ref) => ref['@id'] === 'photo.jpg')).toBeFalsy();
+  });
+
+  it('leaves the Person/Pet entity it depicted alone, since another image may still depict them', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'a.jpg', exif: { Regions: { RegionList: { Name: 'Gail McGlinn', Type: 'Face' } } } });
+    addImageEntity(crate, { path: 'b.jpg', exif: { Regions: { RegionList: { Name: 'Gail McGlinn', Type: 'Face' } } } });
+    const personId = crate.getEntity('a.jpg').about[0]['@id'];
+
+    removeImageEntity(crate, 'a.jpg');
+
+    expect(crate.getEntity(personId)).toBeTruthy();
+    expect(crate.getEntity('b.jpg').about[0]['@id']).toEqual(personId);
+  });
+
+  it('does nothing for an image with no entity yet', () => {
+    const crate = loadOrCreateCrate(null);
+    expect(() => removeImageEntity(crate, 'nonexistent.jpg')).not.toThrow();
   });
 });

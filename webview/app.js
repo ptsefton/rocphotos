@@ -12,6 +12,8 @@ const facetsEl = document.querySelector('#facets');
 const activeFiltersEl = document.querySelector('#active-filters');
 const statusEl = document.querySelector('#status');
 const gridEl = document.querySelector('#grid');
+const selectionBarEl = document.querySelector('#selection-bar');
+const selectionCountEl = document.querySelector('#selection-count');
 const viewerEl = document.querySelector('#viewer');
 const viewerImageEl = document.querySelector('#viewer-image');
 const viewerCaptionEl = document.querySelector('#viewer-caption');
@@ -24,6 +26,19 @@ const viewerFacesToggleEl = document.querySelector('#viewer-faces-toggle');
 // own rendered size changes (window resize, or a new image loading).
 let currentFaceRegions = [];
 
+// The id of whichever entity is currently open in the viewer, for its own
+// quick edit actions (Add keyword / Set rating / Delete there act on just
+// this one image, independent of whatever is selected in the grid).
+let currentViewerEntityId = null;
+
+// Ids of grid tiles the user has checked, for the bulk edit actions in
+// the selection bar. Cleared on every fresh search() — after an edit,
+// the entities it applied to may no longer match the current filters
+// (a deleted image, or one whose new rating no longer matches an active
+// rating filter) or even still be on screen, so carrying the same ids
+// forward into a new result set would be more surprising than useful.
+let selectedIds = new Set();
+
 // Every search implicitly scopes to images: this is a photo browser, not
 // a general entity browser, so sub-collection Dataset entities never show
 // up as tiles in the grid.
@@ -31,6 +46,22 @@ let activeFilters = {};
 
 function entityUrl(base, id) {
   return `${base}/${encodeURIComponent(id)}`;
+}
+
+async function postEdit(path, body) {
+  const response = await fetch(`/api${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    throw new Error(result.error ?? `Request failed: ${response.status}`);
+  }
+  if (result.errors?.length > 0) {
+    throw new Error(result.errors.map((e) => `${e.id}: ${e.message}`).join('; '));
+  }
+  return result;
 }
 
 async function search() {
@@ -49,9 +80,11 @@ async function search() {
       throw new Error(`Search failed: ${response.status}`);
     }
     const result = await response.json();
+    selectedIds = new Set();
     renderFacets(result.facets);
     renderActiveFilters();
     renderGrid(result.entities);
+    renderSelectionBar();
     statusEl.textContent = `${result.total} image${result.total === 1 ? '' : 's'}`;
   } catch (err) {
     statusEl.textContent = `Error: ${err.message}`;
@@ -143,6 +176,7 @@ function addViewerTag(facetName, value) {
 }
 
 async function openViewer(entity) {
+  currentViewerEntityId = entity.id;
   viewerImageEl.src = entityUrl('/api/file', entity.id);
   viewerImageEl.alt = entity.name;
   viewerCaptionEl.textContent = entity.name;
@@ -187,6 +221,7 @@ async function openViewer(entity) {
 function closeViewer() {
   viewerEl.classList.remove('open');
   viewerImageEl.src = '';
+  currentViewerEntityId = null;
 }
 
 function renderFaceOverlay() {
@@ -241,6 +276,20 @@ function renderGrid(entities) {
   for (const entity of entities) {
     const figure = document.createElement('figure');
 
+    const checkboxLabel = document.createElement('label');
+    checkboxLabel.className = 'select-checkbox';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = selectedIds.has(entity.id);
+    checkbox.addEventListener('click', (event) => event.stopPropagation());
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) selectedIds.add(entity.id);
+      else selectedIds.delete(entity.id);
+      renderSelectionBar();
+    });
+    checkboxLabel.appendChild(checkbox);
+    figure.appendChild(checkboxLabel);
+
     const img = document.createElement('img');
     img.src = entityUrl('/api/entity', entity.id) + '/thumbnail';
     img.alt = entity.name;
@@ -262,9 +311,91 @@ function renderGrid(entities) {
   }
 }
 
+function renderSelectionBar() {
+  selectionBarEl.classList.toggle('visible', selectedIds.size > 0);
+  selectionCountEl.textContent = `${selectedIds.size} selected`;
+}
+
+function promptKeyword(actionLabel, description) {
+  const keyword = window.prompt(`${actionLabel} for ${description}:`);
+  return keyword?.trim() || null;
+}
+
+function promptRating(description) {
+  const input = window.prompt(`Set rating (1-5, or leave blank to clear) for ${description}:`);
+  if (input === null) return undefined; // cancelled
+  const trimmed = input.trim();
+  if (trimmed === '') return null;
+  const rating = Number(trimmed);
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    window.alert('Rating must be a whole number from 1 to 5, or left blank to clear it.');
+    return undefined;
+  }
+  return rating;
+}
+
+async function runEditAction(action) {
+  try {
+    await action();
+    await search();
+  } catch (err) {
+    window.alert(`Could not apply that change: ${err.message}`);
+  }
+}
+
+document.querySelector('#selection-clear').addEventListener('click', () => {
+  selectedIds = new Set();
+  gridEl.querySelectorAll('input[type="checkbox"]').forEach((el) => { el.checked = false; });
+  renderSelectionBar();
+});
+
+document.querySelector('#selection-add-keyword').addEventListener('click', () => {
+  const keyword = promptKeyword('Add keyword', `${selectedIds.size} image(s)`);
+  if (!keyword) return;
+  runEditAction(() => postEdit('/edit/keywords', { ids: [...selectedIds], add: [keyword] }));
+});
+
+document.querySelector('#selection-remove-keyword').addEventListener('click', () => {
+  const keyword = promptKeyword('Remove keyword', `${selectedIds.size} image(s)`);
+  if (!keyword) return;
+  runEditAction(() => postEdit('/edit/keywords', { ids: [...selectedIds], remove: [keyword] }));
+});
+
+document.querySelector('#selection-set-rating').addEventListener('click', () => {
+  const rating = promptRating(`${selectedIds.size} image(s)`);
+  if (rating === undefined) return;
+  runEditAction(() => postEdit('/edit/rating', { ids: [...selectedIds], rating }));
+});
+
+document.querySelector('#selection-delete').addEventListener('click', () => {
+  if (!window.confirm(`Delete ${selectedIds.size} image(s)? They will be moved to _rocphotos/trash, not permanently deleted.`)) return;
+  runEditAction(() => postEdit('/edit/delete', { ids: [...selectedIds] }));
+});
+
 document.querySelector('#viewer-close').addEventListener('click', closeViewer);
 viewerEl.addEventListener('click', (event) => {
   if (event.target === viewerEl) closeViewer();
+});
+
+document.querySelector('#viewer-add-keyword').addEventListener('click', () => {
+  const keyword = promptKeyword('Add keyword', 'this image');
+  if (!keyword) return;
+  runEditAction(() => postEdit('/edit/keywords', { ids: [currentViewerEntityId], add: [keyword] }));
+});
+
+document.querySelector('#viewer-set-rating').addEventListener('click', () => {
+  const rating = promptRating('this image');
+  if (rating === undefined) return;
+  runEditAction(() => postEdit('/edit/rating', { ids: [currentViewerEntityId], rating }));
+});
+
+document.querySelector('#viewer-delete').addEventListener('click', () => {
+  if (!window.confirm('Delete this image? It will be moved to _rocphotos/trash, not permanently deleted.')) return;
+  // Captured before closeViewer() runs, since that resets
+  // currentViewerEntityId to null.
+  const idToDelete = currentViewerEntityId;
+  closeViewer();
+  runEditAction(() => postEdit('/edit/delete', { ids: [idToDelete] }));
 });
 
 search();

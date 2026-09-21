@@ -261,6 +261,25 @@ export function upsertFile(driver, { id, entityId, filename, mediaType, size, re
   );
 }
 
+/**
+ * Removes an entity, every one of its facet rows, and its file row (if
+ * it has one) from the index — used when the underlying image has been
+ * deleted (moved to trash), so it stops appearing in search results and
+ * facet counts immediately, without waiting for a rescan. Deletes the
+ * `files` row before the `entities` row, not the other way around: a
+ * file's `entity_id` is a foreign key into `entities`, so deleting the
+ * entity first would fail the constraint while its file row still
+ * referenced it.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} id
+ */
+export function deleteEntityById(driver, id) {
+  driver.run('DELETE FROM entity_facets WHERE entity_id = ?', [id]);
+  driver.run('DELETE FROM files WHERE entity_id = ?', [id]);
+  driver.run('DELETE FROM entities WHERE id = ?', [id]);
+}
+
 /** @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver */
 export function listRoCrates(driver) {
   return driver.all('SELECT * FROM ro_crates ORDER BY path');

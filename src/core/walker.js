@@ -1,6 +1,7 @@
 import { isImageFile } from './imageTypes.js';
 import { joinPath } from './pathUtils.js';
 import { THUMBNAILS_DIR_NAME } from './thumbnails.js';
+import { ROCPHOTOS_DIR_NAME } from './trash.js';
 
 // Applied when no exclusion patterns are supplied (see src/core/config.js),
 // and unconditionally on top of whatever the caller does supply: the
@@ -13,7 +14,7 @@ const defaultIsExcludedDir = (name) => name.startsWith('.');
 const defaultIsExcludedFile = () => false;
 
 function isSkippedDirectory(name, isExcludedDir) {
-  return name === THUMBNAILS_DIR_NAME || isExcludedDir(name);
+  return name === THUMBNAILS_DIR_NAME || name === ROCPHOTOS_DIR_NAME || isExcludedDir(name);
 }
 
 function isCountableImage(name, isExcludedFile) {

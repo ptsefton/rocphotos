@@ -20,10 +20,18 @@
     #active-filters { margin-bottom: 1rem; font-size: 0.85rem; }
     #active-filters button { margin-left: 0.4rem; cursor: pointer; }
     #status { color: #555; margin-bottom: 1rem; font-size: 0.9rem; }
+
+    #selection-bar { display: none; align-items: center; gap: 0.6rem; background: #eef4fc; border: 1px solid #bcd6f2; border-radius: 4px; padding: 0.5rem 0.7rem; margin-bottom: 1rem; font-size: 0.85rem; flex-wrap: wrap; }
+    #selection-bar.visible { display: flex; }
+    #selection-bar button { background: #1a5fb4; color: #fff; border: none; border-radius: 4px; padding: 0.3rem 0.7rem; font-size: 0.82rem; cursor: pointer; }
+    #selection-bar button.danger { background: #b00020; }
+    #selection-bar #selection-count { font-weight: 600; margin-right: 0.4rem; }
+
     #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; }
-    figure { margin: 0; border: 1px solid #ddd; border-radius: 4px; padding: 0.5rem; cursor: pointer; }
+    figure { position: relative; margin: 0; border: 1px solid #ddd; border-radius: 4px; padding: 0.5rem; cursor: pointer; }
     figure img { width: 100%; height: 120px; object-fit: cover; border-radius: 2px; background: #eee; }
     figcaption { font-size: 0.75rem; margin-top: 0.3rem; word-break: break-word; color: #555; }
+    .select-checkbox { position: absolute; top: 0.4rem; left: 0.4rem; background: rgba(255, 255, 255, 0.85); border-radius: 3px; padding: 2px; line-height: 0; z-index: 2; }
 
     #viewer { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.92); z-index: 100; align-items: center; justify-content: center; flex-direction: column; gap: 1rem; padding: 2rem; box-sizing: border-box; }
     #viewer.open { display: flex; }
@@ -52,6 +60,14 @@
   </div>
   <div id="main">
     <div id="status">Loading…</div>
+    <div id="selection-bar">
+      <span id="selection-count"></span>
+      <button id="selection-add-keyword">Add keyword</button>
+      <button id="selection-remove-keyword">Remove keyword</button>
+      <button id="selection-set-rating">Set rating</button>
+      <button id="selection-delete" class="danger">Delete</button>
+      <button id="selection-clear">Clear selection</button>
+    </div>
     <div id="grid"></div>
   </div>
 
@@ -63,6 +79,9 @@
     </div>
     <div id="viewer-controls">
       <button id="viewer-faces-toggle" disabled>Show faces</button>
+      <button id="viewer-add-keyword">Add keyword</button>
+      <button id="viewer-set-rating">Set rating</button>
+      <button id="viewer-delete">Delete</button>
     </div>
     <div id="viewer-caption"></div>
     <div id="viewer-tags"></div>

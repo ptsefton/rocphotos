@@ -23,6 +23,7 @@ import {
   getEntityById,
   getFileById,
   listFilesForEntity,
+  deleteEntityById,
   ENTITY_TYPE_COLLECTION,
   ENTITY_TYPE_IMAGE,
   DEFAULT_LICENSE_ID,
@@ -393,5 +394,39 @@ describe('search and facetCounts', () => {
 
   it('rejects an unknown facet name rather than building unsafe SQL from it', () => {
     expect(() => facetCounts(db, 'not-a-real-facet', {})).toThrow();
+  });
+});
+
+describe('deleteEntityById', () => {
+  it('removes an entity, its facet rows, and its file row, so it stops showing up in search and facet counts', () => {
+    const db = openNodeSqlite(':memory:');
+    ensureSchema(db);
+    const rootId = crateEntityId('');
+    upsertRoCrate(db, { id: rootId, path: '.', name: 'root' });
+    upsertEntity(db, { id: 'a.jpg', roCrateId: rootId, entityType: ENTITY_TYPE_IMAGE, name: 'a.jpg' });
+    setEntityFacetValues(db, 'a.jpg', 'keyword', ['Bird']);
+    upsertFile(db, { id: 'a.jpg', entityId: 'a.jpg', filename: 'a.jpg', mediaType: 'image/jpeg', size: 10, relativePath: 'a.jpg' });
+
+    deleteEntityById(db, 'a.jpg');
+
+    expect(getEntityById(db, 'a.jpg')).toBeUndefined();
+    expect(getFileById(db, 'a.jpg')).toBeUndefined();
+    expect(listFacetValuesForEntity(db, 'a.jpg', 'keyword')).toEqual([]);
+    expect(facetCounts(db, 'keyword', {})).toEqual([]);
+  });
+
+  it('leaves other entities and their facets untouched', () => {
+    const db = openNodeSqlite(':memory:');
+    ensureSchema(db);
+    const rootId = crateEntityId('');
+    upsertRoCrate(db, { id: rootId, path: '.', name: 'root' });
+    upsertEntity(db, { id: 'a.jpg', roCrateId: rootId, entityType: ENTITY_TYPE_IMAGE, name: 'a.jpg' });
+    upsertEntity(db, { id: 'b.jpg', roCrateId: rootId, entityType: ENTITY_TYPE_IMAGE, name: 'b.jpg' });
+    setEntityFacetValues(db, 'b.jpg', 'keyword', ['Bird']);
+
+    deleteEntityById(db, 'a.jpg');
+
+    expect(getEntityById(db, 'b.jpg')).toBeTruthy();
+    expect(listFacetValuesForEntity(db, 'b.jpg', 'keyword')).toEqual(['Bird']);
   });
 });

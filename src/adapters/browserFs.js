@@ -77,6 +77,12 @@ export function createBrowserFsAdapter(rootHandle) {
       await writable.write(data);
       await writable.close();
     },
+
+    async deleteFile(relPath) {
+      const { parentPath, name } = splitParent(relPath);
+      const dirHandle = await getDirectoryHandle(rootHandle, parentPath);
+      await dirHandle.removeEntry(name);
+    },
   };
 
   return adapter;

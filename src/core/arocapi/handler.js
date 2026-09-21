@@ -9,9 +9,21 @@ import {
   countSearchResults,
   facetCounts,
   crateDirPathFromEntityId,
+  crateRelativeEntityId,
+  setEntityFacetValues,
+  deleteEntityById,
 } from '../db/store.js';
-import { CRATE_FILE_NAME } from '../crateBuilder.js';
+import {
+  CRATE_FILE_NAME,
+  loadOrCreateCrate,
+  serializeCrate,
+  readImageRecord,
+  setImageKeywords,
+  setImageRating,
+  removeImageEntity,
+} from '../crateBuilder.js';
 import { loadEntityFromCrate } from '../entityCrate.js';
+import { moveToTrash } from '../trash.js';
 import { joinPath } from '../pathUtils.js';
 
 // The facets this deployment supports: camera and lens (from EXIF),
@@ -75,14 +87,28 @@ function filtersFrom(source) {
   return filters;
 }
 
+// A store passed to createHandler may optionally implement persist(), for
+// a driver (such as the browser's sql.js-backed one) that operates on an
+// in-memory database and needs an explicit step to write it back to its
+// real file after a change — node:sqlite needs no such thing, since it is
+// already backed directly by the real file. Called once per edit request,
+// after every crate write for it has already happened, never per entity.
+async function persistStore(store) {
+  await store.persist?.();
+}
+
 /**
- * Creates a pure, transport-agnostic AROCAPI request handler (see
- * https://github.com/crate-works/ro-crate-api) over a scanned collection's
- * SQLite index. Read-only: it never writes to a crate's
- * ro-crate-metadata.json or to the index itself. The same handler is used
- * by the Node HTTP server (bin/rocphotos.js's `serve` subcommand) and is
- * intended to also back a Service Worker inside the browser SPA, so that
- * the same web view works identically in both places.
+ * Creates a pure, transport-agnostic request handler combining two
+ * things: AROCAPI itself (see https://github.com/crate-works/ro-crate-api)
+ * — read-only, it never writes to a crate's ro-crate-metadata.json or to
+ * the index — over a scanned collection's SQLite index, and a small set
+ * of non-AROCAPI `/edit/*` routes the web view's editing UI uses, which
+ * do write to both, the same way scanning itself already does (see
+ * Spec.md's Editing section: this is a second writer, not a write path
+ * added to AROCAPI's own read endpoints). The same handler is used by the
+ * Node HTTP server (bin/rocphotos.js's `serve` subcommand) and by a
+ * Service Worker inside the browser SPA, so that the same web view works
+ * identically in both places.
  *
  * Entity, file, and RO-Crate ids may themselves contain '/' (e.g.
  * `2025/03/10/photo.jpg`), so a request path such as `/entity/{id}` or
@@ -91,12 +117,43 @@ function filtersFrom(source) {
  * multi-segment path.
  *
  * @param {object} deps
- * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} deps.store
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver & {persist?: () => Promise<void>}} deps.store
  * @param {import('../fsAdapter.js').FsAdapter} deps.fsAdapter
  * @returns {(request: {method: string, path: string, query?: object, body?: object}) => Promise<{status: number, headers: object, body: string|Uint8Array}>}
  */
 export function createHandler({ store, fsAdapter }) {
   const crateCache = new Map();
+
+  // A short-lived, per-edit-request cache of crates being written to —
+  // deliberately not the same long-lived crateCache the read routes
+  // above use (see loadEntityFromCrate's own caveat about not sharing a
+  // cache across requests/operations): an edit always starts from
+  // whatever is on disk right now, and every id in the same request that
+  // happens to share a crate reuses that one in-memory copy rather than
+  // reading, mutating, and re-serializing it once per id.
+  async function loadCrateForEdit(cache, roCrateId) {
+    if (!cache.has(roCrateId)) {
+      const cratePath = joinPath(crateDirPathFromEntityId(roCrateId), CRATE_FILE_NAME);
+      const json = (await fsAdapter.exists(cratePath)) ? new TextDecoder().decode(await fsAdapter.readFile(cratePath)) : null;
+      cache.set(roCrateId, loadOrCreateCrate(json));
+    }
+    return cache.get(roCrateId);
+  }
+
+  async function saveEditedCrates(cache) {
+    for (const [roCrateId, crate] of cache) {
+      await fsAdapter.writeFile(joinPath(crateDirPathFromEntityId(roCrateId), CRATE_FILE_NAME), serializeCrate(crate));
+      // The read routes' crateCache is long-lived (kept for the whole
+      // life of this handler, to avoid re-parsing a crate file for every
+      // one of its entities — see loadEntityFromCrate), so without this
+      // it would keep serving whatever it last read for this crate,
+      // silently ignoring the edit just written above. Set directly to
+      // the same just-saved object rather than merely evicting the old
+      // one, so the very next read reflects the edit without an
+      // avoidable extra parse of the file it was just built from.
+      crateCache.set(roCrateId, crate);
+    }
+  }
 
   async function handleRequest({ method, path, query = {}, body = null }) {
     const parts = path.split('/').filter(Boolean);
@@ -201,6 +258,130 @@ export function createHandler({ store, fsAdapter }) {
       if (!(await fsAdapter.exists(cratePath))) return notFound();
       const bytes = await fsAdapter.readFile(cratePath);
       return { status: 200, headers: { 'Content-Type': 'application/ld+json' }, body: bytes };
+    }
+
+    // The three routes below are not part of AROCAPI — they back the web
+    // view's editing UI (see Spec.md's Editing section). Each takes a
+    // bulk `ids` array (a single-image edit is just a one-element array)
+    // and writes straight to the affected crate file(s) and to the
+    // index, the same two places scanning itself writes to, so an edit
+    // shows up immediately and survives an ordinary rescan of an
+    // otherwise-unchanged file (see setImageKeywords/setImageRating).
+    // Each responds with `{updated: [...ids that succeeded], errors:
+    // [{id, message}, ...]}` rather than failing the whole request over
+    // one bad id in a bulk selection.
+
+    if (method === 'POST' && path === '/edit/keywords') {
+      const ids = Array.isArray(body?.ids) ? body.ids : [];
+      const toAdd = Array.isArray(body?.add) ? body.add : [];
+      const toRemove = Array.isArray(body?.remove) ? body.remove : [];
+      const cache = new Map();
+      const updated = [];
+      const errors = [];
+
+      for (const id of ids) {
+        const row = getEntityById(store, id);
+        if (!row) {
+          errors.push({ id, message: 'Not found' });
+          continue;
+        }
+        const crate = await loadCrateForEdit(cache, row.ro_crate_id);
+        const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
+        const current = readImageRecord(crate, crateRelativeId);
+        if (!current) {
+          errors.push({ id, message: "Entity not found in its crate's own metadata" });
+          continue;
+        }
+        const keywords = new Set(current.keywords);
+        for (const keyword of toAdd) keywords.add(keyword);
+        for (const keyword of toRemove) keywords.delete(keyword);
+        setImageKeywords(crate, crateRelativeId, [...keywords]);
+        setEntityFacetValues(store, id, 'keyword', [...keywords]);
+        updated.push(id);
+      }
+
+      await saveEditedCrates(cache);
+      await persistStore(store);
+      return json(200, { updated, errors });
+    }
+
+    if (method === 'POST' && path === '/edit/rating') {
+      const ids = Array.isArray(body?.ids) ? body.ids : [];
+      const rawRating = body?.rating;
+      const rating = rawRating === null || rawRating === undefined ? null : Number(rawRating);
+      if (rating !== null && (!Number.isInteger(rating) || rating < 1 || rating > 5)) {
+        return badRequest('rating must be an integer from 1 to 5, or null to clear it');
+      }
+
+      const cache = new Map();
+      const updated = [];
+      const errors = [];
+
+      for (const id of ids) {
+        const row = getEntityById(store, id);
+        if (!row) {
+          errors.push({ id, message: 'Not found' });
+          continue;
+        }
+        const crate = await loadCrateForEdit(cache, row.ro_crate_id);
+        const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
+        setImageRating(crate, crateRelativeId, rating);
+        setEntityFacetValues(store, id, 'rating', rating !== null ? [String(rating)] : []);
+        updated.push(id);
+      }
+
+      await saveEditedCrates(cache);
+      await persistStore(store);
+      return json(200, { updated, errors });
+    }
+
+    if (method === 'POST' && path === '/edit/delete') {
+      const ids = Array.isArray(body?.ids) ? body.ids : [];
+      const cache = new Map();
+      const updated = [];
+      const errors = [];
+
+      for (const id of ids) {
+        const row = getEntityById(store, id);
+        if (!row) {
+          errors.push({ id, message: 'Not found' });
+          continue;
+        }
+        const fileRow = getFileById(store, id);
+        if (!fileRow) {
+          errors.push({ id, message: 'No file recorded for this entity' });
+          continue;
+        }
+
+        // The physical move happens first: if it fails, nothing else
+        // about this id is touched, leaving it fully intact rather than
+        // looking deleted (gone from the index) while its file is still
+        // sitting exactly where it always was.
+        try {
+          await moveToTrash(fsAdapter, fileRow.relative_path);
+        } catch (err) {
+          errors.push({ id, message: `Could not move file to trash: ${err.message}` });
+          continue;
+        }
+
+        const crate = await loadCrateForEdit(cache, row.ro_crate_id);
+        const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
+        const record = readImageRecord(crate, crateRelativeId);
+        if (record?.thumbnailPath) {
+          const thumbnailFullPath = joinPath(crateDirPathFromEntityId(row.ro_crate_id), record.thumbnailPath);
+          // A missing or already-regenerated thumbnail is not an error
+          // worth failing the delete over — the source image is already
+          // safely in the trash by this point.
+          await fsAdapter.deleteFile(thumbnailFullPath).catch(() => {});
+        }
+        removeImageEntity(crate, crateRelativeId);
+        deleteEntityById(store, id);
+        updated.push(id);
+      }
+
+      await saveEditedCrates(cache);
+      await persistStore(store);
+      return json(200, { updated, errors });
     }
 
     return notFound(`No route for ${method} ${path}`);

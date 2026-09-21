@@ -295,3 +295,76 @@ export function readImageRecord(crate, path) {
     regions,
   };
 }
+
+/**
+ * Replaces an image's keywords outright — a manual edit, independent of
+ * whatever addImageEntity would derive from EXIF. Since a rescan only
+ * ever re-derives keywords for a file whose modification time has
+ * actually changed (see recordedModifiedTime), a manual edit survives an
+ * ordinary rescan of an otherwise-unchanged file; only --reprocess, which
+ * forces re-extraction regardless, would overwrite it with whatever EXIF
+ * says instead.
+ *
+ * @param {ROCrate} crate
+ * @param {string} path
+ * @param {string[]} keywords
+ */
+export function setImageKeywords(crate, path, keywords) {
+  const entity = crate.getEntity(path);
+  if (!entity) return;
+  if (keywords.length > 0) {
+    entity.keywords = keywords;
+  } else if ('keywords' in entity) {
+    delete entity.keywords;
+  }
+}
+
+/**
+ * Replaces an image's star rating outright — see setImageKeywords for the
+ * same reasoning about surviving an ordinary rescan.
+ *
+ * @param {ROCrate} crate
+ * @param {string} path
+ * @param {number|null} rating
+ */
+export function setImageRating(crate, path, rating) {
+  const entity = crate.getEntity(path);
+  if (!entity) return;
+  if (rating !== null) {
+    entity.rating = rating;
+  } else if ('rating' in entity) {
+    delete entity.rating;
+  }
+}
+
+/**
+ * Removes an image entirely from a crate — used when the source file
+ * itself has been moved to the trash (see core/trash.js) and so no
+ * longer belongs in the crate's graph at all. Cleans up every node
+ * exclusively owned by this one image (its EXIF PropertyValue nodes, its
+ * ImageRegion nodes, and its thumbnail entity), but never a Person/Pet
+ * entity it referenced via `about` — those are shared with, and may
+ * still be depicted in, other images in this same crate.
+ *
+ * @param {ROCrate} crate
+ * @param {string} path
+ */
+export function removeImageEntity(crate, path) {
+  const entity = crate.getEntity(path);
+  if (!entity) return;
+
+  crate.deleteValues(crate.rootId, 'hasPart', { '@id': path });
+
+  for (const ref of entity.exifData ?? []) {
+    crate.deleteEntity(ref['@id']);
+  }
+  for (const ref of entity.regions ?? []) {
+    crate.deleteEntity(ref['@id']);
+  }
+  const thumbnailId = unwrap(entity.thumbnail)?.['@id'];
+  if (thumbnailId) {
+    crate.deleteEntity(thumbnailId);
+  }
+
+  crate.deleteEntity(path);
+}

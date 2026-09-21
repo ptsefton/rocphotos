@@ -44,6 +44,8 @@ beforeEach(async () => {
     path: 'photo.jpg',
     exif: {
       Make: 'Google', Model: 'Pixel 6a', LensModel: 'Pixel 6a back camera',
+      Keywords: ['Bird', 'Background'],
+      Rating: 5,
       Regions: { RegionList: [{ Name: 'Peter Malcolm Sefton', Type: 'Face' }, { Name: 'Rex', Type: 'Pet' }] },
     },
     thumbnailPath: 'thumbnails/photo.jpg.thumb.jpg',
@@ -285,6 +287,153 @@ describe('POST /search', () => {
   it('rejects an unsupported facet name', async () => {
     const res = await handleRequest({ method: 'POST', path: '/search', body: { facets: ['not-a-facet'] } });
     expect(res.status).toEqual(400);
+  });
+});
+
+describe('POST /edit/keywords', () => {
+  it('adds a keyword, reflected immediately in the crate metadata and the keyword facet', async () => {
+    const res = await handleRequest({
+      method: 'POST',
+      path: '/edit/keywords',
+      body: { ids: ['2025/03/10/photo.jpg'], add: ['Sunset'] },
+    });
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body)).toEqual({ updated: ['2025/03/10/photo.jpg'], errors: [] });
+
+    const metadataRes = await handleRequest({
+      method: 'GET',
+      path: `/entity/${encodeURIComponent('2025/03/10/photo.jpg')}/metadata`,
+    });
+    expect(JSON.parse(metadataRes.body).keywords.sort()).toEqual(['Background', 'Bird', 'Sunset']);
+
+    const searchRes = await handleRequest({ method: 'POST', path: '/search', body: { facets: ['keyword'] } });
+    expect(JSON.parse(searchRes.body).facets.keyword).toEqual(expect.arrayContaining([{ name: 'Sunset', count: 1 }]));
+  });
+
+  it('removes a keyword', async () => {
+    await handleRequest({ method: 'POST', path: '/edit/keywords', body: { ids: ['2025/03/10/photo.jpg'], remove: ['Bird'] } });
+
+    const metadataRes = await handleRequest({
+      method: 'GET',
+      path: `/entity/${encodeURIComponent('2025/03/10/photo.jpg')}/metadata`,
+    });
+    expect(JSON.parse(metadataRes.body).keywords).toEqual(['Background']);
+  });
+
+  it('adds a fresh keyword to an image with none yet', async () => {
+    await handleRequest({ method: 'POST', path: '/edit/keywords', body: { ids: ['2025/03/10/undated.jpg'], add: ['New'] } });
+
+    const metadataRes = await handleRequest({
+      method: 'GET',
+      path: `/entity/${encodeURIComponent('2025/03/10/undated.jpg')}/metadata`,
+    });
+    expect(JSON.parse(metadataRes.body).keywords).toEqual(['New']);
+  });
+
+  it('reports an unknown id as an error rather than failing the whole request', async () => {
+    const res = await handleRequest({
+      method: 'POST',
+      path: '/edit/keywords',
+      body: { ids: ['2025/03/10/photo.jpg', 'nope.jpg'], add: ['Sunset'] },
+    });
+    const parsed = JSON.parse(res.body);
+    expect(parsed.updated).toEqual(['2025/03/10/photo.jpg']);
+    expect(parsed.errors).toEqual([{ id: 'nope.jpg', message: 'Not found' }]);
+  });
+});
+
+describe('POST /edit/rating', () => {
+  it('sets a rating, reflected immediately in the crate metadata and the rating facet', async () => {
+    const res = await handleRequest({
+      method: 'POST',
+      path: '/edit/rating',
+      body: { ids: ['2025/03/10/undated.jpg'], rating: 3 },
+    });
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body)).toEqual({ updated: ['2025/03/10/undated.jpg'], errors: [] });
+
+    const metadataRes = await handleRequest({
+      method: 'GET',
+      path: `/entity/${encodeURIComponent('2025/03/10/undated.jpg')}/metadata`,
+    });
+    // rating is a scalar-assigned property, so it comes back array-wrapped
+    // at this outer level (see the array: true / link: true note in
+    // crateBuilder.js) — same as every other own property here.
+    expect(JSON.parse(metadataRes.body).rating).toEqual([3]);
+
+    const searchRes = await handleRequest({ method: 'POST', path: '/search', body: { facets: ['rating'] } });
+    expect(JSON.parse(searchRes.body).facets.rating).toEqual(expect.arrayContaining([{ name: '3', count: 1 }]));
+  });
+
+  it('clears a rating when given null', async () => {
+    await handleRequest({ method: 'POST', path: '/edit/rating', body: { ids: ['2025/03/10/photo.jpg'], rating: null } });
+
+    const metadataRes = await handleRequest({
+      method: 'GET',
+      path: `/entity/${encodeURIComponent('2025/03/10/photo.jpg')}/metadata`,
+    });
+    expect(JSON.parse(metadataRes.body).rating).toBeUndefined();
+  });
+
+  it('rejects a rating outside 1-5', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/edit/rating', body: { ids: ['2025/03/10/photo.jpg'], rating: 6 } });
+    expect(res.status).toEqual(400);
+  });
+
+  it('does not keep serving a stale reading from before the edit, once something has already read this entity\'s metadata', async () => {
+    // Regression: /entity/{id}/metadata resolves a crate through a cache
+    // kept for the life of the handler (see loadEntityFromCrate), to
+    // avoid re-parsing the same crate file for every one of its
+    // entities. An edit writes through a separate, short-lived cache of
+    // its own — without also updating the long-lived one, a read that
+    // happened to run before the edit would keep being served forever
+    // after, since nothing would ever tell it the file changed underneath it.
+    const before = await handleRequest({
+      method: 'GET',
+      path: `/entity/${encodeURIComponent('2025/03/10/photo.jpg')}/metadata`,
+    });
+    expect(JSON.parse(before.body).rating).toEqual([5]);
+
+    await handleRequest({ method: 'POST', path: '/edit/rating', body: { ids: ['2025/03/10/photo.jpg'], rating: 2 } });
+
+    const after = await handleRequest({
+      method: 'GET',
+      path: `/entity/${encodeURIComponent('2025/03/10/photo.jpg')}/metadata`,
+    });
+    expect(JSON.parse(after.body).rating).toEqual([2]);
+  });
+});
+
+describe('POST /edit/delete', () => {
+  it('moves the file to trash, removes it from the crate and index, but keeps the Person/Pet entities it depicted', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/edit/delete', body: { ids: ['2025/03/10/photo.jpg'] } });
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body)).toEqual({ updated: ['2025/03/10/photo.jpg'], errors: [] });
+
+    const entityRes = await handleRequest({ method: 'GET', path: `/entity/${encodeURIComponent('2025/03/10/photo.jpg')}` });
+    expect(entityRes.status).toEqual(404);
+
+    const fsAdapter = createNodeFsAdapter(currentRoot);
+    expect(await fsAdapter.exists('2025/03/10/photo.jpg')).toBe(false);
+    expect(await fsAdapter.exists('_rocphotos/trash/2025/03/10/photo.jpg')).toBe(true);
+    expect(await fsAdapter.exists('2025/03/10/thumbnails/photo.jpg.thumb.jpg')).toBe(false);
+
+    const cratePath = '2025/03/10/ro-crate-metadata.json';
+    const crateJson = JSON.parse(new TextDecoder().decode(await fsAdapter.readFile(cratePath)));
+    expect(crateJson['@graph'].some((e) => e['@id'] === 'photo.jpg')).toBe(false);
+
+    const personRes = await handleRequest({
+      method: 'GET',
+      path: `/entity/${encodeURIComponent(personEntityId('Peter Malcolm Sefton'))}`,
+    });
+    expect(personRes.status).toEqual(200);
+  });
+
+  it('reports an unknown id as an error rather than failing the whole request', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/edit/delete', body: { ids: ['nope.jpg'] } });
+    const parsed = JSON.parse(res.body);
+    expect(parsed.updated).toEqual([]);
+    expect(parsed.errors).toEqual([{ id: 'nope.jpg', message: 'Not found' }]);
   });
 });
 

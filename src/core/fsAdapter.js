@@ -14,6 +14,7 @@
  * @property {(filePath: string) => Promise<boolean>} exists
  * @property {(filePath: string) => Promise<{modifiedTime: number, size: number}>} stat - modifiedTime is epoch milliseconds
  * @property {(filePath: string, data: Uint8Array|string) => Promise<void>} writeFile
+ * @property {(filePath: string) => Promise<void>} deleteFile
  */
 
 export {};

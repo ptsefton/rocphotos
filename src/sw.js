@@ -92,8 +92,13 @@ async function buildContext() {
   }
 
   const bytes = await fsAdapter.readFile(INDEX_FILE_NAME);
-  const { driver } = await openBrowserSqlite(bytes, { locateFile: () => sqlWasmUrl });
-  return { fsAdapter, driver };
+  const { driver, export: exportIndex } = await openBrowserSqlite(bytes, { locateFile: () => sqlWasmUrl });
+  // sql.js operates entirely in memory; unlike node:sqlite (already
+  // backed directly by the real file), a change here is only durable
+  // once explicitly exported and written back — createHandler's edit
+  // routes call this after every write, via the optional store.persist().
+  const store = { ...driver, persist: () => fsAdapter.writeFile(INDEX_FILE_NAME, exportIndex()) };
+  return { fsAdapter, driver: store };
 }
 
 async function ensureContext() {

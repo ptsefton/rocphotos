@@ -67,6 +67,17 @@ describe('findCrateDirectories', () => {
     expect(crateDirs).toEqual([]);
   });
 
+  it('ignores its own _rocphotos housekeeping directory (trash, etc.) when looking for crate boundaries', async () => {
+    currentRoot = await createFixtureTree({
+      _rocphotos: { trash: { '2024': { '01': { 'deleted.jpg': '' } } } },
+    });
+
+    const fs = createNodeFsAdapter(currentRoot);
+    const crateDirs = await findCrateDirectories(fs);
+
+    expect(crateDirs).toEqual([]);
+  });
+
   it('honours a caller-supplied exclusion pattern, so a stray generated-gallery export is not mistaken for a crate', async () => {
     // Mirrors real-world junk: a day folder with no photos of its own,
     // whose only images live inside an old static-gallery export.

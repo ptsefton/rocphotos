@@ -14,10 +14,12 @@ T
 
 The data structure is as follows:
 
-1. The root of the collection is an RO-Crate (it has an `ro-crate-metadata.json` file). This contains 
+1. The root of the collection is an RO-Crate (it has an `ro-crate-metadata.json` file). 
 2. Nested under this there is another layer of RO-Crate files that contain sub-collections, which are typically a directory of files, a day's photos, an upload from a camera in a single directory, or a set of scanned images, these may occur at any depth below the root but do not contain any further ro-crates. This accounts for typical ways of ordering image collections which may be scaffolded by date-based (/yyyy/mm/dd/) upload-from-camera-based or subject based approaches.
 
 3. Crate depth is capped at two levels by default: the root crate and its immediate sub-collection crates. Sub-collection boundaries are determined by a top-down filesystem walk from the root: the first directory encountered that contains an image file becomes a sub-collection crate. Any further nested directories and images beneath that point, regardless of depth, are absorbed into that same sub-collection crate rather than becoming crates of their own.
+
+There's a _rocphotos directory with config/ and trash/ and backup/ directories (backup to be implemented later)
 
 ## 3. Application Behaviour
 
@@ -56,6 +58,22 @@ When the command-line tool detects this situation it lists the loose image files
 The same resolution is also available non-interactively, for scripted use or once the user already knows what they want: `rocphotos scan <directory> --loose-root-images=move [--loose-root-images-folder=<name>]` or `--loose-root-images=ignore`, which resolves the situation immediately without prompting.
 
 The browser SPA does not yet offer either the interactive prompt or the command-line flags; it currently just honours whatever `excludeFiles` the config already contains.
+
+
+ ### Editing
+
+ The web view (Section 3.2 — `rocphotos serve`, and the browser SPA's own Service-Worker-backed copy of it) can be used to edit metadata, not only browse it. This is a second writer to the crate JSON and the index, the same two places scanning itself writes to — not a write path added to AROCAPI's own read/search endpoints (Section 3.2's AROCAPI Endpoints subsection), which stay read-only.
+
+ Each grid tile has a checkbox; a selection bar appears once one or more are checked, offering bulk actions (the same actions are also available for just the one photo currently open in the full-screen viewer, as a single-image case rather than a separate code path):
+
+ - **Delete** — moves the source file into `_rocphotos/trash` (Section 2's data model), preserving its original path beneath that directory rather than deleting it outright, and removes it from the crate and the index. Its thumbnail file is deleted outright (thumbnails are always regeneratable, nothing is lost); a Person/Pet entity it depicted is left alone, since another photo may still depict them.
+ - **Add keyword** / **Remove keyword** — adds or removes one keyword across every selected image.
+ - **Set rating** — sets a 1-5 star rating across every selected image, or clears it if left blank.
+
+ An edit writes directly to the affected crate's `ro-crate-metadata.json` (via `setImageKeywords`/`setImageRating`/`removeImageEntity` in `crateBuilder.js`) and to the index (`entity_facets`, and `entities`/`files` for a delete), and is reflected immediately, without a rescan — the read routes' own crate cache is updated in the same step, not merely left to go stale until the next server restart. Since a rescan only ever re-derives keywords/rating from EXIF for a file whose modification time has actually changed, an edit survives an ordinary rescan of an otherwise-unchanged file; only `--reprocess`, which forces re-extraction regardless of file mtime, would overwrite it with whatever the file's own EXIF says instead — writing an edit back to the original file's own metadata (not just the crate) would make it survive even that, but that write-back is not yet implemented, pending a decision on the backup mechanism noted in Section 2.
+
+ Future editing will allow:
+ - Finding people and animals and allowing manual tagging (with AI recognition to come).
 
 ### 3.2 The SQLite Index (AROCAPI)
 
@@ -120,7 +138,7 @@ A future release will have:
 - `POST /search`'s write-side counterpart (deposits) is deliberately out of scope: crates are, and should stay, created and updated only by scanning.
 - Further constructs such as events (weddings, festivals, parties) and arbitrary contextual descriptions around the collection, extending the facet set the same way camera/lens/keyword/people did. Person and Pet entities, extracted from identified face/pet regions in image metadata, already exist (Section 3.2).
 - A face-crop thumbnail per person (using the bounding box already recorded — see Section 3.2 — to crop a small preview from the full image), rather than only a labelled box drawn over the full photo.
-- Metadata editing, with options to write back to images.
+- Writing an edit back to the original image's own embedded metadata, not just the crate — see the Editing section above — pending a decision on the backup mechanism (Section 2's `_rocphotos/backup`).
 - Face and possibly subject recognition, using open interoperability conventions for writing face regions into images and/or the file system, for photos that have not already been tagged by another tool.
 - An RO-Crate MASP ("Machine Actionable Schemas and Profiles", as used in [collection2crate](https://github.com/Language-Research-Technology/collection2crate)) for this photo collection structure, to be authored once a representative set of example crates has been produced by the application.
 

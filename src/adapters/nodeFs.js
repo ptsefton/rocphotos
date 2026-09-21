@@ -48,5 +48,9 @@ export function createNodeFsAdapter(rootDir) {
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
       await fs.writeFile(fullPath, data);
     },
+
+    async deleteFile(relPath) {
+      await fs.unlink(resolve(relPath));
+    },
   };
 }

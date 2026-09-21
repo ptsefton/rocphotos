@@ -37,3 +37,14 @@ describe('stat', () => {
     expect(second.modifiedTime <= first.modifiedTime).toBe(true);
   });
 });
+
+describe('deleteFile', () => {
+  it('removes the file so it no longer exists', async () => {
+    currentRoot = await createFixtureTree({ 'photo.jpg': 'hello world' });
+    const fs = createNodeFsAdapter(currentRoot);
+
+    expect(await fs.exists('photo.jpg')).toBe(true);
+    await fs.deleteFile('photo.jpg');
+    expect(await fs.exists('photo.jpg')).toBe(false);
+  });
+});
