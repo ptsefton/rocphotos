@@ -9,6 +9,14 @@ const gridEl = document.querySelector('#grid');
 const viewerEl = document.querySelector('#viewer');
 const viewerImageEl = document.querySelector('#viewer-image');
 const viewerCaptionEl = document.querySelector('#viewer-caption');
+const viewerTagsEl = document.querySelector('#viewer-tags');
+const viewerFacesEl = document.querySelector('#viewer-faces');
+const viewerFacesToggleEl = document.querySelector('#viewer-faces-toggle');
+
+// Face regions (with a bounding box) for the entity currently open in the
+// viewer, redrawn whenever the overlay is shown and whenever the image's
+// own rendered size changes (window resize, or a new image loading).
+let currentFaceRegions = [];
 
 // Every search implicitly scopes to images: this is a photo browser, not
 // a general entity browser, so sub-collection Dataset entities never show
@@ -50,6 +58,16 @@ function toggleFilter(facetName, value) {
   } else {
     activeFilters[facetName] = value;
   }
+  search();
+}
+
+// Used by a tag clicked inside the full-image viewer: unlike a sidebar
+// facet click, the intent here is always "go find more like this", not a
+// toggle, so it sets the filter and returns to the (now filtered) grid
+// rather than opening back up on the same photo.
+function applyFilterAndCloseViewer(facetName, value) {
+  activeFilters[facetName] = value;
+  closeViewer();
   search();
 }
 
@@ -108,17 +126,105 @@ function renderActiveFilters() {
   }
 }
 
-function openViewer(entity) {
+function addViewerTag(facetName, value) {
+  const tag = document.createElement('button');
+  tag.className = 'viewer-tag';
+  tag.textContent = value;
+  tag.title = `Find more tagged "${value}"`;
+  tag.addEventListener('click', () => applyFilterAndCloseViewer(facetName, value));
+  viewerTagsEl.appendChild(tag);
+}
+
+async function openViewer(entity) {
   viewerImageEl.src = entityUrl('/api/file', entity.id);
   viewerImageEl.alt = entity.name;
   viewerCaptionEl.textContent = entity.name;
+  viewerTagsEl.innerHTML = '';
+  currentFaceRegions = [];
+  viewerFacesEl.innerHTML = '';
+  viewerFacesEl.classList.add('hidden');
+  viewerFacesToggleEl.textContent = 'Show faces';
+  viewerFacesToggleEl.classList.remove('active');
+  viewerFacesToggleEl.disabled = true;
   viewerEl.classList.add('open');
+
+  // The grid only ever fetches the flat facet columns it needs for
+  // search (see search() above); keywords, people/pets, and face regions
+  // live in the entity's own full RO-Crate document, fetched only once a
+  // photo is actually opened.
+  try {
+    const response = await fetch(entityUrl('/api/entity', entity.id) + '/metadata');
+    if (!response.ok) return;
+    const metadata = await response.json();
+
+    for (const keyword of metadata.keywords ?? []) {
+      addViewerTag('keyword', keyword);
+    }
+    for (const about of metadata.about ?? []) {
+      if (about['@type'] === 'Person') addViewerTag('people', about.name);
+      else if (about['@type'] === 'Pet') addViewerTag('pets', about.name);
+    }
+
+    currentFaceRegions = (metadata.regions ?? []).filter(
+      (region) => region.regionType === 'Face' && region.xPosition !== undefined,
+    );
+    viewerFacesToggleEl.disabled = currentFaceRegions.length === 0;
+  } catch {
+    // No metadata to show is not fatal: the image itself still displays.
+  }
 }
 
 function closeViewer() {
   viewerEl.classList.remove('open');
   viewerImageEl.src = '';
 }
+
+function renderFaceOverlay() {
+  viewerFacesEl.innerHTML = '';
+  const { naturalWidth, naturalHeight, clientWidth, clientHeight } = viewerImageEl;
+  if (!naturalWidth || !naturalHeight) return;
+
+  // object-fit: contain centers the image within its box, adding
+  // letterboxing on one axis when the aspect ratios differ — boxes are
+  // positioned against that actual rendered image rect, not the
+  // (possibly larger) element box.
+  const scale = Math.min(clientWidth / naturalWidth, clientHeight / naturalHeight);
+  const renderedWidth = naturalWidth * scale;
+  const renderedHeight = naturalHeight * scale;
+  const offsetX = (clientWidth - renderedWidth) / 2;
+  const offsetY = (clientHeight - renderedHeight) / 2;
+
+  for (const region of currentFaceRegions) {
+    const box = document.createElement('div');
+    box.className = 'face-box';
+    box.style.left = `${offsetX + region.xPosition * renderedWidth - (region.width * renderedWidth) / 2}px`;
+    box.style.top = `${offsetY + region.yPosition * renderedHeight - (region.height * renderedHeight) / 2}px`;
+    box.style.width = `${region.width * renderedWidth}px`;
+    box.style.height = `${region.height * renderedHeight}px`;
+
+    const label = document.createElement('span');
+    label.className = 'face-box-label';
+    label.textContent = region.name;
+    box.appendChild(label);
+
+    viewerFacesEl.appendChild(box);
+  }
+}
+
+viewerFacesToggleEl.addEventListener('click', () => {
+  const showing = viewerFacesEl.classList.toggle('hidden') === false;
+  viewerFacesToggleEl.classList.toggle('active', showing);
+  viewerFacesToggleEl.textContent = showing ? 'Hide faces' : 'Show faces';
+  if (showing) renderFaceOverlay();
+});
+
+viewerImageEl.addEventListener('load', () => {
+  if (!viewerFacesEl.classList.contains('hidden')) renderFaceOverlay();
+});
+
+window.addEventListener('resize', () => {
+  if (viewerEl.classList.contains('open') && !viewerFacesEl.classList.contains('hidden')) renderFaceOverlay();
+});
 
 function renderGrid(entities) {
   gridEl.innerHTML = '';

@@ -72,9 +72,20 @@ describe('ratingFromExif', () => {
 });
 
 describe('regionsFromExif', () => {
-  it('reads a single named face region', () => {
+  it('reads a single named face region, with no area when none was recorded', () => {
     const exif = { Regions: { RegionList: { Name: 'Peter Malcolm Sefton', Type: 'Face' } } };
-    expect(regionsFromExif(exif)).toEqual([{ name: 'Peter Malcolm Sefton', type: 'Face' }]);
+    expect(regionsFromExif(exif)).toEqual([{ name: 'Peter Malcolm Sefton', type: 'Face', area: null }]);
+  });
+
+  it('reads the region\'s fractional bounding box when present', () => {
+    const exif = {
+      Regions: {
+        RegionList: { Name: 'Peter Malcolm Sefton', Type: 'Face', Area: { x: 0.57, y: 0.23, w: 0.29, h: 0.27 } },
+      },
+    };
+    expect(regionsFromExif(exif)).toEqual([
+      { name: 'Peter Malcolm Sefton', type: 'Face', area: { x: 0.57, y: 0.23, w: 0.29, h: 0.27 } },
+    ]);
   });
 
   it('reads several regions when RegionList is an array, keeping face and pet apart', () => {
@@ -87,8 +98,8 @@ describe('regionsFromExif', () => {
       },
     };
     expect(regionsFromExif(exif)).toEqual([
-      { name: 'Gail McGlinn', type: 'Face' },
-      { name: 'Rex', type: 'Pet' },
+      { name: 'Gail McGlinn', type: 'Face', area: null },
+      { name: 'Rex', type: 'Pet', area: null },
     ]);
   });
 

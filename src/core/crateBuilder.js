@@ -97,7 +97,7 @@ function unwrap(value) {
  * @param {string|null} [options.thumbnailPath] - thumbnail path, relative to the crate directory, if one was generated
  * @param {string|null} [options.thumbnailError] - error message from thumbnail generation, if it failed
  * @param {number|null} [options.sourceModifiedAt] - the source file's modification time (epoch ms) as of this processing pass, used to detect whether it needs reprocessing on a later scan
- * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null, people: string[], pets: string[]}}
+ * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null, people: string[], pets: string[], regions: Array<{name: string, type: 'Face'|'Pet', area: {x: number, y: number, w: number, h: number}|null}>}}
  */
 export function addImageEntity(crate, {
   path,
@@ -166,15 +166,37 @@ export function addImageEntity(crate, {
       // way"): each crate's own ro-crate-metadata.json stays a complete,
       // standalone description of what it contains, rather than relying
       // on a Person/Pet node defined only in some other crate's file.
-      const about = regions.map((region) => {
-        const id = region.type === 'Face' ? personEntityId(region.name) : petEntityId(region.name);
-        const type = region.type === 'Face' ? 'Person' : 'Pet';
-        crate.addEntity({ '@id': id, '@type': type, name: region.name }, { replace: true });
-        return { '@id': id };
+      const about = [];
+      const regionRefs = [];
+      regions.forEach((region, index) => {
+        const subjectId = region.type === 'Face' ? personEntityId(region.name) : petEntityId(region.name);
+        const subjectType = region.type === 'Face' ? 'Person' : 'Pet';
+        crate.addEntity({ '@id': subjectId, '@type': subjectType, name: region.name }, { replace: true });
+        about.push({ '@id': subjectId });
+
+        // A stable, index-based id, same reasoning as the EXIF
+        // PropertyValue nodes above: a rescan overwrites the same region
+        // node rather than accumulating a fresh one every pass. name and
+        // regionType are duplicated onto the region itself (rather than
+        // requiring a caller to resolve `about` for them) since only one
+        // level of a reference is resolved when this crate is served as
+        // JSON (see entityCrate.js).
+        const regionId = `${path}#region-${index}`;
+        const regionEntity = { '@id': regionId, '@type': 'ImageRegion', name: region.name, regionType: region.type, about: { '@id': subjectId } };
+        if (region.area) {
+          regionEntity.xPosition = region.area.x;
+          regionEntity.yPosition = region.area.y;
+          regionEntity.width = region.area.w;
+          regionEntity.height = region.area.h;
+        }
+        crate.addEntity(regionEntity, { replace: true });
+        regionRefs.push({ '@id': regionId });
       });
       entity.about = about;
-    } else if ('about' in entity) {
-      delete entity.about;
+      entity.regions = regionRefs;
+    } else {
+      if ('about' in entity) delete entity.about;
+      if ('regions' in entity) delete entity.regions;
     }
   }
 
@@ -197,7 +219,7 @@ export function addImageEntity(crate, {
   crate.addEntity(entity, { replace: true });
   crate.addValues(crate.rootId, 'hasPart', { '@id': path });
 
-  return { path, name: fileName, dateCreated, description, thumbnailPath, exifEntries, keywords, rating, people, pets };
+  return { path, name: fileName, dateCreated, description, thumbnailPath, exifEntries, keywords, rating, people, pets, regions };
 }
 
 /**
@@ -223,7 +245,7 @@ export function recordedModifiedTime(crate, path) {
  *
  * @param {ROCrate} crate
  * @param {string} path
- * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null, people: string[], pets: string[]}|null}
+ * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null, people: string[], pets: string[], regions: Array<{name: string, type: 'Face'|'Pet', area: {x: number, y: number, w: number, h: number}|null}>}|null}
  */
 export function readImageRecord(crate, path) {
   const entity = crate.getEntity(path);
@@ -248,6 +270,17 @@ export function readImageRecord(crate, path) {
     else if (type === 'Pet') pets.push(name);
   }
 
+  // Each element of entity.regions is likewise already the resolved
+  // ImageRegion entity itself; name and regionType are read straight off
+  // it rather than through its own `about` reference (see addImageEntity).
+  const regions = (entity.regions ?? []).map((region) => ({
+    name: unwrap(region.name),
+    type: unwrap(region.regionType),
+    area: region.xPosition !== undefined
+      ? { x: unwrap(region.xPosition), y: unwrap(region.yPosition), w: unwrap(region.width), h: unwrap(region.height) }
+      : null,
+  }));
+
   return {
     path,
     name: unwrap(entity.name) ?? path.split('/').pop(),
@@ -259,5 +292,6 @@ export function readImageRecord(crate, path) {
     rating: unwrap(entity.rating) ?? null,
     people,
     pets,
+    regions,
   };
 }

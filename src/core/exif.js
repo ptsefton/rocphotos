@@ -117,7 +117,7 @@ export function ratingFromExif(exif) {
  * than keeping both.
  *
  * @param {object|null} exif
- * @returns {Array<{name: string, type: 'Face'|'Pet'}>}
+ * @returns {Array<{name: string, type: 'Face'|'Pet', area: {x: number, y: number, w: number, h: number}|null}>}
  */
 export function regionsFromExif(exif) {
   const regionList = exif?.[REGION_FIELD]?.RegionList;
@@ -126,6 +126,15 @@ export function regionsFromExif(exif) {
   const entries = Array.isArray(regionList) ? regionList : [regionList];
   return entries
     .filter((region) => region?.Name && (region.Type === 'Face' || region.Type === 'Pet'))
-    .map((region) => ({ name: String(region.Name).trim(), type: region.Type }))
+    .map((region) => ({
+      name: String(region.Name).trim(),
+      type: region.Type,
+      // Fractional (0-1) position/size of the region within the image, as
+      // MWG records it — convenient for an overlay drawn with CSS
+      // percentages, without needing the image's pixel dimensions.
+      area: region.Area
+        ? { x: region.Area.x, y: region.Area.y, w: region.Area.w, h: region.Area.h }
+        : null,
+    }))
     .filter((region) => region.name.length > 0);
 }

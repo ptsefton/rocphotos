@@ -339,4 +339,55 @@ describe('addImageEntity people and pets', () => {
     expect(readImageRecord(crate, 'photo.jpg').keywords).toEqual([]);
     expect(readImageRecord(crate, 'photo.jpg').people).toEqual(['Gail McGlinn']);
   });
+
+  it('records a region\'s bounding box as its own ImageRegion entity, linked from the image via regions', () => {
+    const crate = loadOrCreateCrate(null);
+    const record = addImageEntity(crate, {
+      path: 'photo.jpg',
+      exif: {
+        Regions: { RegionList: { Name: 'Peter Malcolm Sefton', Type: 'Face', Area: { x: 0.57, y: 0.23, w: 0.29, h: 0.27 } } },
+      },
+    });
+
+    expect(record.regions).toEqual([{ name: 'Peter Malcolm Sefton', type: 'Face', area: { x: 0.57, y: 0.23, w: 0.29, h: 0.27 } }]);
+
+    const regionRefs = crate.getEntity('photo.jpg').regions;
+    expect(regionRefs).toHaveLength(1);
+    const region = crate.getEntity(regionRefs[0]['@id']);
+    expect(region['@type']).toEqual(['ImageRegion']);
+    expect(region.name).toEqual(['Peter Malcolm Sefton']);
+    expect(region.regionType).toEqual(['Face']);
+    expect(region.xPosition).toEqual([0.57]);
+    expect(region.about[0]['@id']).toEqual(crate.getEntity('photo.jpg').about[0]['@id']);
+  });
+
+  it('records a region with no bounding box (area not recorded by the tagging tool) without x/y/w/h properties', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Regions: { RegionList: { Name: 'Gail McGlinn', Type: 'Face' } } } });
+
+    const region = crate.getEntity(crate.getEntity('photo.jpg').regions[0]['@id']);
+    expect(region.xPosition).toBeUndefined();
+  });
+
+  it('clears a stale regions property on rescan once a photo\'s regions are gone', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Regions: { RegionList: { Name: 'Gail McGlinn', Type: 'Face' } } } });
+    expect(crate.getEntity('photo.jpg').regions).toHaveLength(1);
+
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Make: 'Acme' } });
+    expect(crate.getEntity('photo.jpg').regions).toBeUndefined();
+  });
+
+  it('reconstructs regions, including the bounding box, from the resolved ImageRegion references', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, {
+      path: 'photo.jpg',
+      exif: { Regions: { RegionList: { Name: 'Gail McGlinn', Type: 'Face', Area: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 } } } },
+    });
+
+    const reloaded = loadOrCreateCrate(serializeCrate(crate));
+    expect(readImageRecord(reloaded, 'photo.jpg').regions).toEqual([
+      { name: 'Gail McGlinn', type: 'Face', area: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 } },
+    ]);
+  });
 });

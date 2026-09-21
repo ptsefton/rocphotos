@@ -27,8 +27,20 @@
 
     #viewer { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.92); z-index: 100; align-items: center; justify-content: center; flex-direction: column; gap: 1rem; padding: 2rem; box-sizing: border-box; }
     #viewer.open { display: flex; }
-    #viewer img { max-width: 100%; max-height: 82vh; object-fit: contain; }
-    #viewer-caption { color: #eee; font-size: 0.9rem; }
+    #viewer-image-wrap { position: relative; display: inline-block; max-width: 100%; max-height: 82vh; line-height: 0; }
+    #viewer img { max-width: 100%; max-height: 82vh; object-fit: contain; display: block; }
+    #viewer-faces { position: absolute; inset: 0; pointer-events: none; }
+    #viewer-faces.hidden { display: none; }
+    .face-box { position: absolute; border: 2px solid #ffcc00; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6); }
+    .face-box-label { position: absolute; top: 100%; left: -2px; margin-top: 2px; background: #ffcc00; color: #222; font-size: 0.7rem; padding: 1px 4px; border-radius: 2px; white-space: nowrap; }
+    #viewer-caption { color: #eee; font-size: 0.9rem; text-align: center; }
+    #viewer-tags { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center; max-width: 80vw; }
+    .viewer-tag { background: #333; color: #eee; border: none; border-radius: 12px; padding: 0.2rem 0.7rem; font-size: 0.78rem; cursor: pointer; }
+    .viewer-tag:hover { background: #1a5fb4; color: #fff; }
+    #viewer-controls { display: flex; gap: 0.6rem; }
+    #viewer-controls button { background: #333; color: #eee; border: none; border-radius: 4px; padding: 0.35rem 0.8rem; font-size: 0.8rem; cursor: pointer; }
+    #viewer-controls button.active { background: #1a5fb4; color: #fff; }
+    #viewer-controls button:disabled { opacity: 0.4; cursor: default; }
     #viewer-close { position: fixed; top: 1rem; right: 1.5rem; color: #fff; font-size: 2rem; line-height: 1; cursor: pointer; background: none; border: none; }
   </style>
 </head>
@@ -45,8 +57,15 @@
 
   <div id="viewer">
     <button id="viewer-close" aria-label="Close">&times;</button>
-    <img id="viewer-image" alt="" />
+    <div id="viewer-image-wrap">
+      <img id="viewer-image" alt="" />
+      <div id="viewer-faces" class="hidden"></div>
+    </div>
+    <div id="viewer-controls">
+      <button id="viewer-faces-toggle" disabled>Show faces</button>
+    </div>
     <div id="viewer-caption"></div>
+    <div id="viewer-tags"></div>
   </div>
 
   <script type="module" src="app.js"></script>
