@@ -122,6 +122,15 @@ describe('GET /entities', () => {
     expect(parsed.entities[0].id).toEqual('2025/03/10/photo.jpg');
   });
 
+  it('includes each entity\'s own rating, so the grid can show it without a metadata request per tile', async () => {
+    const res = await handleRequest({ method: 'GET', path: '/entities', query: { entityType: ENTITY_TYPE_IMAGE } });
+    const parsed = JSON.parse(res.body);
+    const photo = parsed.entities.find((e) => e.id === '2025/03/10/photo.jpg');
+    const undated = parsed.entities.find((e) => e.id === '2025/03/10/undated.jpg');
+    expect(photo.rating).toEqual(5);
+    expect(undated.rating).toBeNull();
+  });
+
   it('filters by a keyword facet from the query string', async () => {
     const res = await handleRequest({ method: 'GET', path: '/entities', query: { keyword: 'Bird' } });
     const parsed = JSON.parse(res.body);

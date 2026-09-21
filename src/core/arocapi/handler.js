@@ -12,6 +12,7 @@ import {
   crateRelativeEntityId,
   setEntityFacetValues,
   deleteEntityById,
+  getEntityRating,
 } from '../db/store.js';
 import {
   CRATE_FILE_NAME,
@@ -53,7 +54,12 @@ function badRequest(message) {
   return json(400, { error: message });
 }
 
-function entityToJson(row) {
+// Not an AROCAPI property — included so a list of entities (the grid's
+// own view of a search result, in particular) can show each image's
+// current star rating without a separate GET .../metadata request per
+// tile. Always null for a non-Object entity (a Collection, Person, or
+// Pet never has one).
+function entityToJson(store, row) {
   return {
     id: row.id,
     name: row.name,
@@ -63,6 +69,7 @@ function entityToJson(row) {
     metadataLicenseId: row.metadata_license_id,
     contentLicenseId: row.content_license_id,
     access: { metadata: !!row.access_metadata, content: !!row.access_content },
+    rating: getEntityRating(store, row.id),
   };
 }
 
@@ -167,7 +174,7 @@ export function createHandler({ store, fsAdapter }) {
       const limit = Number(query.limit) || 100;
       const offset = Number(query.offset) || 0;
       const rows = searchEntities(store, filters, { limit, offset });
-      return json(200, { total: countSearchResults(store, filters), entities: rows.map(entityToJson) });
+      return json(200, { total: countSearchResults(store, filters), entities: rows.map((row) => entityToJson(store, row)) });
     }
 
     if (method === 'POST' && path === '/search') {
@@ -187,12 +194,12 @@ export function createHandler({ store, fsAdapter }) {
         facets[facetName] = facetCounts(store, facetName, filters).map((row) => ({ name: row.value, count: row.count }));
       }
 
-      return json(200, { total: countSearchResults(store, filters), entities: rows.map(entityToJson), facets });
+      return json(200, { total: countSearchResults(store, filters), entities: rows.map((row) => entityToJson(store, row)), facets });
     }
 
     if (method === 'GET' && parts[0] === 'entity' && parts.length === 2) {
       const row = getEntityById(store, decodeURIComponent(parts[1]));
-      return row ? json(200, entityToJson(row)) : notFound();
+      return row ? json(200, entityToJson(store, row)) : notFound();
     }
 
     if (method === 'GET' && parts[0] === 'entity' && parts.length === 3 && parts[2] === 'metadata') {

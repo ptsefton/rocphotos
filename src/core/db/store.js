@@ -350,6 +350,20 @@ export function listFacetValuesForEntity(driver, entityId, facetName) {
 }
 
 /**
+ * An entity's own star rating (1-5), or null if it has none. `rating` is
+ * always single-valued, unlike a multi-valued facet such as keyword, so
+ * this returns one value directly rather than a list.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} entityId
+ * @returns {number|null}
+ */
+export function getEntityRating(driver, entityId) {
+  const row = driver.get("SELECT value FROM entity_facets WHERE entity_id = ? AND facet_name = 'rating'", [entityId]);
+  return row ? Number(row.value) : null;
+}
+
+/**
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
  * @param {string} id
  */

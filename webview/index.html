@@ -55,6 +55,12 @@
     figcaption { font-size: 0.75rem; margin-top: 0.3rem; word-break: break-word; color: #555; }
     .select-checkbox { position: absolute; top: 0.4rem; left: 0.4rem; background: rgba(255, 255, 255, 0.85); border-radius: 3px; padding: 2px; line-height: 0; z-index: 2; }
 
+    .star-rating { display: flex; gap: 1px; margin-top: 0.3rem; }
+    .star-rating button { background: none; border: none; cursor: pointer; padding: 0; line-height: 1; font-size: 0.95rem; color: #d9a400; }
+    .star-rating button.empty { color: #ccc; }
+    .star-rating button:hover { transform: scale(1.15); }
+    #viewer-rating .star-rating button { font-size: 1.4rem; }
+
     #viewer { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.92); z-index: 100; align-items: center; justify-content: center; flex-direction: column; gap: 1rem; padding: 2rem; box-sizing: border-box; }
     #viewer.open { display: flex; }
     #viewer-image-wrap { position: relative; display: inline-block; max-width: 100%; max-height: 82vh; line-height: 0; }
@@ -64,6 +70,7 @@
     .face-box { position: absolute; border: 2px solid #ffcc00; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6); }
     .face-box-label { position: absolute; top: 100%; left: -2px; margin-top: 2px; background: #ffcc00; color: #222; font-size: 0.7rem; padding: 1px 4px; border-radius: 2px; white-space: nowrap; }
     #viewer-caption { color: #eee; font-size: 0.9rem; text-align: center; }
+    #viewer-rating { display: flex; justify-content: center; }
     #viewer-tags { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center; max-width: 80vw; }
     .viewer-tag { background: #333; color: #eee; border: none; border-radius: 12px; padding: 0.2rem 0.7rem; font-size: 0.78rem; cursor: pointer; }
     .viewer-tag:hover { background: #1a5fb4; color: #fff; }
@@ -102,10 +109,10 @@
       <img id="viewer-image" alt="" />
       <div id="viewer-faces" class="hidden"></div>
     </div>
+    <div id="viewer-rating"></div>
     <div id="viewer-controls">
       <button id="viewer-faces-toggle" disabled>Show faces</button>
       <button id="viewer-add-keyword">Add keyword</button>
-      <button id="viewer-set-rating">Set rating</button>
       <button id="viewer-delete">Delete</button>
     </div>
     <div id="viewer-caption"></div>

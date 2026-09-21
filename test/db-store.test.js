@@ -7,6 +7,7 @@ import {
   upsertFile,
   setEntityFacetValues,
   listFacetValuesForEntity,
+  getEntityRating,
   listRoCrates,
   listEntities,
   listFiles,
@@ -250,6 +251,20 @@ describe('db store', () => {
     setEntityFacetValues(db, 'photo.jpg', 'camera', ['Google Pixel 6a']);
     expect(listFacetValuesForEntity(db, 'photo.jpg', 'camera')).toEqual(['Google Pixel 6a']);
     expect(listFacetValuesForEntity(db, 'photo.jpg', 'keyword')).toEqual(['Bird']);
+  });
+
+  it('gets an entity\'s own rating as a single number, or null if it has none', () => {
+    const rootId = crateEntityId('');
+    upsertRoCrate(db, { id: rootId, path: '.', name: 'root' });
+    upsertEntity(db, { id: 'photo.jpg', roCrateId: rootId, entityType: ENTITY_TYPE_IMAGE, name: 'photo.jpg' });
+
+    expect(getEntityRating(db, 'photo.jpg')).toBeNull();
+
+    setEntityFacetValues(db, 'photo.jpg', 'rating', ['4']);
+    expect(getEntityRating(db, 'photo.jpg')).toEqual(4);
+
+    setEntityFacetValues(db, 'photo.jpg', 'rating', []);
+    expect(getEntityRating(db, 'photo.jpg')).toBeNull();
   });
 });
 

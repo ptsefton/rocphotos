@@ -23,6 +23,7 @@ const keywordDatalistEl = document.querySelector('#keyword-datalist');
 const keywordSuggestionsListEl = document.querySelector('#keyword-suggestions-list');
 const viewerEl = document.querySelector('#viewer');
 const viewerImageEl = document.querySelector('#viewer-image');
+const viewerRatingEl = document.querySelector('#viewer-rating');
 const viewerCaptionEl = document.querySelector('#viewer-caption');
 const viewerTagsEl = document.querySelector('#viewer-tags');
 const viewerFacesEl = document.querySelector('#viewer-faces');
@@ -188,11 +189,33 @@ function addViewerTag(facetName, value) {
   viewerTagsEl.appendChild(tag);
 }
 
+// Re-rendered after a click, with the rating just set, rather than
+// relying on the grid's own refresh (search() rebuilds the grid, a
+// separate DOM tree the viewer sits outside of and that a click here
+// would otherwise leave showing the old rating until the viewer is
+// closed and reopened).
+function renderViewerRating(rating) {
+  viewerRatingEl.innerHTML = '';
+  viewerRatingEl.appendChild(renderStarRating(rating, async (newRating) => {
+    try {
+      await postEdit('/edit/rating', { ids: [currentViewerEntityId], rating: newRating });
+      renderViewerRating(newRating);
+      await search();
+    } catch (err) {
+      window.alert(`Could not apply that change: ${err.message}`);
+    }
+  }));
+}
+
 async function openViewer(entity) {
   currentViewerEntityId = entity.id;
   viewerImageEl.src = entityUrl('/api/file', entity.id);
   viewerImageEl.alt = entity.name;
   viewerCaptionEl.textContent = entity.name;
+  // entity.rating comes from the same search result the grid tile itself
+  // was rendered from (see entityToJson in the handler), so this can be
+  // shown immediately rather than waiting on the metadata fetch below.
+  renderViewerRating(entity.rating);
   viewerTagsEl.innerHTML = '';
   currentFaceRegions = [];
   viewerFacesEl.innerHTML = '';
@@ -284,6 +307,39 @@ window.addEventListener('resize', () => {
   if (viewerEl.classList.contains('open') && !viewerFacesEl.classList.contains('hidden')) renderFaceOverlay();
 });
 
+/**
+ * A row of five stars — outline for any position above the current
+ * rating, filled at and below it — for both the grid's per-tile rating
+ * and the viewer's own. Clicking a star sets the rating to its position,
+ * except clicking the star that already matches the current rating,
+ * which clears it instead (so there is a way to remove a rating without
+ * a separate control).
+ *
+ * @param {number|null} rating
+ * @param {(newRating: number|null) => void} onRate
+ * @returns {HTMLElement}
+ */
+function renderStarRating(rating, onRate) {
+  const row = document.createElement('div');
+  row.className = 'star-rating';
+  for (let position = 1; position <= 5; position++) {
+    const filled = rating !== null && position <= rating;
+    const star = document.createElement('button');
+    star.type = 'button';
+    star.className = filled ? 'filled' : 'empty';
+    star.textContent = filled ? '★' : '☆';
+    star.setAttribute('aria-label', `Rate ${position} star${position === 1 ? '' : 's'}`);
+    star.addEventListener('click', (event) => {
+      // Also relevant in the grid, where a tile's own click opens the
+      // viewer — a star click should only ever set the rating.
+      event.stopPropagation();
+      onRate(rating === position ? null : position);
+    });
+    row.appendChild(star);
+  }
+  return row;
+}
+
 function renderGrid(entities) {
   gridEl.innerHTML = '';
   currentEntityIds = entities.map((entity) => entity.id);
@@ -315,6 +371,10 @@ function renderGrid(entities) {
       img.src = entityUrl('/api/file', entity.id);
     });
     figure.appendChild(img);
+
+    figure.appendChild(renderStarRating(entity.rating, (newRating) => {
+      runEditAction(() => postEdit('/edit/rating', { ids: [entity.id], rating: newRating }));
+    }));
 
     const caption = document.createElement('figcaption');
     caption.textContent = entity.name;
@@ -554,13 +614,19 @@ viewerEl.addEventListener('click', (event) => {
 document.querySelector('#viewer-add-keyword').addEventListener('click', async () => {
   const keywords = await promptKeywords('this image');
   if (!keywords || keywords.length === 0) return;
-  runEditAction(() => postEdit('/edit/keywords', { ids: [currentViewerEntityId], add: keywords }));
-});
-
-document.querySelector('#viewer-set-rating').addEventListener('click', () => {
-  const rating = promptRating('this image');
-  if (rating === undefined) return;
-  runEditAction(() => postEdit('/edit/rating', { ids: [currentViewerEntityId], rating }));
+  try {
+    await postEdit('/edit/keywords', { ids: [currentViewerEntityId], add: keywords });
+    // Added directly to the still-open viewer's own tag list — search()
+    // below refreshes the grid, a separate DOM tree the viewer sits
+    // outside of, so without this the newly-added tag would not show up
+    // here until the viewer was closed and reopened.
+    for (const keyword of keywords) {
+      addViewerTag('keyword', keyword);
+    }
+    await search();
+  } catch (err) {
+    window.alert(`Could not apply that change: ${err.message}`);
+  }
 });
 
 document.querySelector('#viewer-delete').addEventListener('click', () => {
