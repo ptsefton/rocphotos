@@ -191,6 +191,16 @@ describe('readImageRecord', () => {
     expect(readImageRecord(reloaded, 'a.jpg').keywords.sort()).toEqual(['Bird', 'Nankeen Kestrel']);
     expect(readImageRecord(reloaded, 'b.jpg').keywords).toEqual([]);
   });
+
+  it('reconstructs a rating, and defaults to null when none was recorded', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'a.jpg', exif: { Rating: 4 } });
+    addImageEntity(crate, { path: 'b.jpg' });
+
+    const reloaded = loadOrCreateCrate(serializeCrate(crate));
+    expect(readImageRecord(reloaded, 'a.jpg').rating).toEqual(4);
+    expect(readImageRecord(reloaded, 'b.jpg').rating).toBeNull();
+  });
 });
 
 describe('addImageEntity keywords', () => {
@@ -211,5 +221,29 @@ describe('addImageEntity keywords', () => {
     expect(failed.keywords).toEqual([]);
     expect(crate.getEntity('a.jpg').keywords).toBeUndefined();
     expect(crate.getEntity('b.jpg').keywords).toBeUndefined();
+  });
+});
+
+describe('addImageEntity rating', () => {
+  it('records a star rating of 1 or higher on the entity and in the returned record', () => {
+    const crate = loadOrCreateCrate(null);
+    const record = addImageEntity(crate, { path: 'photo.jpg', exif: { Rating: 5 } });
+
+    expect(record.rating).toEqual(5);
+    expect(crate.getEntity('photo.jpg').rating).toEqual([5]);
+  });
+
+  it('does not set a rating when it is 0, absent, or EXIF failed', () => {
+    const crate = loadOrCreateCrate(null);
+    const zero = addImageEntity(crate, { path: 'a.jpg', exif: { Rating: 0 } });
+    const absent = addImageEntity(crate, { path: 'b.jpg', exif: { Make: 'Acme' } });
+    const failed = addImageEntity(crate, { path: 'c.jpg', exif: { Rating: 5 }, exifError: 'bad file' });
+
+    expect(zero.rating).toBeNull();
+    expect(absent.rating).toBeNull();
+    expect(failed.rating).toBeNull();
+    expect(crate.getEntity('a.jpg').rating).toBeUndefined();
+    expect(crate.getEntity('b.jpg').rating).toBeUndefined();
+    expect(crate.getEntity('c.jpg').rating).toBeUndefined();
   });
 });

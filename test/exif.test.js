@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractExif, keywordsFromExif } from '../src/core/exif.js';
+import { extractExif, keywordsFromExif, ratingFromExif } from '../src/core/exif.js';
 
 describe('extractExif', () => {
   it('never throws, even for bytes that are not a recognisable image', async () => {
@@ -52,5 +52,21 @@ describe('keywordsFromExif', () => {
   it('returns an empty array when no keyword field is present, or exif is null', () => {
     expect(keywordsFromExif({ Make: 'Google' })).toEqual([]);
     expect(keywordsFromExif(null)).toEqual([]);
+  });
+});
+
+describe('ratingFromExif', () => {
+  it('returns the star rating when it is 1 or higher', () => {
+    expect(ratingFromExif({ Rating: 5 })).toEqual(5);
+    expect(ratingFromExif({ Rating: 1 })).toEqual(1);
+  });
+
+  it('treats a rating of 0 as absent, since tools such as Lightroom write it on every photo they touch, not only starred ones', () => {
+    expect(ratingFromExif({ Rating: 0 })).toBeNull();
+  });
+
+  it('returns null when there is no Rating field, or exif is null', () => {
+    expect(ratingFromExif({ Make: 'Google' })).toBeNull();
+    expect(ratingFromExif(null)).toBeNull();
   });
 });

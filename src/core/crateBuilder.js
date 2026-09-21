@@ -1,5 +1,5 @@
 import { ROCrate } from 'ro-crate';
-import { keywordsFromExif } from './exif.js';
+import { keywordsFromExif, ratingFromExif } from './exif.js';
 
 export const CRATE_FILE_NAME = 'ro-crate-metadata.json';
 
@@ -96,7 +96,7 @@ function unwrap(value) {
  * @param {string|null} [options.thumbnailPath] - thumbnail path, relative to the crate directory, if one was generated
  * @param {string|null} [options.thumbnailError] - error message from thumbnail generation, if it failed
  * @param {number|null} [options.sourceModifiedAt] - the source file's modification time (epoch ms) as of this processing pass, used to detect whether it needs reprocessing on a later scan
- * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[]}}
+ * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null}}
  */
 export function addImageEntity(crate, {
   path,
@@ -112,6 +112,7 @@ export function addImageEntity(crate, {
   const dateCreated = dateCreatedFromExif(exif);
   const exifEntries = [];
   const keywords = exifError ? [] : keywordsFromExif(exif);
+  const rating = exifError ? null : ratingFromExif(exif);
 
   if (!exifError && exif) {
     if (dateCreated) {
@@ -138,6 +139,9 @@ export function addImageEntity(crate, {
     if (keywords.length > 0) {
       entity.keywords = keywords;
     }
+    if (rating !== null) {
+      entity.rating = rating;
+    }
   }
 
   const description = [exifError, thumbnailError].filter(Boolean).join(' | ') || null;
@@ -159,7 +163,7 @@ export function addImageEntity(crate, {
   crate.addEntity(entity, { replace: true });
   crate.addValues(crate.rootId, 'hasPart', { '@id': path });
 
-  return { path, name: fileName, dateCreated, description, thumbnailPath, exifEntries, keywords };
+  return { path, name: fileName, dateCreated, description, thumbnailPath, exifEntries, keywords, rating };
 }
 
 /**
@@ -185,7 +189,7 @@ export function recordedModifiedTime(crate, path) {
  *
  * @param {ROCrate} crate
  * @param {string} path
- * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[]}|null}
+ * @returns {{path: string, name: string, dateCreated: string|null, description: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null}|null}
  */
 export function readImageRecord(crate, path) {
   const entity = crate.getEntity(path);
@@ -206,5 +210,6 @@ export function readImageRecord(crate, path) {
     thumbnailPath: unwrap(entity.thumbnail)?.['@id'] ?? null,
     exifEntries,
     keywords: entity.keywords ?? [],
+    rating: unwrap(entity.rating) ?? null,
   };
 }

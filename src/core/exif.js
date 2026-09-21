@@ -4,7 +4,7 @@ const { parse } = exifr;
 
 const EXIF_FIELDS = [
   'Make', 'Model', 'DateTimeOriginal', 'ImageWidth', 'ImageHeight', 'Orientation',
-  'LensMake', 'LensModel',
+  'LensMake', 'LensModel', 'Rating',
 ];
 
 // Keyword-bearing fields, checked in this order of preference. All three
@@ -84,4 +84,20 @@ export function keywordsFromExif(exif) {
     }
   }
   return [...flat];
+}
+
+/**
+ * Reads the XMP star rating (0-5), if present. Many tools (including
+ * Lightroom, confirmed against real files) write `Rating: 0` on every
+ * photo they touch, not only ones a person actually starred, so a rating
+ * of 0 is indistinguishable from "never rated" and is treated as absent
+ * here — only a rating of 1 or higher is considered a real rating.
+ *
+ * @param {object|null} exif
+ * @returns {number|null}
+ */
+export function ratingFromExif(exif) {
+  if (!exif) return null;
+  const rating = Number(exif.Rating);
+  return Number.isFinite(rating) && rating > 0 ? rating : null;
 }

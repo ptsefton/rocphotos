@@ -308,7 +308,7 @@ export function listFilesForEntity(driver, entityId) {
 // interpolated directly into SQL as a quoted literal, never bound as a
 // parameter or taken from arbitrary caller input, so every name reaching
 // SQL must first be checked against this list.
-const STORED_FACETS = ['camera', 'lens', 'keyword'];
+const STORED_FACETS = ['camera', 'lens', 'keyword', 'rating'];
 
 function assertKnownFacet(facetName) {
   if (facetName !== 'year' && !STORED_FACETS.includes(facetName)) {

@@ -1,6 +1,6 @@
 const IMAGE_ENTITY_TYPE = 'http://pcdm.org/models#Object';
-const FACET_NAMES = ['camera', 'lens', 'keyword', 'year'];
-const FACET_LABELS = { camera: 'Camera', lens: 'Lens', keyword: 'Keywords', year: 'Year' };
+const FACET_NAMES = ['camera', 'lens', 'keyword', 'rating', 'year'];
+const FACET_LABELS = { camera: 'Camera', lens: 'Lens', keyword: 'Keywords', rating: 'Rating', year: 'Year' };
 
 const facetsEl = document.querySelector('#facets');
 const activeFiltersEl = document.querySelector('#active-filters');

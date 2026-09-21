@@ -265,15 +265,16 @@ describe('search and facetCounts', () => {
     upsertRoCrate(db, { id: rootId, path: '.', name: 'root' });
 
     const images = [
-      { id: 'a.jpg', camera: 'Google Pixel 6a', lens: 'Pixel 6a back camera', dateCreated: '2025-03-10T00:00:00.000Z', keywords: ['Bird', 'Background'] },
-      { id: 'b.jpg', camera: 'Google Pixel 6a', lens: 'Pixel 6a front camera', dateCreated: '2025-06-01T00:00:00.000Z', keywords: [] },
-      { id: 'c.jpg', camera: 'Canon EOS R5', lens: 'RF 24-70mm', dateCreated: '2024-12-25T00:00:00.000Z', keywords: ['Bird'] },
+      { id: 'a.jpg', camera: 'Google Pixel 6a', lens: 'Pixel 6a back camera', dateCreated: '2025-03-10T00:00:00.000Z', keywords: ['Bird', 'Background'], rating: '5' },
+      { id: 'b.jpg', camera: 'Google Pixel 6a', lens: 'Pixel 6a front camera', dateCreated: '2025-06-01T00:00:00.000Z', keywords: [], rating: null },
+      { id: 'c.jpg', camera: 'Canon EOS R5', lens: 'RF 24-70mm', dateCreated: '2024-12-25T00:00:00.000Z', keywords: ['Bird'], rating: '5' },
     ];
     for (const image of images) {
       upsertEntity(db, { id: image.id, roCrateId: rootId, entityType: ENTITY_TYPE_IMAGE, name: image.id, dateCreated: image.dateCreated });
       setEntityFacetValues(db, image.id, 'camera', [image.camera]);
       setEntityFacetValues(db, image.id, 'lens', [image.lens]);
       setEntityFacetValues(db, image.id, 'keyword', image.keywords);
+      setEntityFacetValues(db, image.id, 'rating', image.rating ? [image.rating] : []);
     }
   });
 
@@ -320,6 +321,14 @@ describe('search and facetCounts', () => {
       { value: 'Bird', count: 2 },
       { value: 'Background', count: 1 },
     ]));
+  });
+
+  it('filters by rating, leaving out entities with no (or a zero) rating', () => {
+    const results = searchEntities(db, { rating: '5' });
+    expect(results.map((r) => r.id).sort()).toEqual(['a.jpg', 'c.jpg']);
+
+    const counts = facetCounts(db, 'rating', {});
+    expect(counts).toEqual([{ value: '5', count: 2 }]);
   });
 
   it('does not let a facet\'s own selected value collapse its own counts to just that value', () => {

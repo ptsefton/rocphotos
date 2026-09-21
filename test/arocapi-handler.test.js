@@ -80,6 +80,7 @@ beforeEach(async () => {
   setEntityFacetValues(db, photoId, 'camera', ['Google Pixel 6a']);
   setEntityFacetValues(db, photoId, 'lens', ['Pixel 6a back camera']);
   setEntityFacetValues(db, photoId, 'keyword', ['Bird', 'Background']);
+  setEntityFacetValues(db, photoId, 'rating', ['5']);
   upsertFile(db, { id: photoId, entityId: photoId, filename: 'photo.jpg', mediaType: 'image/jpeg', size: 16, relativePath: photoId });
 
   const undatedId = imageEntityId('2025/03/10', 'undated.jpg');
@@ -93,7 +94,7 @@ describe('GET /capabilities', () => {
   it('declares the supported facets', async () => {
     const res = await handleRequest({ method: 'GET', path: '/capabilities' });
     expect(res.status).toEqual(200);
-    expect(JSON.parse(res.body).search.facets).toEqual(['camera', 'lens', 'keyword', 'year']);
+    expect(JSON.parse(res.body).search.facets).toEqual(['camera', 'lens', 'keyword', 'rating', 'year']);
   });
 });
 
@@ -110,6 +111,13 @@ describe('GET /entities', () => {
 
   it('filters by a keyword facet from the query string', async () => {
     const res = await handleRequest({ method: 'GET', path: '/entities', query: { keyword: 'Bird' } });
+    const parsed = JSON.parse(res.body);
+    expect(parsed.total).toEqual(1);
+    expect(parsed.entities[0].id).toEqual('2025/03/10/photo.jpg');
+  });
+
+  it('filters by a rating facet from the query string', async () => {
+    const res = await handleRequest({ method: 'GET', path: '/entities', query: { rating: '5' } });
     const parsed = JSON.parse(res.body);
     expect(parsed.total).toEqual(1);
     expect(parsed.entities[0].id).toEqual('2025/03/10/photo.jpg');

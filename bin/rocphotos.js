@@ -303,6 +303,7 @@ async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false } = {}
       setEntityFacetValues(db, entityId, 'camera', camera ? [camera] : []);
       setEntityFacetValues(db, entityId, 'lens', lens ? [lens] : []);
       setEntityFacetValues(db, entityId, 'keyword', record.keywords);
+      setEntityFacetValues(db, entityId, 'rating', record.rating !== null ? [String(record.rating)] : []);
       upsertFile(db, {
         id: entityId,
         entityId,
