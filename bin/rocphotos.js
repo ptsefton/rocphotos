@@ -207,7 +207,7 @@ function resetRootAndIndex(rootDir) {
   }
 }
 
-async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false } = {}) {
+async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false, reprocess = false } = {}) {
   if (fresh) {
     resetRootAndIndex(rootDir);
   }
@@ -273,10 +273,14 @@ async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false } = {}
       const recordedTime = recordedModifiedTime(subCrate, imagePath);
 
       let record;
-      if (recordedTime !== null && modifiedTime <= recordedTime) {
+      if (!reprocess && recordedTime !== null && modifiedTime <= recordedTime) {
         // Unchanged since it was last processed (successfully or not):
         // reuse the existing entity rather than re-reading and
-        // re-parsing the file and re-attempting a thumbnail.
+        // re-parsing the file and re-attempting a thumbnail. --reprocess
+        // bypasses this, for picking up a change to what scanning itself
+        // extracts (a newly-added EXIF field, say) from files that are
+        // otherwise unchanged, without needing --fresh to also throw away
+        // the root crate and index.
         record = readImageRecord(subCrate, imagePath);
       } else {
         const bytes = await fsAdapter.readFile(fullImagePath);
@@ -523,7 +527,7 @@ function fail(err) {
 }
 
 function usage() {
-  console.error('Usage: rocphotos scan <directory> [--fresh] [--loose-root-images=move|ignore] [--loose-root-images-folder=<name>]');
+  console.error('Usage: rocphotos scan <directory> [--fresh] [--reprocess] [--loose-root-images=move|ignore] [--loose-root-images-folder=<name>]');
   console.error('       rocphotos export-excel <directory> [output.xlsx] [--include-entity-crates]');
   console.error('       rocphotos serve <directory> [--port=8420]');
   console.error('');
@@ -536,6 +540,13 @@ function usage() {
   console.error('ever added to, never pruned). Sub-crate files are left alone: anything still');
   console.error('on disk is picked up normally by the scan that follows, including its cached');
   console.error('thumbnails and skip-if-unchanged behaviour.');
+  console.error('');
+  console.error('--reprocess re-reads and re-extracts every image regardless of whether its');
+  console.error('source file has changed since it was last scanned, so a change to what');
+  console.error('scanning itself extracts (a newly-added EXIF field, say) is picked up for');
+  console.error('every file, not only ones touched since. Unlike --fresh, this does not');
+  console.error('discard the index or root crate metadata first. Slower than a normal scan,');
+  console.error('since it skips no files.');
   console.error('');
   console.error('--loose-root-images resolves images found loose in the collection root');
   console.error('(alongside other subdirectories) without an interactive prompt: "move"');
@@ -580,7 +591,7 @@ if (command === 'scan' && targetDir) {
     scan(
       path.resolve(targetDir),
       { mode, folderName: flags['loose-root-images-folder'] },
-      { fresh: Boolean(flags.fresh) },
+      { fresh: Boolean(flags.fresh), reprocess: Boolean(flags.reprocess) },
     ).catch(fail);
   }
 } else if (command === 'export-excel' && targetDir) {
