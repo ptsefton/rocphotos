@@ -320,4 +320,23 @@ describe('addImageEntity people and pets', () => {
 
     expect(crate.getEntity('a.jpg').about[0]['@id']).toEqual(crate.getEntity('b.jpg').about[0]['@id']);
   });
+
+  it('clears a stale keywords property on rescan when a photo\'s only keyword was a name now recorded as a person instead', () => {
+    // Regression: an earlier version only ever assigned entity.keywords
+    // when the freshly-computed list was non-empty, so a photo whose one
+    // and only keyword was a person's name kept that name in `keywords`
+    // forever after the name was excluded and moved into `about` — the
+    // very case this feature exists to fix, not just a rare edge case.
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Keywords: ['Gail McGlinn'] } });
+    expect(crate.getEntity('photo.jpg').keywords).toEqual(['Gail McGlinn']);
+
+    addImageEntity(crate, {
+      path: 'photo.jpg',
+      exif: { Keywords: ['Gail McGlinn'], Regions: { RegionList: { Name: 'Gail McGlinn', Type: 'Face' } } },
+    });
+    expect(crate.getEntity('photo.jpg').keywords).toBeUndefined();
+    expect(readImageRecord(crate, 'photo.jpg').keywords).toEqual([]);
+    expect(readImageRecord(crate, 'photo.jpg').people).toEqual(['Gail McGlinn']);
+  });
 });

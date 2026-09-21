@@ -145,11 +145,21 @@ export function addImageEntity(crate, {
     if (exifData.length > 0) {
       entity.exifData = exifData;
     }
+    // keywords, rating, and about are each explicitly cleared, not just
+    // left unset, when the current pass finds none — a rescan can easily
+    // drop a previously-recorded value to nothing (a region moving a
+    // photo's only keyword into `about`, or a rating/tag being removed
+    // upstream), and leaving the old value in place would silently
+    // resurrect it.
     if (keywords.length > 0) {
       entity.keywords = keywords;
+    } else if ('keywords' in entity) {
+      delete entity.keywords;
     }
     if (rating !== null) {
       entity.rating = rating;
+    } else if ('rating' in entity) {
+      delete entity.rating;
     }
     if (regions.length > 0) {
       // Duplicated into every crate that references them ("the RO-Crate
@@ -163,6 +173,8 @@ export function addImageEntity(crate, {
         return { '@id': id };
       });
       entity.about = about;
+    } else if ('about' in entity) {
+      delete entity.about;
     }
   }
 
