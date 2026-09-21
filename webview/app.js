@@ -1,6 +1,6 @@
 const IMAGE_ENTITY_TYPE = 'http://pcdm.org/models#Object';
 const FACET_NAMES = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'year'];
-const FACET_LABELS = { camera: 'Camera', lens: 'Lens', keyword: 'Keywords', rating: 'Rating', people: 'People', pets: 'Pets', year: 'Year' };
+const FACET_LABELS = { camera: 'Camera', lens: 'Lens', keyword: 'Keywords', rating: 'Rating', people: 'People', pets: 'Pets', year: 'Year', memberOf: 'Collection' };
 const FACET_ICONS = { people: '👤', pets: '🐕', keyword: '🏷️' };
 
 function labelWithIcon(facetName) {
@@ -10,6 +10,8 @@ function labelWithIcon(facetName) {
 
 const facetsEl = document.querySelector('#facets');
 const activeFiltersEl = document.querySelector('#active-filters');
+const collectionsAllEl = document.querySelector('#collections-all');
+const collectionsTreeEl = document.querySelector('#collections-tree');
 const statusEl = document.querySelector('#status');
 const selectAllButtonEl = document.querySelector('#select-all');
 const gridEl = document.querySelector('#grid');
@@ -100,6 +102,7 @@ async function search() {
     renderActiveFilters();
     renderGrid(result.entities);
     renderSelectionBar();
+    syncCollectionsActiveState();
     statusEl.textContent = `${result.total} image${result.total === 1 ? '' : 's'}`;
   } catch (err) {
     statusEl.textContent = `Error: ${err.message}`;
@@ -179,6 +182,101 @@ function renderActiveFilters() {
     activeFiltersEl.appendChild(chip);
   }
 }
+
+// Groups the flat /ro-crates list into a nested tree by splitting each
+// sub-crate's id on '/'. Intermediate segments that aren't themselves a
+// registered sub-crate (no ro-crate-metadata.json of their own) become
+// plain, unclickable grouping nodes; the root crate ('./') is excluded
+// since "All collections" already covers it.
+function buildCollectionsTree(roCrates) {
+  const root = { children: new Map() };
+  for (const crate of roCrates) {
+    if (crate.id === './') continue;
+    const segments = crate.id.replace(/\/$/, '').split('/');
+    let node = root;
+    for (const segment of segments) {
+      if (!node.children.has(segment)) {
+        node.children.set(segment, { name: segment, children: new Map() });
+      }
+      node = node.children.get(segment);
+    }
+    node.id = crate.id;
+    node.label = crate.name || segments[segments.length - 1];
+  }
+  return root;
+}
+
+function collectionLabelEl(node) {
+  if (node.id) {
+    const row = document.createElement('button');
+    row.className = 'collection-row';
+    row.textContent = node.label;
+    row.dataset.collectionId = node.id;
+    row.addEventListener('click', (event) => {
+      // Also prevents the native <details>/<summary> toggle from firing
+      // when this row is a folder's own clickable label.
+      event.preventDefault();
+      event.stopPropagation();
+      toggleFilter('memberOf', node.id);
+    });
+    return row;
+  }
+  const span = document.createElement('span');
+  span.className = 'collection-folder-name';
+  span.textContent = node.name;
+  return span;
+}
+
+function renderCollectionsNode(node) {
+  const ul = document.createElement('ul');
+  for (const child of node.children.values()) {
+    const li = document.createElement('li');
+    if (child.children.size > 0) {
+      const details = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.appendChild(collectionLabelEl(child));
+      details.appendChild(summary);
+      details.appendChild(renderCollectionsNode(child));
+      li.appendChild(details);
+    } else {
+      li.appendChild(collectionLabelEl(child));
+    }
+    ul.appendChild(li);
+  }
+  return ul;
+}
+
+// Toggles the .active class on whichever collection row (or "All
+// collections") matches the current memberOf filter, without touching
+// the tree's DOM otherwise — rebuilding it on every search() would
+// collapse any folders the user had expanded.
+function syncCollectionsActiveState() {
+  const activeId = activeFilters.memberOf;
+  collectionsAllEl.classList.toggle('active', !activeId);
+  collectionsTreeEl.querySelectorAll('.collection-row').forEach((row) => {
+    row.classList.toggle('active', row.dataset.collectionId === activeId);
+  });
+}
+
+async function loadCollections() {
+  try {
+    const response = await fetch('/api/ro-crates');
+    if (!response.ok) return;
+    const result = await response.json();
+    const tree = buildCollectionsTree(result.roCrates ?? []);
+    collectionsTreeEl.innerHTML = '';
+    collectionsTreeEl.appendChild(renderCollectionsNode(tree));
+    syncCollectionsActiveState();
+  } catch {
+    // Collections nav is a secondary aid; leave the tree empty rather
+    // than blocking the rest of the page on this fetch.
+  }
+}
+
+collectionsAllEl.addEventListener('click', () => {
+  delete activeFilters.memberOf;
+  search();
+});
 
 function addViewerTag(facetName, value) {
   const tag = document.createElement('button');
@@ -672,4 +770,5 @@ document.querySelector('#viewer-delete').addEventListener('click', () => {
   runEditAction(() => postEdit('/edit/delete', { ids: [idToDelete] }));
 });
 
+loadCollections();
 search();
