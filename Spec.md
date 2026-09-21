@@ -29,17 +29,23 @@ The application extracts EXIF metadata from images and adds it to the sub-crates
 
 The application also maintains a SQLite index of the collection, organised as per the [AROCAPI specification](https://github.com/crate-works/ro-crate-api). See Section 3.2.
 
-### 3.1 Excluding Directories from the Walk
+### 3.1 Excluding Directories and Files from the Walk
 
 Certain directories must never be treated as, or searched within for, a crate. Dotfiles and dot-directories (`.git`, editor and OS metadata, and similar) are excluded by default, since they are near-universal filesystem noise unrelated to photo storage. The application's own generated `thumbnails/` cache directory (see Section 3.3) is always excluded, regardless of configuration, since including it would cause the application to mistake its own output for source images on a later scan.
 
-Beyond these, a collection may contain directories that are not part of the application's default exclusions but should still never be scanned — for example, a static HTML gallery previously exported by another tool, sitting inside what is otherwise a legitimate day-of-photos directory. To handle this, the application reads an optional `rocphotos.config.json` file from the root of the directory being scanned:
+Beyond these, a collection may contain directories, or individual files, that are not part of the application's default exclusions but should still never be scanned — for example, a static HTML gallery previously exported by another tool, sitting inside what is otherwise a legitimate day-of-photos directory, or a handful of stray images sitting loose in the collection root. To handle this, the application reads an optional `rocphotos.config.json` file from the root of the directory being scanned:
 
 ```json
-{ "excludeDirectories": ["^\\.", "^HTML"] }
+{ "excludeDirectories": ["^\\.", "^HTML"], "excludeFiles": ["^Thumbs\\.db$"] }
 ```
 
-`excludeDirectories` is a list of regular expressions, each tested against a directory's own name (not its full path), at any depth in the walk. When present, this list is used in place of the built-in dotfile default, so a configuration that still wants dotfiles excluded restates that pattern explicitly, keeping the effective stop-list fully visible in one place. This file is read through the same filesystem interface as everything else, so it is honoured identically by the command-line tool and by the browser SPA, which can only read files inside the directory the user has granted it access to.
+`excludeDirectories` and `excludeFiles` are each a list of regular expressions, tested against a directory's or file's own name (not its full path), at any depth in the walk; a file matching `excludeFiles` is treated as though it were not there at all, both as a possible crate-triggering image and as a member of whichever crate it would otherwise belong to. When present, `excludeDirectories` is used in place of the built-in dotfile default, so a configuration that still wants dotfiles excluded restates that pattern explicitly, keeping the effective stop-list fully visible in one place; `excludeFiles` has no built-in default; there is no filename pattern that is universally junk. This file is read through the same filesystem interface as everything else, so it is honoured identically by the command-line tool and by the browser SPA, which can only read files inside the directory the user has granted it access to.
+
+#### Loose Images in the Collection Root
+
+Because the first directory encountered in the top-down walk that directly contains an image becomes a crate boundary (Section 2), an image file sitting loose directly in the collection root — alongside otherwise-legitimate year/month/day subdirectories — would make the walker treat the whole root as the sole crate, silently absorbing every subdirectory beneath it and hiding all of their crates. (This does not apply when the root directly holding images is the *only* content: that is the intended single-folder-collection behaviour described in Section 2, not an ambiguity to resolve.)
+
+When the command-line tool detects this situation, it does not silently guess: it lists the loose image files found and interactively asks the user to either move them into a new folder (named `images`, or `images-2`, `images-3`, and so on, if that name is already taken) so they become an ordinary sub-collection crate, add them to the config's `excludeFiles` list so they are ignored on this and every future scan, or cancel the scan so nothing is touched. The browser SPA does not yet offer this interactive resolution; it currently just honours whatever `excludeFiles` the config already contains.
 
 ### 3.2 The SQLite Index (AROCAPI)
 
