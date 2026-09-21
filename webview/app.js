@@ -19,6 +19,8 @@ const keywordDialogEl = document.querySelector('#keyword-dialog');
 const keywordDialogDescriptionEl = document.querySelector('#keyword-dialog-description');
 const keywordChipListEl = document.querySelector('#keyword-chip-list');
 const keywordInputEl = document.querySelector('#keyword-input');
+const keywordDatalistEl = document.querySelector('#keyword-datalist');
+const keywordSuggestionsListEl = document.querySelector('#keyword-suggestions-list');
 const viewerEl = document.querySelector('#viewer');
 const viewerImageEl = document.querySelector('#viewer-image');
 const viewerCaptionEl = document.querySelector('#viewer-caption');
@@ -334,9 +336,33 @@ function promptKeyword(actionLabel, description) {
 }
 
 // The keywords added so far in the currently-open dialog (via the (+)
-// button or Enter), separate from whatever is still sitting, uncommitted,
-// in the text input.
+// button, Enter, or clicking a suggestion), separate from whatever is
+// still sitting, uncommitted, in the text input.
 let pendingKeywords = [];
+
+// Every keyword already used anywhere in the collection, fetched fresh
+// each time the dialog opens (see promptKeywords) from the same facet
+// data the sidebar's Keywords list already uses — POST /search with
+// facets: ['keyword'] and no filters returns the whole vocabulary in one
+// cheap call, so no dedicated autocomplete endpoint is needed for a
+// collection this size. Drives both the native datalist dropdown on the
+// input and the always-visible, click-to-add suggestion list below it.
+let knownKeywords = [];
+
+async function fetchKnownKeywords() {
+  try {
+    const response = await fetch('/api/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filters: {}, facets: ['keyword'], limit: 0 }),
+    });
+    if (!response.ok) return [];
+    const result = await response.json();
+    return (result.facets?.keyword ?? []).map((entry) => entry.name).sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
 
 function renderKeywordChips() {
   keywordChipListEl.innerHTML = '';
@@ -352,6 +378,7 @@ function renderKeywordChips() {
     remove.addEventListener('click', () => {
       pendingKeywords = pendingKeywords.filter((k) => k !== keyword);
       renderKeywordChips();
+      renderKeywordSuggestions();
     });
     chip.appendChild(remove);
 
@@ -359,16 +386,39 @@ function renderKeywordChips() {
   }
 }
 
+function renderKeywordSuggestions() {
+  keywordSuggestionsListEl.innerHTML = '';
+  const typed = keywordInputEl.value.trim().toLowerCase();
+  const matches = knownKeywords.filter(
+    (keyword) => !pendingKeywords.includes(keyword) && (!typed || keyword.toLowerCase().includes(typed)),
+  );
+
+  for (const keyword of matches) {
+    const suggestion = document.createElement('button');
+    suggestion.type = 'button';
+    suggestion.className = 'keyword-suggestion';
+    suggestion.textContent = keyword;
+    suggestion.addEventListener('click', () => addPendingKeyword(keyword));
+    keywordSuggestionsListEl.appendChild(suggestion);
+  }
+}
+
+function addPendingKeyword(value) {
+  if (!value || pendingKeywords.includes(value)) return;
+  pendingKeywords = [...pendingKeywords, value];
+  renderKeywordChips();
+  renderKeywordSuggestions();
+}
+
 function addPendingKeywordFromInput() {
   const value = keywordInputEl.value.trim();
   keywordInputEl.value = '';
   keywordInputEl.focus();
-  if (!value || pendingKeywords.includes(value)) return;
-  pendingKeywords = [...pendingKeywords, value];
-  renderKeywordChips();
+  addPendingKeyword(value);
 }
 
 document.querySelector('#keyword-add-button').addEventListener('click', addPendingKeywordFromInput);
+keywordInputEl.addEventListener('input', renderKeywordSuggestions);
 keywordInputEl.addEventListener('keydown', (event) => {
   // Enter adds the typed keyword to the list rather than submitting the
   // dialog — matching the (+) button, so a keyboard-only user is not
@@ -417,9 +467,25 @@ function promptKeywords(description) {
     keywordDialogDescriptionEl.textContent = `Add keyword(s) for ${description}:`;
     keywordInputEl.value = '';
     pendingKeywords = [];
+    knownKeywords = [];
+    keywordDatalistEl.innerHTML = '';
     renderKeywordChips();
+    renderKeywordSuggestions();
+    // Opened immediately rather than waiting on the fetch below, so
+    // there is no perceptible delay before the dialog appears; the
+    // suggestion list and datalist just fill in a moment after.
     keywordDialogEl.showModal();
     keywordInputEl.focus();
+
+    fetchKnownKeywords().then((keywords) => {
+      knownKeywords = keywords;
+      for (const keyword of keywords) {
+        const option = document.createElement('option');
+        option.value = keyword;
+        keywordDatalistEl.appendChild(option);
+      }
+      renderKeywordSuggestions();
+    });
   });
 }
 

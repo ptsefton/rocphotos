@@ -30,15 +30,20 @@
     #selection-bar button.danger { background: #b00020; }
     #selection-bar #selection-count { font-weight: 600; margin-right: 0.4rem; }
 
-    dialog#keyword-dialog { border: none; border-radius: 6px; padding: 1rem 1.2rem; width: 20rem; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25); }
+    dialog#keyword-dialog { border: none; border-radius: 6px; padding: 1rem 1.2rem; width: 22rem; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25); }
     dialog#keyword-dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
     #keyword-dialog p { margin: 0 0 0.6rem; font-size: 0.85rem; color: #333; }
+    #keyword-input-row { display: flex; gap: 0.4rem; margin-bottom: 0.6rem; }
+    #keyword-input { flex: 1; padding: 0.3rem 0.5rem; font-size: 0.85rem; border: 1px solid #bbb; border-radius: 4px; }
+    #keyword-add-button { width: 2rem; font-size: 1rem; border: 1px solid #1a5fb4; background: #1a5fb4; color: #fff; border-radius: 4px; cursor: pointer; }
     #keyword-chip-list { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.6rem; min-height: 1.6rem; }
     .keyword-chip { background: #eef4fc; border: 1px solid #bcd6f2; border-radius: 10px; padding: 0.15rem 0.3rem 0.15rem 0.6rem; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 0.3rem; }
     .keyword-chip button { background: none; border: none; cursor: pointer; color: #666; font-size: 0.9rem; line-height: 1; padding: 0 0.2rem; }
-    #keyword-input-row { display: flex; gap: 0.4rem; margin-bottom: 0.8rem; }
-    #keyword-input { flex: 1; padding: 0.3rem 0.5rem; font-size: 0.85rem; border: 1px solid #bbb; border-radius: 4px; }
-    #keyword-add-button { width: 2rem; font-size: 1rem; border: 1px solid #1a5fb4; background: #1a5fb4; color: #fff; border-radius: 4px; cursor: pointer; }
+    #keyword-suggestions-label { font-size: 0.75rem; text-transform: uppercase; color: #888; margin: 0 0 0.3rem; }
+    #keyword-suggestions-list { display: flex; flex-wrap: wrap; gap: 0.3rem; max-height: 8rem; overflow-y: auto; margin-bottom: 0.8rem; }
+    #keyword-suggestions-list:empty::after { content: 'No matches'; color: #999; font-size: 0.8rem; }
+    .keyword-suggestion { background: #f2f2f2; border: 1px solid #ddd; border-radius: 10px; padding: 0.15rem 0.6rem; font-size: 0.8rem; cursor: pointer; }
+    .keyword-suggestion:hover { background: #e0ebfa; border-color: #bcd6f2; }
     #keyword-dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
     #keyword-dialog-actions button { padding: 0.3rem 0.8rem; font-size: 0.82rem; border-radius: 4px; cursor: pointer; }
     #keyword-dialog-submit { background: #1a5fb4; color: #fff; border: none; }
@@ -110,11 +115,14 @@
   <dialog id="keyword-dialog">
     <form method="dialog">
       <p id="keyword-dialog-description"></p>
-      <div id="keyword-chip-list"></div>
       <div id="keyword-input-row">
-        <input type="text" id="keyword-input" placeholder="Type a keyword" autocomplete="off" />
+        <input type="text" id="keyword-input" list="keyword-datalist" placeholder="Type a keyword" autocomplete="off" />
         <button type="button" id="keyword-add-button" aria-label="Add this keyword to the list" title="Add this keyword to the list">+</button>
       </div>
+      <datalist id="keyword-datalist"></datalist>
+      <div id="keyword-chip-list"></div>
+      <p id="keyword-suggestions-label">Existing keywords:</p>
+      <div id="keyword-suggestions-list"></div>
       <div id="keyword-dialog-actions">
         <button type="button" id="keyword-dialog-cancel">Cancel</button>
         <button type="submit" id="keyword-dialog-submit" value="submit">Add</button>
