@@ -14,16 +14,40 @@
     figcaption { font-size: 0.8rem; margin-top: 0.4rem; word-break: break-word; }
     figcaption .crate-dir { color: #888; }
     figcaption .error { color: #b00020; }
+
+    #overview-section { margin-top: 1.5rem; border-top: 1px solid #ddd; padding-top: 1rem; }
+    #overview-section h2 { font-size: 1rem; margin: 0 0 0.6rem; }
+    #overview-controls { display: flex; gap: 0.6rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
+    #overview-list { list-style: none; padding: 0; margin: 0; max-height: 40vh; overflow-y: auto; border: 1px solid #eee; border-radius: 4px; }
+    #overview-list li { display: flex; align-items: center; gap: 0.6rem; padding: 0.35rem 0.6rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+    #overview-list li:last-child { border-bottom: none; }
+    #overview-list .sub-path { flex: 1; }
+    #overview-list .image-count { color: #888; font-size: 0.8em; }
+    .status-badge { font-size: 0.72rem; padding: 0.1rem 0.5rem; border-radius: 10px; white-space: nowrap; }
+    .status-badge.not-scanned { background: #eee; color: #555; }
+    .status-badge.out-of-date { background: #fff1cc; color: #8a6100; }
+    .status-badge.up-to-date { background: #e0f3e0; color: #1e6b1e; }
   </style>
 </head>
 <body>
   <h1>RO-Crate Photo Manager</h1>
   <header>
     <button id="open-directory">Open Directory</button>
-    <button id="rescan" disabled>Rescan</button>
-    <label><input type="checkbox" id="always-rescan" /> Always rescan on open</label>
+    <label><input type="checkbox" id="always-rescan" /> Always process everything on open</label>
   </header>
   <div id="status">Choose a directory to begin.</div>
+
+  <section id="overview-section" hidden>
+    <h2>Sub-collections</h2>
+    <div id="overview-controls">
+      <button id="select-all">Select All</button>
+      <button id="select-none">Select None</button>
+      <button id="refresh-overview">Refresh Status</button>
+      <button id="process-selected">Process Selected</button>
+    </div>
+    <ul id="overview-list"></ul>
+  </section>
+
   <div id="results"></div>
   <script type="module" src="/src/main.js"></script>
 </body>
