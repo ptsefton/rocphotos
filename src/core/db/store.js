@@ -43,6 +43,32 @@ export function imageEntityId(crateDirPath, imagePath) {
 }
 
 /**
+ * The inverse of crateEntityId/imageEntityId: converts a collection-
+ * relative entity id (as stored in the index, unique across the whole
+ * collection) back to the crate-relative id actually used as that
+ * entity's `@id` inside its own crate's ro-crate-metadata.json — needed
+ * whenever an index row is used to look the entity back up in the real
+ * crate file (see bin/rocphotos.js's --include-entity-crates export, and
+ * the eventual AROCAPI /entity/{id}/metadata handler). A crate's ids are
+ * always relative to itself (e.g. `photo.jpg`, or `./` for its own root
+ * Dataset), never prefixed with the crate's own directory path.
+ *
+ * @param {string} roCrateId - the crate directory path (entities.ro_crate_id / ro_crates.id)
+ * @param {string} collectionRelativeId - the entity id as stored in the index (entities.id)
+ * @returns {string}
+ */
+export function crateRelativeEntityId(roCrateId, collectionRelativeId) {
+  if (collectionRelativeId === crateEntityId(roCrateId)) {
+    return './';
+  }
+  if (roCrateId === '') {
+    return collectionRelativeId;
+  }
+  const prefix = `${roCrateId}/`;
+  return collectionRelativeId.startsWith(prefix) ? collectionRelativeId.slice(prefix.length) : collectionRelativeId;
+}
+
+/**
  * Creates the index tables if they do not already exist. Safe to call on
  * every scan.
  *

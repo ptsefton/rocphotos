@@ -38,6 +38,7 @@ import {
   ENTITY_TYPE_IMAGE,
   crateEntityId,
   imageEntityId,
+  crateRelativeEntityId,
   ensureSchema,
   upsertRoCrate,
   upsertEntity,
@@ -297,7 +298,45 @@ async function scan(rootDir, looseRootImagesOptions = {}) {
   }
 }
 
-async function exportExcel(rootDir, outputPath) {
+// Resolves an entity's own properties one level deep (e.g. each element
+// of exifData or thumbnail becomes the full referenced entity, not a bare
+// {'@id': ...} stub) into a plain, JSON.stringify-able object. Needed
+// because an entity's own JSON.stringify/toJSON deliberately returns the
+// *unresolved* form — the correct behaviour for what gets written to
+// disk — which link: true's resolution does not apply to; only direct
+// property access on the entity does.
+function resolveEntityShallow(entity) {
+  const plain = {};
+  for (const key of Object.keys(entity)) {
+    plain[key] = entity[key];
+  }
+  return plain;
+}
+
+// Per AROCAPI, an entity's full metadata is its own "mini crate" — the
+// GET /entity/{id}/metadata endpoint returns the whole JSON-LD document
+// for that entity, not just the handful of flat columns mirrored into the
+// entities table (which has no room for, say, every EXIF PropertyValue).
+// This loads that full entity object straight out of the crate file it
+// actually lives in, resolving nested references (thumbnail, exifData)
+// rather than leaving them as bare {'@id': ...} stubs, caching each crate
+// file so it is only read and parsed once no matter how many of its
+// entities are looked up.
+async function loadEntityCrateJson(fsAdapter, crateCache, roCrateId, entityId) {
+  let crate = crateCache.get(roCrateId);
+  if (!crate) {
+    const cratePath = joinPath(roCrateId, CRATE_FILE_NAME);
+    const json = (await fsAdapter.exists(cratePath))
+      ? Buffer.from(await fsAdapter.readFile(cratePath)).toString('utf8')
+      : null;
+    crate = loadOrCreateCrate(json);
+    crateCache.set(roCrateId, crate);
+  }
+  const entity = crate.getEntity(crateRelativeEntityId(roCrateId, entityId));
+  return entity ? JSON.stringify(resolveEntityShallow(entity)) : null;
+}
+
+async function exportExcel(rootDir, outputPath, { includeEntityCrates = false } = {}) {
   const dbPath = path.join(rootDir, INDEX_FILE_NAME);
   if (!fs.existsSync(dbPath)) {
     throw new Error(`No index found at ${dbPath} — run 'rocphotos scan ${rootDir}' first.`);
@@ -348,6 +387,22 @@ async function exportExcel(rootDir, outputPath) {
   ];
   filesSheet.addRows(files);
 
+  if (includeEntityCrates) {
+    const fsAdapter = createNodeFsAdapter(rootDir);
+    const crateCache = new Map();
+
+    const entityCratesSheet = workbook.addWorksheet('Entity Crates');
+    entityCratesSheet.columns = [
+      { header: 'id', key: 'id', width: 44 },
+      { header: 'ro_crate_id', key: 'ro_crate_id', width: 20 },
+      { header: 'crate_json', key: 'crate_json', width: 120 },
+    ];
+    for (const entity of entities) {
+      const crateJson = await loadEntityCrateJson(fsAdapter, crateCache, entity.ro_crate_id, entity.id);
+      entityCratesSheet.addRow({ id: entity.id, ro_crate_id: entity.ro_crate_id, crate_json: crateJson });
+    }
+  }
+
   await workbook.xlsx.writeFile(outputPath);
   console.log(`Wrote ${roCrates.length} RO-Crate(s), ${entities.length} entities, ${files.length} files to ${outputPath}`);
 }
@@ -359,12 +414,17 @@ function fail(err) {
 
 function usage() {
   console.error('Usage: rocphotos scan <directory> [--loose-root-images=move|ignore] [--loose-root-images-folder=<name>]');
-  console.error('       rocphotos export-excel <directory> [output.xlsx]');
+  console.error('       rocphotos export-excel <directory> [output.xlsx] [--include-entity-crates]');
   console.error('');
   console.error('--loose-root-images resolves images found loose in the collection root');
   console.error('(alongside other subdirectories) without an interactive prompt: "move"');
   console.error('moves them into a new folder ("images" by default, or --loose-root-images-folder),');
   console.error('"ignore" records them in rocphotos.config.json so they are skipped.');
+  console.error('');
+  console.error('--include-entity-crates adds an extra sheet with each entity\'s full');
+  console.error('RO-Crate JSON-LD document (its "mini crate", per AROCAPI), not just the');
+  console.error('flat columns in the Entities sheet. Makes the workbook much larger; meant');
+  console.error('for debugging, not routine review.');
   process.exit(1);
 }
 
@@ -401,7 +461,7 @@ if (command === 'scan' && targetDir) {
 } else if (command === 'export-excel' && targetDir) {
   const resolvedDir = path.resolve(targetDir);
   const outputPath = path.resolve(extraArg || path.join(resolvedDir, 'rocphotos-index.xlsx'));
-  exportExcel(resolvedDir, outputPath).catch(fail);
+  exportExcel(resolvedDir, outputPath, { includeEntityCrates: Boolean(flags['include-entity-crates']) }).catch(fail);
 } else {
   usage();
 }

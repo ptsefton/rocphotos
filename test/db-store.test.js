@@ -10,6 +10,7 @@ import {
   listFiles,
   crateEntityId,
   imageEntityId,
+  crateRelativeEntityId,
   ENTITY_TYPE_COLLECTION,
   ENTITY_TYPE_IMAGE,
   DEFAULT_LICENSE_ID,
@@ -24,6 +25,26 @@ describe('crateEntityId / imageEntityId', () => {
   it('gives an image a collection-relative id, unique across every crate', () => {
     expect(imageEntityId('', 'photo.jpg')).toEqual('photo.jpg');
     expect(imageEntityId('2025/03/10', 'photo.jpg')).toEqual('2025/03/10/photo.jpg');
+  });
+});
+
+describe('crateRelativeEntityId', () => {
+  it('is the inverse of imageEntityId: strips the crate directory prefix back off', () => {
+    expect(crateRelativeEntityId('2025/03/10', imageEntityId('2025/03/10', 'photo.jpg'))).toEqual('photo.jpg');
+  });
+
+  it('handles an image nested in a subdirectory absorbed into the crate', () => {
+    const collectionId = imageEntityId('2006/01/03', 'Originals/CIMG2390.JPG');
+    expect(crateRelativeEntityId('2006/01/03', collectionId)).toEqual('Originals/CIMG2390.JPG');
+  });
+
+  it('maps a sub-crate\'s own Collection entity id back to the RO-Crate root convention', () => {
+    expect(crateRelativeEntityId('2025/03/10', crateEntityId('2025/03/10'))).toEqual('./');
+  });
+
+  it('leaves root-crate ids unchanged, since they are already crate-relative', () => {
+    expect(crateRelativeEntityId('', imageEntityId('', 'photo.jpg'))).toEqual('photo.jpg');
+    expect(crateRelativeEntityId('', crateEntityId(''))).toEqual('./');
   });
 });
 
