@@ -5,6 +5,8 @@ import {
   upsertRoCrate,
   upsertEntity,
   upsertFile,
+  setEntityFacetValues,
+  listFacetValuesForEntity,
   listRoCrates,
   listEntities,
   listFiles,
@@ -210,25 +212,43 @@ describe('db store', () => {
     expect(getFileById(db, 'photo.jpg').media_type).toEqual('image/jpeg');
     expect(listFilesForEntity(db, 'photo.jpg')).toHaveLength(1);
   });
+
+  it('sets, replaces, and lists an entity\'s values for one facet', () => {
+    const rootId = crateEntityId('');
+    upsertRoCrate(db, { id: rootId, path: '.', name: 'root' });
+    upsertEntity(db, { id: 'photo.jpg', roCrateId: rootId, entityType: ENTITY_TYPE_IMAGE, name: 'photo.jpg' });
+
+    setEntityFacetValues(db, 'photo.jpg', 'keyword', ['Bird', 'Background']);
+    expect(listFacetValuesForEntity(db, 'photo.jpg', 'keyword')).toEqual(['Background', 'Bird']);
+
+    // A rescan reflects removed as well as added values, not just an
+    // ever-growing accumulation.
+    setEntityFacetValues(db, 'photo.jpg', 'keyword', ['Bird']);
+    expect(listFacetValuesForEntity(db, 'photo.jpg', 'keyword')).toEqual(['Bird']);
+
+    // A different facet on the same entity is unaffected.
+    setEntityFacetValues(db, 'photo.jpg', 'camera', ['Google Pixel 6a']);
+    expect(listFacetValuesForEntity(db, 'photo.jpg', 'camera')).toEqual(['Google Pixel 6a']);
+    expect(listFacetValuesForEntity(db, 'photo.jpg', 'keyword')).toEqual(['Bird']);
+  });
 });
 
 describe('facetValuesFromRecord', () => {
   it('combines Make and Model into a single camera facet value', () => {
-    const record = { dateCreated: null, exifEntries: [{ name: 'Make', value: 'Google' }, { name: 'Model', value: 'Pixel 6a' }] };
+    const record = { exifEntries: [{ name: 'Make', value: 'Google' }, { name: 'Model', value: 'Pixel 6a' }] };
     expect(facetValuesFromRecord(record).camera).toEqual('Google Pixel 6a');
   });
 
   it('prefers LensModel for the lens facet, falling back to LensMake alone', () => {
-    const withModel = { dateCreated: null, exifEntries: [{ name: 'LensMake', value: 'Google' }, { name: 'LensModel', value: 'Pixel 6a back camera 4.38mm f/1.73' }] };
+    const withModel = { exifEntries: [{ name: 'LensMake', value: 'Google' }, { name: 'LensModel', value: 'Pixel 6a back camera 4.38mm f/1.73' }] };
     expect(facetValuesFromRecord(withModel).lens).toEqual('Pixel 6a back camera 4.38mm f/1.73');
 
-    const makeOnly = { dateCreated: null, exifEntries: [{ name: 'LensMake', value: 'Google' }] };
+    const makeOnly = { exifEntries: [{ name: 'LensMake', value: 'Google' }] };
     expect(facetValuesFromRecord(makeOnly).lens).toEqual('Google');
   });
 
-  it('leaves camera and lens null, and passes dateCreated through, when no EXIF is available', () => {
-    const record = { dateCreated: '2025-03-10T00:00:00.000Z', exifEntries: [] };
-    expect(facetValuesFromRecord(record)).toEqual({ dateCreated: '2025-03-10T00:00:00.000Z', camera: null, lens: null });
+  it('leaves camera and lens null when no EXIF is available', () => {
+    expect(facetValuesFromRecord({ exifEntries: [] })).toEqual({ camera: null, lens: null });
   });
 });
 
@@ -236,26 +256,24 @@ describe('search and facetCounts', () => {
   let db;
   const rootId = crateEntityId('');
 
+  // a.jpg and b.jpg share a camera; only a.jpg carries the keyword
+  // 'Bird', shared with c.jpg (a different camera) — set up specifically
+  // so tests can tell the four facet dimensions apart from one another.
   beforeEach(() => {
     db = openNodeSqlite(':memory:');
     ensureSchema(db);
     upsertRoCrate(db, { id: rootId, path: '.', name: 'root' });
 
     const images = [
-      { id: 'a.jpg', camera: 'Google Pixel 6a', lens: 'Pixel 6a back camera', dateCreated: '2025-03-10T00:00:00.000Z' },
-      { id: 'b.jpg', camera: 'Google Pixel 6a', lens: 'Pixel 6a front camera', dateCreated: '2025-06-01T00:00:00.000Z' },
-      { id: 'c.jpg', camera: 'Canon EOS R5', lens: 'RF 24-70mm', dateCreated: '2024-12-25T00:00:00.000Z' },
+      { id: 'a.jpg', camera: 'Google Pixel 6a', lens: 'Pixel 6a back camera', dateCreated: '2025-03-10T00:00:00.000Z', keywords: ['Bird', 'Background'] },
+      { id: 'b.jpg', camera: 'Google Pixel 6a', lens: 'Pixel 6a front camera', dateCreated: '2025-06-01T00:00:00.000Z', keywords: [] },
+      { id: 'c.jpg', camera: 'Canon EOS R5', lens: 'RF 24-70mm', dateCreated: '2024-12-25T00:00:00.000Z', keywords: ['Bird'] },
     ];
     for (const image of images) {
-      upsertEntity(db, {
-        id: image.id,
-        roCrateId: rootId,
-        entityType: ENTITY_TYPE_IMAGE,
-        name: image.id,
-        dateCreated: image.dateCreated,
-        camera: image.camera,
-        lens: image.lens,
-      });
+      upsertEntity(db, { id: image.id, roCrateId: rootId, entityType: ENTITY_TYPE_IMAGE, name: image.id, dateCreated: image.dateCreated });
+      setEntityFacetValues(db, image.id, 'camera', [image.camera]);
+      setEntityFacetValues(db, image.id, 'lens', [image.lens]);
+      setEntityFacetValues(db, image.id, 'keyword', image.keywords);
     }
   });
 
@@ -265,11 +283,19 @@ describe('search and facetCounts', () => {
     expect(countSearchResults(db, { entityType: ENTITY_TYPE_IMAGE, camera: 'Google Pixel 6a' })).toEqual(2);
   });
 
-  it('combines multiple facet filters (AND)', () => {
+  it('combines multiple column-backed facet filters (AND)', () => {
     const results = searchEntities(db, { camera: 'Google Pixel 6a', year: '2025' });
     expect(results).toHaveLength(2);
     const results2024 = searchEntities(db, { camera: 'Google Pixel 6a', year: '2024' });
     expect(results2024).toHaveLength(0);
+  });
+
+  it('filters by a keyword, and combines it with a column-backed facet (AND)', () => {
+    const byKeyword = searchEntities(db, { keyword: 'Bird' });
+    expect(byKeyword.map((r) => r.id).sort()).toEqual(['a.jpg', 'c.jpg']);
+
+    const combined = searchEntities(db, { keyword: 'Bird', camera: 'Google Pixel 6a' });
+    expect(combined.map((r) => r.id)).toEqual(['a.jpg']);
   });
 
   it('computes camera facet counts', () => {
@@ -288,6 +314,14 @@ describe('search and facetCounts', () => {
     ]));
   });
 
+  it('computes keyword facet counts', () => {
+    const counts = facetCounts(db, 'keyword', {});
+    expect(counts).toEqual(expect.arrayContaining([
+      { value: 'Bird', count: 2 },
+      { value: 'Background', count: 1 },
+    ]));
+  });
+
   it('does not let a facet\'s own selected value collapse its own counts to just that value', () => {
     // With camera already filtered to Google Pixel 6a, the camera facet
     // itself should still show every camera (so the user can switch),
@@ -300,6 +334,20 @@ describe('search and facetCounts', () => {
 
     const yearCounts = facetCounts(db, 'year', { camera: 'Google Pixel 6a' });
     expect(yearCounts).toEqual([{ value: '2025', count: 2 }]);
+  });
+
+  it('narrows a column-backed facet\'s counts by an active keyword filter, and vice versa', () => {
+    const cameraCountsUnderBird = facetCounts(db, 'camera', { keyword: 'Bird' });
+    expect(cameraCountsUnderBird.sort((a, b) => a.value.localeCompare(b.value))).toEqual([
+      { value: 'Canon EOS R5', count: 1 },
+      { value: 'Google Pixel 6a', count: 1 },
+    ]);
+
+    const keywordCountsUnderCamera = facetCounts(db, 'keyword', { camera: 'Google Pixel 6a' });
+    expect(keywordCountsUnderCamera.sort((a, b) => a.value.localeCompare(b.value))).toEqual([
+      { value: 'Background', count: 1 },
+      { value: 'Bird', count: 1 },
+    ]);
   });
 
   it('rejects an unknown facet name rather than building unsafe SQL from it', () => {

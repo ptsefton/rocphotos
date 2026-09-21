@@ -7,21 +7,81 @@ const EXIF_FIELDS = [
   'LensMake', 'LensModel',
 ];
 
+// Keyword-bearing fields, checked in this order of preference. All three
+// are commonly written together by keywording tools (Lightroom, digiKam,
+// Photo Mechanic, ...): `Keywords` is the legacy IPTC field (a flat
+// list); `subject` is its XMP (dc:subject) equivalent, also flat;
+// `hierarchicalSubject` is Lightroom's XMP extension, encoding a keyword
+// hierarchy as `Parent|Child` per entry. hierarchicalSubject is tried
+// first since it is the most information-preserving of the three, though
+// see keywordsFromExif for why that barely matters once flattened.
+const KEYWORD_FIELDS = ['hierarchicalSubject', 'subject', 'Keywords'];
+
 /**
- * Extracts a small set of EXIF fields from image bytes. A missing or empty
- * EXIF segment (common for formats such as PNG) is not an error. Only a
- * thrown parsing failure (malformed EXIF data) is reported as an error, per
- * the application's requirement to still add the image to the crate and
- * record the problem in its description.
+ * Extracts a small set of EXIF/IPTC/XMP fields from image bytes. A
+ * missing or empty EXIF segment (common for formats such as PNG) is not
+ * an error. Only a thrown parsing failure (malformed EXIF data) is
+ * reported as an error, per the application's requirement to still add
+ * the image to the crate and record the problem in its description.
+ *
+ * Note: passing exifr a plain array of wanted tag names (as this used to
+ * do) only restricts what it reads from the EXIF/TIFF segment — it does
+ * not, by itself, enable IPTC or XMP parsing at all, so fields such as
+ * Keywords or hierarchicalSubject were never actually being read. The
+ * `{ iptc: true, xmp: true }` object form is required to enable those
+ * segments; the specific fields this application cares about (see
+ * EXIF_FIELDS and KEYWORD_FIELDS) are then picked out of the full result
+ * here, in application code, rather than via exifr's own `pick` option,
+ * which was found not to reliably restrict output across segments.
  *
  * @param {Uint8Array} bytes
  * @returns {Promise<{exif: object|null, error: string|null}>}
  */
 export async function extractExif(bytes) {
   try {
-    const tags = await parse(bytes, EXIF_FIELDS);
-    return { exif: tags ?? null, error: null };
+    const tags = await parse(bytes, { iptc: true, xmp: true });
+    if (!tags) {
+      return { exif: null, error: null };
+    }
+
+    const picked = {};
+    for (const key of [...EXIF_FIELDS, ...KEYWORD_FIELDS]) {
+      if (tags[key] !== undefined) {
+        picked[key] = tags[key];
+      }
+    }
+    return { exif: picked, error: null };
   } catch (err) {
     return { exif: null, error: `EXIF extraction failed: ${err.message}` };
   }
+}
+
+/**
+ * Flattens whichever keyword field is present (see KEYWORD_FIELDS) into a
+ * de-duplicated, flat list of individual keyword terms. A hierarchical
+ * entry such as "Bird|Nankeen Kestrel" (the real-world separator
+ * confirmed against files tagged in Lightroom; other tools may use a
+ * different one, such as '/' or '>', and this would need adjusting to
+ * match) contributes both "Bird" and "Nankeen Kestrel" as independent
+ * terms, so that selecting the broader term ("Bird") as a facet still
+ * finds photos tagged only with the more specific one.
+ *
+ * @param {object|null} exif
+ * @returns {string[]}
+ */
+export function keywordsFromExif(exif) {
+  if (!exif) return [];
+
+  const source = KEYWORD_FIELDS.map((key) => exif[key]).find((value) => value !== undefined);
+  if (!source) return [];
+
+  const entries = Array.isArray(source) ? source : [source];
+  const flat = new Set();
+  for (const entry of entries) {
+    for (const level of String(entry).split('|')) {
+      const trimmed = level.trim();
+      if (trimmed) flat.add(trimmed);
+    }
+  }
+  return [...flat];
 }

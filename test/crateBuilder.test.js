@@ -181,4 +181,35 @@ describe('readImageRecord', () => {
     const record = readImageRecord(crate, 'photo.jpg');
     expect(record.description).toEqual('bad file');
   });
+
+  it('reconstructs keywords, and defaults to an empty array when none were recorded', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'a.jpg', exif: { hierarchicalSubject: ['Bird|Nankeen Kestrel'] } });
+    addImageEntity(crate, { path: 'b.jpg' });
+
+    const reloaded = loadOrCreateCrate(serializeCrate(crate));
+    expect(readImageRecord(reloaded, 'a.jpg').keywords.sort()).toEqual(['Bird', 'Nankeen Kestrel']);
+    expect(readImageRecord(reloaded, 'b.jpg').keywords).toEqual([]);
+  });
+});
+
+describe('addImageEntity keywords', () => {
+  it('records flattened keywords on the entity and in the returned record', () => {
+    const crate = loadOrCreateCrate(null);
+    const record = addImageEntity(crate, { path: 'photo.jpg', exif: { hierarchicalSubject: ['Bird|Nankeen Kestrel', 'Background'] } });
+
+    expect(record.keywords.sort()).toEqual(['Background', 'Bird', 'Nankeen Kestrel']);
+    expect(crate.getEntity('photo.jpg').keywords.sort()).toEqual(['Background', 'Bird', 'Nankeen Kestrel']);
+  });
+
+  it('does not set keywords when there are none, or when EXIF failed', () => {
+    const crate = loadOrCreateCrate(null);
+    const clean = addImageEntity(crate, { path: 'a.jpg', exif: { Make: 'Acme' } });
+    const failed = addImageEntity(crate, { path: 'b.jpg', exif: { hierarchicalSubject: ['Bird'] }, exifError: 'bad file' });
+
+    expect(clean.keywords).toEqual([]);
+    expect(failed.keywords).toEqual([]);
+    expect(crate.getEntity('a.jpg').keywords).toBeUndefined();
+    expect(crate.getEntity('b.jpg').keywords).toBeUndefined();
+  });
 });

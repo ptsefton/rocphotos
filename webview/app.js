@@ -1,6 +1,6 @@
 const IMAGE_ENTITY_TYPE = 'http://pcdm.org/models#Object';
-const FACET_NAMES = ['camera', 'lens', 'year'];
-const FACET_LABELS = { camera: 'Camera', lens: 'Lens', year: 'Year' };
+const FACET_NAMES = ['camera', 'lens', 'keyword', 'year'];
+const FACET_LABELS = { camera: 'Camera', lens: 'Lens', keyword: 'Keywords', year: 'Year' };
 
 const facetsEl = document.querySelector('#facets');
 const activeFiltersEl = document.querySelector('#active-filters');
@@ -66,6 +66,9 @@ function renderFacets(facets = {}) {
     heading.textContent = FACET_LABELS[facetName];
     group.appendChild(heading);
 
+    const valuesEl = document.createElement('div');
+    valuesEl.className = 'facet-values';
+
     for (const { name, count } of values) {
       const row = document.createElement('div');
       row.className = 'facet-value' + (activeFilters[facetName] === name ? ' active' : '');
@@ -80,9 +83,10 @@ function renderFacets(facets = {}) {
       row.appendChild(countEl);
 
       row.addEventListener('click', () => toggleFilter(facetName, name));
-      group.appendChild(row);
+      valuesEl.appendChild(row);
     }
 
+    group.appendChild(valuesEl);
     facetsEl.appendChild(group);
   }
 }

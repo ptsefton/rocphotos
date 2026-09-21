@@ -7,6 +7,7 @@ import {
   upsertRoCrate,
   upsertEntity,
   upsertFile,
+  setEntityFacetValues,
   crateEntityId,
   imageEntityId,
   ENTITY_TYPE_COLLECTION,
@@ -74,8 +75,11 @@ beforeEach(async () => {
   const photoId = imageEntityId('2025/03/10', 'photo.jpg');
   upsertEntity(db, {
     id: photoId, roCrateId: subCrateId, entityType: ENTITY_TYPE_IMAGE, name: 'photo.jpg', memberOf: subCrateId,
-    dateCreated: photoRecord.dateCreated, camera: 'Google Pixel 6a', lens: 'Pixel 6a back camera',
+    dateCreated: photoRecord.dateCreated,
   });
+  setEntityFacetValues(db, photoId, 'camera', ['Google Pixel 6a']);
+  setEntityFacetValues(db, photoId, 'lens', ['Pixel 6a back camera']);
+  setEntityFacetValues(db, photoId, 'keyword', ['Bird', 'Background']);
   upsertFile(db, { id: photoId, entityId: photoId, filename: 'photo.jpg', mediaType: 'image/jpeg', size: 16, relativePath: photoId });
 
   const undatedId = imageEntityId('2025/03/10', 'undated.jpg');
@@ -89,7 +93,7 @@ describe('GET /capabilities', () => {
   it('declares the supported facets', async () => {
     const res = await handleRequest({ method: 'GET', path: '/capabilities' });
     expect(res.status).toEqual(200);
-    expect(JSON.parse(res.body).search.facets).toEqual(['camera', 'lens', 'year']);
+    expect(JSON.parse(res.body).search.facets).toEqual(['camera', 'lens', 'keyword', 'year']);
   });
 });
 
@@ -100,6 +104,13 @@ describe('GET /entities', () => {
 
     const filtered = await handleRequest({ method: 'GET', path: '/entities', query: { camera: 'Google Pixel 6a' } });
     const parsed = JSON.parse(filtered.body);
+    expect(parsed.total).toEqual(1);
+    expect(parsed.entities[0].id).toEqual('2025/03/10/photo.jpg');
+  });
+
+  it('filters by a keyword facet from the query string', async () => {
+    const res = await handleRequest({ method: 'GET', path: '/entities', query: { keyword: 'Bird' } });
+    const parsed = JSON.parse(res.body);
     expect(parsed.total).toEqual(1);
     expect(parsed.entities[0].id).toEqual('2025/03/10/photo.jpg');
   });
@@ -207,6 +218,19 @@ describe('POST /search', () => {
     expect(parsed.total).toEqual(2);
     expect(parsed.facets.camera).toEqual(expect.arrayContaining([{ name: 'Google Pixel 6a', count: 1 }]));
     expect(parsed.facets.lens).toBeUndefined(); // not requested
+  });
+
+  it('computes keyword facet counts, since one entity can have several values for it', async () => {
+    const res = await handleRequest({
+      method: 'POST',
+      path: '/search',
+      body: { filters: { entityType: ENTITY_TYPE_IMAGE }, facets: ['keyword'] },
+    });
+    const parsed = JSON.parse(res.body);
+    expect(parsed.facets.keyword.sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+      { name: 'Background', count: 1 },
+      { name: 'Bird', count: 1 },
+    ]);
   });
 
   it('rejects an unsupported facet name', async () => {

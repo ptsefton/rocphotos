@@ -14,9 +14,10 @@ import { CRATE_FILE_NAME } from '../crateBuilder.js';
 import { loadEntityFromCrate } from '../entityCrate.js';
 import { joinPath } from '../pathUtils.js';
 
-// The facets this deployment supports, per the request scope: camera and
-// lens (from EXIF) and year (derived from the image's dateCreated).
-const SUPPORTED_FACETS = ['camera', 'lens', 'year'];
+// The facets this deployment supports: camera and lens (from EXIF),
+// keyword (from IPTC/XMP, possibly several per image), and year (derived
+// from the image's dateCreated).
+const SUPPORTED_FACETS = ['camera', 'lens', 'keyword', 'year'];
 
 const CAPABILITIES = {
   apiVersion: '0.1.0-partial',
@@ -66,7 +67,7 @@ function fileToJson(row) {
 // two stay in sync.
 function filtersFrom(source) {
   const filters = {};
-  for (const key of ['entityType', 'memberOf', 'camera', 'lens', 'year']) {
+  for (const key of ['entityType', 'memberOf', 'camera', 'lens', 'keyword', 'year']) {
     if (source[key]) filters[key] = source[key];
   }
   return filters;

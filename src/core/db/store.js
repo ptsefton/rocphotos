@@ -111,23 +111,22 @@ export function upsertRoCrate(driver, { id, path, name }) {
 }
 
 /**
- * Derives the facet column values (see schema.js: entities.camera,
- * entities.lens, entities.date_created) from a record as returned by
- * addImageEntity or readImageRecord, so both the fresh-processing and
- * the unchanged-file-reuse path in a scan populate them the same way.
- * `camera` combines Make and Model ("Google Pixel 6a"); `lens` prefers
- * LensModel, since it is typically already a full description (e.g.
- * "Pixel 6a back camera 4.38mm f/1.73"), falling back to LensMake alone
- * if that is all that is available.
+ * Derives the single-valued facets (camera, lens — see setEntityFacet)
+ * from a record as returned by addImageEntity or readImageRecord, so
+ * both the fresh-processing and the unchanged-file-reuse path in a scan
+ * populate them the same way. `camera` combines Make and Model ("Google
+ * Pixel 6a"); `lens` prefers LensModel, since it is typically already a
+ * full description ("Pixel 6a back camera 4.38mm f/1.73"), falling back
+ * to LensMake alone if that is all that is available.
  *
- * @param {{dateCreated: string|null, exifEntries: Array<{name: string, value: string}>}} record
- * @returns {{dateCreated: string|null, camera: string|null, lens: string|null}}
+ * @param {{exifEntries: Array<{name: string, value: string}>}} record
+ * @returns {{camera: string|null, lens: string|null}}
  */
 export function facetValuesFromRecord(record) {
   const exifByName = Object.fromEntries((record.exifEntries ?? []).map((entry) => [entry.name, entry.value]));
   const camera = [exifByName.Make, exifByName.Model].filter(Boolean).join(' ') || null;
   const lens = exifByName.LensModel || exifByName.LensMake || null;
-  return { dateCreated: record.dateCreated ?? null, camera, lens };
+  return { camera, lens };
 }
 
 /**
@@ -143,9 +142,7 @@ export function facetValuesFromRecord(record) {
  * @param {string} [entity.contentLicenseId]
  * @param {boolean} [entity.accessMetadata]
  * @param {boolean} [entity.accessContent]
- * @param {string|null} [entity.dateCreated] - see facetValuesFromRecord
- * @param {string|null} [entity.camera]
- * @param {string|null} [entity.lens]
+ * @param {string|null} [entity.dateCreated] - also the basis of the 'year' facet, derived at query time (see facetCounts)
  */
 export function upsertEntity(driver, {
   id,
@@ -159,15 +156,13 @@ export function upsertEntity(driver, {
   accessMetadata = true,
   accessContent = true,
   dateCreated = null,
-  camera = null,
-  lens = null,
 }) {
   driver.run(
     `INSERT INTO entities (
        id, ro_crate_id, entity_type, name, description, member_of,
        metadata_license_id, content_license_id, access_metadata, access_content,
-       date_created, camera, lens
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       date_created
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        ro_crate_id = excluded.ro_crate_id,
        entity_type = excluded.entity_type,
@@ -178,13 +173,11 @@ export function upsertEntity(driver, {
        content_license_id = excluded.content_license_id,
        access_metadata = excluded.access_metadata,
        access_content = excluded.access_content,
-       date_created = excluded.date_created,
-       camera = excluded.camera,
-       lens = excluded.lens`,
+       date_created = excluded.date_created`,
     [
       id, roCrateId, entityType, name, description, memberOf,
       metadataLicenseId, contentLicenseId, accessMetadata ? 1 : 0, accessContent ? 1 : 0,
-      dateCreated, camera, lens,
+      dateCreated,
     ],
   );
 }
@@ -247,6 +240,44 @@ export function listFiles(driver) {
 }
 
 /**
+ * Replaces an entity's full set of values for one facet (see
+ * entity_facets in schema.js) with `values`, so a rescan reflects
+ * removed as well as added values rather than only ever accumulating
+ * rows — unlike the other upsert* functions, which each update one
+ * already-identified row, a "list" property like this needs its whole
+ * old set cleared first. A no-op (clears any existing rows for this
+ * facet, adds none) when `values` is empty; used for single-valued
+ * facets (camera, lens — pass a one-element array, or none) exactly the
+ * same way as multi-valued ones (keyword).
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} entityId
+ * @param {string} facetName
+ * @param {string[]} values
+ */
+export function setEntityFacetValues(driver, entityId, facetName, values) {
+  driver.run('DELETE FROM entity_facets WHERE entity_id = ? AND facet_name = ?', [entityId, facetName]);
+  for (const value of values) {
+    driver.run(
+      'INSERT INTO entity_facets (entity_id, facet_name, value) VALUES (?, ?, ?) ON CONFLICT(entity_id, facet_name, value) DO NOTHING',
+      [entityId, facetName, value],
+    );
+  }
+}
+
+/**
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} entityId
+ * @param {string} facetName
+ * @returns {string[]}
+ */
+export function listFacetValuesForEntity(driver, entityId, facetName) {
+  return driver
+    .all('SELECT value FROM entity_facets WHERE entity_id = ? AND facet_name = ? ORDER BY value', [entityId, facetName])
+    .map((row) => row.value);
+}
+
+/**
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
  * @param {string} id
  */
@@ -270,71 +301,92 @@ export function listFilesForEntity(driver, entityId) {
   return driver.all('SELECT * FROM files WHERE entity_id = ? ORDER BY id', [entityId]);
 }
 
-// The facet dimensions supported for search, per the request scope: camera
-// and lens (each a plain column) and year (derived from date_created).
-// Kept as an explicit whitelist — never build this SQL fragment from a
-// caller-supplied field name directly — since it is interpolated into a
-// GROUP BY/SELECT clause rather than bound as a parameter.
-const FACET_COLUMNS = {
-  camera: 'camera',
-  lens: 'lens',
-  year: "substr(date_created, 1, 4)",
-};
+// Facets backed by a row in the generic entity_facets table — every
+// facet except 'year', which is derived from entities.date_created at
+// query time instead (see facetCounts) rather than being duplicated into
+// entity_facets. Kept as an explicit whitelist: facet *names* are always
+// interpolated directly into SQL as a quoted literal, never bound as a
+// parameter or taken from arbitrary caller input, so every name reaching
+// SQL must first be checked against this list.
+const STORED_FACETS = ['camera', 'lens', 'keyword'];
+
+function assertKnownFacet(facetName) {
+  if (facetName !== 'year' && !STORED_FACETS.includes(facetName)) {
+    throw new Error(`Unknown facet "${facetName}"`);
+  }
+}
 
 /**
- * Builds a `WHERE ... ` fragment (or '') and its bound parameters from a
- * search filter set. `excludeFacet`, when given, omits that one facet's
- * own filter from the clause — used when counting values for that facet
- * itself, so its counts reflect every other active filter without being
- * collapsed onto whichever single value is already selected for it.
+ * Builds the `JOIN`/`WHERE` fragments and bound parameters for a search
+ * filter set. `excludeFacet`, when given, omits that one facet's own
+ * filter — used when counting values for that facet itself, so its
+ * counts reflect every other active filter without being collapsed onto
+ * whichever single value is already selected for it.
+ *
+ * Every stored facet (see STORED_FACETS) that has an active filter joins
+ * entity_facets once, under its own alias (f0, f1, ...), so filtering by
+ * more than one facet at once (e.g. a camera and a keyword) works
+ * without the joins colliding.
  *
  * @param {object} filters
  * @param {string} [filters.entityType]
  * @param {string} [filters.memberOf]
+ * @param {string} [filters.year] - a 4-digit year
  * @param {string} [filters.camera]
  * @param {string} [filters.lens]
- * @param {string} [filters.year] - a 4-digit year
- * @param {string} [excludeFacet] - 'camera' | 'lens' | 'year'
+ * @param {string} [filters.keyword]
+ * @param {string} [excludeFacet] - 'camera' | 'lens' | 'year' | 'keyword'
  */
-function buildSearchWhere(filters, excludeFacet = null) {
-  const clauses = [];
-  const params = [];
+function buildSearchQuery(filters, excludeFacet = null) {
+  const joinParts = [];
+  const whereClauses = [];
+  const whereParams = [];
 
   if (filters.entityType) {
-    clauses.push('entity_type = ?');
-    params.push(filters.entityType);
+    whereClauses.push('e.entity_type = ?');
+    whereParams.push(filters.entityType);
   }
   if (filters.memberOf) {
-    clauses.push('member_of = ?');
-    params.push(filters.memberOf);
-  }
-  if (filters.camera && excludeFacet !== 'camera') {
-    clauses.push('camera = ?');
-    params.push(filters.camera);
-  }
-  if (filters.lens && excludeFacet !== 'lens') {
-    clauses.push('lens = ?');
-    params.push(filters.lens);
+    whereClauses.push('e.member_of = ?');
+    whereParams.push(filters.memberOf);
   }
   if (filters.year && excludeFacet !== 'year') {
-    clauses.push(`${FACET_COLUMNS.year} = ?`);
-    params.push(filters.year);
+    whereClauses.push('substr(e.date_created, 1, 4) = ?');
+    whereParams.push(filters.year);
   }
 
-  return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', params };
+  let aliasIndex = 0;
+  for (const facetName of STORED_FACETS) {
+    if (filters[facetName] && excludeFacet !== facetName) {
+      const alias = `f${aliasIndex}`;
+      aliasIndex += 1;
+      // facetName is always one of STORED_FACETS here, never arbitrary
+      // input, so inlining it as a literal is safe and avoids having to
+      // interleave join-parameter and where-parameter positions by hand.
+      joinParts.push(`JOIN entity_facets ${alias} ON ${alias}.entity_id = e.id AND ${alias}.facet_name = '${facetName}'`);
+      whereClauses.push(`${alias}.value = ?`);
+      whereParams.push(filters[facetName]);
+    }
+  }
+
+  return {
+    join: joinParts.length > 0 ? ` ${joinParts.join(' ')}` : '',
+    where: whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '',
+    params: whereParams,
+  };
 }
 
 /**
  * Entities matching a filter set, most recently dated first.
  *
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
- * @param {object} [filters] - see buildSearchWhere
+ * @param {object} [filters] - see buildSearchQuery
  * @param {{limit?: number, offset?: number}} [page]
  */
 export function searchEntities(driver, filters = {}, { limit = 100, offset = 0 } = {}) {
-  const { where, params } = buildSearchWhere(filters);
+  const { join, where, params } = buildSearchQuery(filters);
   return driver.all(
-    `SELECT * FROM entities ${where} ORDER BY date_created DESC, id ASC LIMIT ? OFFSET ?`,
+    `SELECT DISTINCT e.* FROM entities e${join} ${where} ORDER BY e.date_created DESC, e.id ASC LIMIT ? OFFSET ?`,
     [...params, limit, offset],
   );
 }
@@ -343,37 +395,44 @@ export function searchEntities(driver, filters = {}, { limit = 100, offset = 0 }
  * The total number of entities matching a filter set (ignoring paging).
  *
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
- * @param {object} [filters] - see buildSearchWhere
+ * @param {object} [filters] - see buildSearchQuery
  */
 export function countSearchResults(driver, filters = {}) {
-  const { where, params } = buildSearchWhere(filters);
-  return driver.get(`SELECT COUNT(*) as count FROM entities ${where}`, params).count;
+  const { join, where, params } = buildSearchQuery(filters);
+  return driver.get(`SELECT COUNT(DISTINCT e.id) as count FROM entities e${join} ${where}`, params).count;
 }
 
 /**
- * Value/count pairs for one facet dimension ('camera', 'lens', or
- * 'year'), most common first, computed against every *other* active
- * filter but not the facet's own (see buildSearchWhere), so selecting a
- * value for a different facet narrows these counts, but a facet never
- * narrows its own counts down to just its currently selected value.
+ * Value/count pairs for one facet dimension ('camera', 'lens', 'year',
+ * or 'keyword'), most common first, computed against every *other*
+ * active filter but not the facet's own (see buildSearchQuery), so
+ * selecting a value for a different facet narrows these counts, but a
+ * facet never narrows its own counts down to just its currently selected
+ * value.
  *
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
- * @param {'camera'|'lens'|'year'} facetName
- * @param {object} [filters] - see buildSearchWhere
+ * @param {'camera'|'lens'|'year'|'keyword'} facetName
+ * @param {object} [filters] - see buildSearchQuery
  * @returns {Array<{value: string, count: number}>}
  */
 export function facetCounts(driver, facetName, filters = {}) {
-  const column = FACET_COLUMNS[facetName];
-  if (!column) {
-    throw new Error(`Unknown facet "${facetName}"`);
+  assertKnownFacet(facetName);
+  const { join, where, params } = buildSearchQuery(filters, facetName);
+
+  if (facetName === 'year') {
+    const column = 'substr(e.date_created, 1, 4)';
+    const fullWhere = where ? `${where} AND ${column} IS NOT NULL` : `WHERE ${column} IS NOT NULL`;
+    return driver.all(
+      `SELECT ${column} as value, COUNT(DISTINCT e.id) as count FROM entities e${join} ${fullWhere} GROUP BY ${column} ORDER BY count DESC, value ASC`,
+      params,
+    );
   }
 
-  const { where, params } = buildSearchWhere(filters, facetName);
-  const notNullClause = `${column} IS NOT NULL`;
-  const fullWhere = where ? `${where} AND ${notNullClause}` : `WHERE ${notNullClause}`;
-
   return driver.all(
-    `SELECT ${column} as value, COUNT(*) as count FROM entities ${fullWhere} GROUP BY ${column} ORDER BY count DESC, value ASC`,
+    `SELECT ef.value as value, COUNT(DISTINCT e.id) as count
+     FROM entities e${join} JOIN entity_facets ef ON ef.entity_id = e.id AND ef.facet_name = '${facetName}'
+     ${where}
+     GROUP BY ef.value ORDER BY count DESC, value ASC`,
     params,
   );
 }

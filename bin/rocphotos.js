@@ -46,6 +46,7 @@ import {
   ensureSchema,
   upsertRoCrate,
   upsertEntity,
+  setEntityFacetValues,
   upsertFile,
   listRoCrates,
   listEntities,
@@ -296,8 +297,12 @@ async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false } = {}
         name: record.name,
         description: record.description,
         memberOf: crateEntityId(crateDirPath),
-        ...facetValuesFromRecord(record),
+        dateCreated: record.dateCreated,
       });
+      const { camera, lens } = facetValuesFromRecord(record);
+      setEntityFacetValues(db, entityId, 'camera', camera ? [camera] : []);
+      setEntityFacetValues(db, entityId, 'lens', lens ? [lens] : []);
+      setEntityFacetValues(db, entityId, 'keyword', record.keywords);
       upsertFile(db, {
         id: entityId,
         entityId,
