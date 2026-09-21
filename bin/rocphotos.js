@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline/promises';
 import ExcelJS from 'exceljs';
 import { createNodeFsAdapter } from '../src/adapters/nodeFs.js';
 import { generateThumbnail } from '../src/adapters/nodeThumbnail.js';
 import { openNodeSqlite } from '../src/adapters/nodeSqlite.js';
-import { walkCollection } from '../src/core/walker.js';
+import { walkCollection, detectLooseRootImages } from '../src/core/walker.js';
 import { extractExif } from '../src/core/exif.js';
 import { mediaTypeFor } from '../src/core/imageTypes.js';
 import {
@@ -23,7 +24,12 @@ import {
   earliestDate,
 } from '../src/core/htmlPreview.js';
 import { thumbnailPathFor } from '../src/core/thumbnails.js';
-import { loadExcludedDirectoryPatterns, compileDirectoryExclusionMatcher } from '../src/core/config.js';
+import {
+  loadExcludedDirectoryPatterns,
+  loadExcludedFilePatterns,
+  compileNamePatternMatcher,
+  addExcludedFiles,
+} from '../src/core/config.js';
 import {
   INDEX_FILE_NAME,
   ENTITY_TYPE_COLLECTION,
@@ -71,10 +77,77 @@ async function ensureThumbnail(fsAdapter, crateDirPath, imagePath, bytes) {
   return thumbnailPath;
 }
 
+// Finds a directory name inside rootDir that doesn't already exist, so
+// moving loose root images never collides with something already there.
+function findAvailableFolderName(rootDir, baseName) {
+  let candidate = baseName;
+  let suffix = 2;
+  while (fs.existsSync(path.join(rootDir, candidate))) {
+    candidate = `${baseName}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+// Detects images sitting loose directly in the collection root (see
+// detectLooseRootImages) and, if any are found, interactively offers to
+// either move them into a new subfolder (so they become a normal
+// sub-collection crate) or record them in rocphotos.config.json so they
+// are ignored on this and future scans. Left unresolved, they would
+// silently make the whole root a single crate and hide every
+// subdirectory crate beneath it.
+async function resolveLooseRootImages(fsAdapter, rootDir, isExcludedDir, isExcludedFile) {
+  const looseImages = await detectLooseRootImages(fsAdapter, isExcludedDir, isExcludedFile);
+  if (looseImages.length === 0) {
+    return;
+  }
+
+  console.log(`\nFound ${looseImages.length} image file(s) directly in the root of this collection, alongside other subdirectories:`);
+  for (const name of looseImages) {
+    console.log(`  ${name}`);
+  }
+  console.log('\nLeft as they are, these would make the whole root a single crate and prevent any of the subdirectories below from becoming their own crates.\n');
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  let answer;
+  try {
+    answer = (await rl.question(
+      'What would you like to do?\n'
+      + '  1) Move them into a new folder (e.g. "images/")\n'
+      + '  2) Ignore them (record in rocphotos.config.json)\n'
+      + '  3) Do nothing, cancel this scan\n'
+      + 'Choice [1/2/3]: ',
+    )).trim();
+  } finally {
+    rl.close();
+  }
+
+  if (answer === '1') {
+    const folderName = findAvailableFolderName(rootDir, 'images');
+    fs.mkdirSync(path.join(rootDir, folderName));
+    for (const name of looseImages) {
+      fs.renameSync(path.join(rootDir, name), path.join(rootDir, folderName, name));
+    }
+    console.log(`Moved ${looseImages.length} image(s) into ${folderName}/.\n`);
+  } else if (answer === '2') {
+    await addExcludedFiles(fsAdapter, looseImages);
+    console.log(`Added ${looseImages.length} filename(s) to excludeFiles in rocphotos.config.json.\n`);
+  } else {
+    throw new Error('Scan cancelled: resolve the loose root images (move or configure them to be ignored), then re-run scan.');
+  }
+}
+
 async function scan(rootDir) {
   const fsAdapter = createNodeFsAdapter(rootDir);
-  const isExcluded = compileDirectoryExclusionMatcher(await loadExcludedDirectoryPatterns(fsAdapter));
-  const { crateDirs } = await walkCollection(fsAdapter, isExcluded);
+  let isExcludedDir = compileNamePatternMatcher(await loadExcludedDirectoryPatterns(fsAdapter));
+  let isExcludedFile = compileNamePatternMatcher(await loadExcludedFilePatterns(fsAdapter));
+
+  await resolveLooseRootImages(fsAdapter, rootDir, isExcludedDir, isExcludedFile);
+  // Reload in case resolving just wrote a new excludeFiles entry.
+  isExcludedDir = compileNamePatternMatcher(await loadExcludedDirectoryPatterns(fsAdapter));
+  isExcludedFile = compileNamePatternMatcher(await loadExcludedFilePatterns(fsAdapter));
+
+  const { crateDirs } = await walkCollection(fsAdapter, isExcludedDir, isExcludedFile);
 
   const rootCrateJson = await readExistingCrateJson(fsAdapter, '');
   const rootCrate = loadOrCreateCrate(rootCrateJson);

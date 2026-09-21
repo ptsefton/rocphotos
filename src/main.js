@@ -17,7 +17,7 @@ import {
   earliestDate,
 } from './core/htmlPreview.js';
 import { thumbnailPathFor } from './core/thumbnails.js';
-import { loadExcludedDirectoryPatterns, compileDirectoryExclusionMatcher } from './core/config.js';
+import { loadExcludedDirectoryPatterns, loadExcludedFilePatterns, compileNamePatternMatcher } from './core/config.js';
 import { joinPath } from './core/pathUtils.js';
 
 const ALWAYS_RESCAN_KEY = 'rocphotos.alwaysRescan';
@@ -53,8 +53,9 @@ async function readExistingCrateJson(dirPath) {
 // and generating thumbnails. Used for the initial scan of a directory, and
 // whenever the user explicitly asks to rescan.
 async function scanAndBuild() {
-  const isExcluded = compileDirectoryExclusionMatcher(await loadExcludedDirectoryPatterns(fsAdapter));
-  const { crateDirs } = await walkCollection(fsAdapter, isExcluded);
+  const isExcludedDir = compileNamePatternMatcher(await loadExcludedDirectoryPatterns(fsAdapter));
+  const isExcludedFile = compileNamePatternMatcher(await loadExcludedFilePatterns(fsAdapter));
+  const { crateDirs } = await walkCollection(fsAdapter, isExcludedDir, isExcludedFile);
 
   const rootCrateJson = await readExistingCrateJson('');
   const rootCrate = loadOrCreateCrate(rootCrateJson);

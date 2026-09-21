@@ -111,7 +111,7 @@ The application accesses the local file system through the browser's File System
 
 ### 4.4 Architecture Constraints
 
-- The application does not depend on any backend server or database outside of what it manages itself: persistent state is limited to the contents of the selected directory, the RO-Crate metadata files it contains, and the SQLite index described in Section 3.2 — all stored inside that same directory tree, not in any separate service or external database.
+- The application does not depend on any backend server or database outside of what it manages itself: persistent state is limited to the contents of the selected directory, the RO-Crate metadata files it contains, and the SQLite index described in Section 3.2 — all stored inside that same directory tree, not in any separate service or external database. The SQLite database is jsut an index - it can always be regenerated from scratch.
 - Where the application does run a server (mode 2 in Section 4.1), it is bound to `127.0.0.1` only: a single-user, local convenience layer, never reachable from another machine.
 - The application does not transmit photo files or metadata to any external service.
 - The application operates on a single directory tree selected by the user at the start of a session.

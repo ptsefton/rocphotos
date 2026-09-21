@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createNodeFsAdapter } from '../src/adapters/nodeFs.js';
-import { findCrateDirectories, collectImages, walkCollection } from '../src/core/walker.js';
-import { compileDirectoryExclusionMatcher } from '../src/core/config.js';
+import { findCrateDirectories, collectImages, walkCollection, detectLooseRootImages } from '../src/core/walker.js';
+import { compileNamePatternMatcher } from '../src/core/config.js';
 import { createFixtureTree, removeFixtureTree } from './helpers/tempDir.js';
 
 let currentRoot = null;
@@ -78,10 +78,27 @@ describe('findCrateDirectories', () => {
     });
 
     const fs = createNodeFsAdapter(currentRoot);
-    const isExcluded = compileDirectoryExclusionMatcher(['^\\.', '^HTML']);
+    const isExcluded = compileNamePatternMatcher(['^\\.', '^HTML']);
     const crateDirs = await findCrateDirectories(fs, '', isExcluded);
 
     expect(crateDirs).toEqual([]);
+  });
+
+  it('does not let an excluded stray file at the root trigger a root-wide crate boundary', async () => {
+    // Mirrors real-world junk: a few loose images sitting directly in the
+    // collection root, alongside proper year/month/day subdirectories.
+    // Left uncontrolled, the loose file would make the whole root the
+    // sole crate and hide every subdirectory crate beneath it.
+    currentRoot = await createFixtureTree({
+      'stray.jp2': '',
+      '2024': { '01': { '09': { 'photo.jpg': '' } } },
+    });
+
+    const fs = createNodeFsAdapter(currentRoot);
+    const isExcludedFile = compileNamePatternMatcher(['^stray\\.jp2$']);
+    const crateDirs = await findCrateDirectories(fs, '', undefined, isExcludedFile);
+
+    expect(crateDirs).toEqual(['2024/01/09']);
   });
 });
 
@@ -124,10 +141,65 @@ describe('collectImages', () => {
     });
 
     const fs = createNodeFsAdapter(currentRoot);
-    const isExcluded = compileDirectoryExclusionMatcher(['^\\.', '^HTML']);
+    const isExcluded = compileNamePatternMatcher(['^\\.', '^HTML']);
     const images = await collectImages(fs, '2024', isExcluded);
 
     expect(images).toEqual(['photo1.jpg']);
+  });
+});
+
+describe('detectLooseRootImages', () => {
+  it('reports loose images when the root has both images and subdirectories', async () => {
+    currentRoot = await createFixtureTree({
+      'stray1.jpg': '',
+      'stray2.jp2': '',
+      '2024': { '01': { '09': { 'photo.jpg': '' } } },
+    });
+
+    const fs = createNodeFsAdapter(currentRoot);
+    const loose = (await detectLooseRootImages(fs)).sort();
+
+    expect(loose).toEqual(['stray1.jpg', 'stray2.jp2']);
+  });
+
+  it('reports nothing when the root holding images directly is the only content (a legitimate single-folder collection)', async () => {
+    currentRoot = await createFixtureTree({
+      'photo1.jpg': '',
+      'photo2.jpg': '',
+    });
+
+    const fs = createNodeFsAdapter(currentRoot);
+    expect(await detectLooseRootImages(fs)).toEqual([]);
+  });
+
+  it('reports nothing when the root has no images at all', async () => {
+    currentRoot = await createFixtureTree({
+      '2024': { '01': { '09': { 'photo.jpg': '' } } },
+    });
+
+    const fs = createNodeFsAdapter(currentRoot);
+    expect(await detectLooseRootImages(fs)).toEqual([]);
+  });
+
+  it('does not count an excluded directory as a real subdirectory, so a stray image alongside only a dotfile is not flagged as ambiguous', async () => {
+    currentRoot = await createFixtureTree({
+      'photo.jpg': '',
+      '.git': { 'config': '' },
+    });
+
+    const fs = createNodeFsAdapter(currentRoot);
+    expect(await detectLooseRootImages(fs)).toEqual([]);
+  });
+
+  it('does not report a file already excluded by the caller-supplied file pattern', async () => {
+    currentRoot = await createFixtureTree({
+      'stray.jpg': '',
+      '2024': { '01': { '09': { 'photo.jpg': '' } } },
+    });
+
+    const fs = createNodeFsAdapter(currentRoot);
+    const isExcludedFile = compileNamePatternMatcher(['^stray\\.jpg$']);
+    expect(await detectLooseRootImages(fs, undefined, isExcludedFile)).toEqual([]);
   });
 });
 
