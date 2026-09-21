@@ -3,9 +3,13 @@ import { joinPath } from '../pathUtils.js';
 
 export const INDEX_FILE_NAME = 'rocphotos-index.sqlite';
 
-// AROCAPI entityType values (see https://github.com/crate-works/ro-crate-api).
+// AROCAPI entityType values (see https://github.com/crate-works/ro-crate-api),
+// drawn from the PCDM vocabulary: each sub-collection crate is a
+// pcdm#Collection, and each image is a pcdm#Object that is a memberOf its
+// containing Collection — the aggregation shape AROCAPI's catalog model
+// expects, rather than a schema.org type at the entity level.
 export const ENTITY_TYPE_COLLECTION = 'http://pcdm.org/models#Collection';
-export const ENTITY_TYPE_IMAGE = 'http://schema.org/ImageObject';
+export const ENTITY_TYPE_IMAGE = 'http://pcdm.org/models#Object';
 
 // AROCAPI's Entity requires metadataLicenseId/contentLicenseId; this app has
 // no licensing or access-control model yet (single-user, local-only), so a

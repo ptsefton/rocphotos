@@ -27,13 +27,11 @@ Once the user has seent the overview and selected all folders or a subset to des
 
 The application extracts EXIF metadata from images and adds it to the sub-crates (user can configure this, and a config file is kept at the root, app has a UI for mangaing it). If EXIF extraction for a given image fails or produces malformed data, the image is still added to the crate; the error is recorded in the `description` property of the image's `ImageObject` entity rather than causing the image to be skipped.
 
-The app also maintains a sqlite database, an index of what it each sub-crate and the root RO-Crate, which is organised as per the AROCAPI API - https://github.com/crate-works/ro-crate-api. Each ImageObject gets an entry in the database as do Person entities (when get to specifying that later, there will be code to extract identified regions in the EXIF that are labelled with People, and people entities in the sub-crate AND the root crate will have people, once that's working we will then move on to other constructs around the collection like events (weddings, festivales, parties etc) and then on to supportin arbitraty contextual descriptions). The app can run in a mode that provides this API locally but also can run it inside the browser-based process (Note to Claude -- is this possible??). 
-
-This means there should be a little stand alone AROCAPI app that's embedded in this app that can be fed info about entities in a (virtual?) internal API.
+The application also maintains a SQLite index of the collection, organised as per the [AROCAPI specification](https://github.com/crate-works/ro-crate-api). See Section 3.2.
 
 ### 3.1 Excluding Directories from the Walk
 
-Certain directories must never be treated as, or searched within for, a crate. Dotfiles and dot-directories (`.git`, editor and OS metadata, and similar) are excluded by default, since they are near-universal filesystem noise unrelated to photo storage. The application's own generated `thumbnails/` cache directory (see Section 3.2) is always excluded, regardless of configuration, since including it would cause the application to mistake its own output for source images on a later scan.
+Certain directories must never be treated as, or searched within for, a crate. Dotfiles and dot-directories (`.git`, editor and OS metadata, and similar) are excluded by default, since they are near-universal filesystem noise unrelated to photo storage. The application's own generated `thumbnails/` cache directory (see Section 3.3) is always excluded, regardless of configuration, since including it would cause the application to mistake its own output for source images on a later scan.
 
 Beyond these, a collection may contain directories that are not part of the application's default exclusions but should still never be scanned — for example, a static HTML gallery previously exported by another tool, sitting inside what is otherwise a legitimate day-of-photos directory. To handle this, the application reads an optional `rocphotos.config.json` file from the root of the directory being scanned:
 
@@ -43,13 +41,29 @@ Beyond these, a collection may contain directories that are not part of the appl
 
 `excludeDirectories` is a list of regular expressions, each tested against a directory's own name (not its full path), at any depth in the walk. When present, this list is used in place of the built-in dotfile default, so a configuration that still wants dotfiles excluded restates that pattern explicitly, keeping the effective stop-list fully visible in one place. This file is read through the same filesystem interface as everything else, so it is honoured identically by the command-line tool and by the browser SPA, which can only read files inside the directory the user has granted it access to.
 
-### 3.2 Thumbnails
+### 3.2 The SQLite Index (AROCAPI)
+
+At scan time, the application also builds a SQLite index, `rocphotos-index.sqlite`, at the root of the scanned collection — one database per collection, covering the root crate and every sub-collection crate beneath it (there is no separate index file per sub-crate). This index is a read-only materialised view of what scanning has already written to the crate JSON; it is not a second source of truth, and nothing writes to a crate's `ro-crate-metadata.json` by going through the index.
+
+The schema is a minimal subset of the [AROCAPI specification](https://github.com/crate-works/ro-crate-api), drawn from the [PCDM](http://pcdm.org/models) vocabulary:
+
+- `ro_crates(id, path, name, created_at, updated_at)` — one row per crate directory (the root, identified by an empty path, and every sub-collection crate).
+- `entities(id, ro_crate_id, entity_type, name, description, member_of, metadata_license_id, content_license_id, access_metadata, access_content)` — one row per crate-as-Collection and one row per image-as-Object.
+- `files(id, entity_id, filename, media_type, size, relative_path, access_content)` — the actual image bytes backing an Object entity.
+
+Entity types follow PCDM's aggregation model: the root and every sub-collection crate are `http://pcdm.org/models#Collection`; every image is a `http://pcdm.org/models#Object` whose `member_of` points to the `id` of the Collection entity for the crate directory it belongs to. Entity `id` values reuse the same collection-relative path convention already used elsewhere (for example `2025/03/10/` for a sub-collection crate, `2025/03/10/photo.jpg` for an image, `./` for the root), so they are unique across the whole index without needing a separately minted URI scheme. AROCAPI requires a `metadataLicenseId`/`contentLicenseId` and access flags on every entity; since this application has no licensing or access-control model yet, a fixed placeholder license id is used and access is always recorded as open, pending any future multi-user or publishing use case.
+
+The index is populated via Node's built-in `node:sqlite` module (no native dependency) from the command line; a browser-side equivalent (backed by an in-memory WASM SQLite build, loaded from and saved back to the same physical file via the File System Access API) is planned but not yet implemented, so the index is currently a CLI/desktop-mode-only feature. Serving AROCAPI's read endpoints (`/entities`, `/entity/{id}`, `/files`, `/ro-crates`, etc.) over this index — via a local HTTP server for the CLI/desktop mode, and via a Service Worker intercepting same-origin `fetch` calls for the browser-tab mode — is planned but not yet implemented.
+
+A companion command, `rocphotos export-excel <directory>`, dumps the index to a three-sheet `.xlsx` workbook (RO-Crates, Entities, Files), for manual review without any SQL knowledge required.
+
+### 3.3 Thumbnails
 
 Operating system thumbnail caches (for example, Windows `Thumbs.db`, macOS Finder/QuickLook previews, or the freedesktop.org thumbnail cache on Linux) are not used as a source of thumbnails. These caches are stored outside the directory tree granted to the application via the File System Access API, are not portable with the crate, and in some cases use undocumented or proprietary formats.
 
 Instead, the application generates its own thumbnails at the time a sub-collection crate is created or rescanned, reusing a thumbnail already on disk (however it was produced) rather than regenerating it. In the browser SPA this uses the Canvas API; the command-line tool generates thumbnails equivalently using an image-processing library (`sharp`), since no browser Canvas is available there. Either path may occasionally be unable to produce a thumbnail for a given format; when that happens, the image is still added to the crate, and its generated pages fall back to displaying the full-size image. Thumbnails are stored in a `thumbnails/` subdirectory within each sub-collection crate directory, so that they are visible to the user in the filesystem, travel with the crate, and are listed as `hasPart` files of the crate. One thumbnail size is generated by default (for example, 400 pixels on the longest edge, encoded as JPEG); additional preview sizes may be added in future without requiring a change to this data model.
 
-### 3.3 HTML Preview Pages
+### 3.4 HTML Preview Pages
 
 At scan time, the application writes a static `ro-crate-preview.html` file into every crate directory, alongside its `ro-crate-metadata.json`.
 
@@ -64,11 +78,12 @@ These pages are regenerated in full on every scan or rescan and are not treated 
 
 Each source photo's `ImageObject` entity is linked to its corresponding thumbnail `ImageObject` entity using the Schema.org `thumbnail` property, following standard Schema.org convention.
 
-### 3.4 Future Features
+### 3.5 Future Features
 
 A future release will have:
 
-- A database to make navigation richer.
+- Serving AROCAPI's read endpoints over the SQLite index (see Section 3.2), both from a local server (CLI/desktop mode) and from a Service Worker inside the browser-tab mode.
+- Person entities in the index and in each crate, extracted from identified face regions in image metadata; once that is working, further constructs such as events (weddings, festivals, parties) and arbitrary contextual descriptions around the collection.
 - Metadata editing, with options to write back to images.
 - Face and possibly subject recognition, using open interoperability conventions for writing face regions into images and/or the file system.
 - An RO-Crate MASP ("Machine Actionable Schemas and Profiles", as used in [collection2crate](https://github.com/Language-Research-Technology/collection2crate)) for this photo collection structure, to be authored once a representative set of example crates has been produced by the application.
@@ -79,9 +94,9 @@ A future release will have:
 
 The application is a single-page application (SPA) that executes in three modes:
 
-1. entirely within the Google Chrome browser. It requires no server-side component. All processing, including file access, metadata extraction, and RO-Crate manifest generation, is performed client-side.
-2. As an app that runs on a user's computer - with the same interface but which can be left running more easily
-3. As a set of commandline tools for doing directory scans, and building hte basic indexes used by the tool
+1. Entirely within the Google Chrome browser: no server-side component, with file access via the File System Access API. All processing, including file access, metadata extraction, and RO-Crate manifest generation, is performed client-side.
+2. As a long-running local process, started from the command line and left running, that serves the same SPA plus the AROCAPI HTTP endpoints (see Section 3.2) over `127.0.0.1` only, opened in a normal Chrome tab. This mode shares its implementation with the command-line tools (mode 3) rather than being a separately packaged native application.
+3. As a set of command-line tools (`rocphotos scan`, `rocphotos export-excel`, and, in future, `rocphotos serve`) for scanning directories, building the SQLite index, and exporting it for review, with full, unrestricted filesystem access via Node.js.
 
 ### 4.2 File System Access
 
@@ -96,7 +111,8 @@ The application accesses the local file system through the browser's File System
 
 ### 4.4 Architecture Constraints
 
-- The application does not depend on a backend server or database. Persistent state is limited to the contents of the selected directory and the RO-Crate metadata file it contains.
+- The application does not depend on any backend server or database outside of what it manages itself: persistent state is limited to the contents of the selected directory, the RO-Crate metadata files it contains, and the SQLite index described in Section 3.2 — all stored inside that same directory tree, not in any separate service or external database.
+- Where the application does run a server (mode 2 in Section 4.1), it is bound to `127.0.0.1` only: a single-user, local convenience layer, never reachable from another machine.
 - The application does not transmit photo files or metadata to any external service.
 - The application operates on a single directory tree selected by the user at the start of a session.
 
