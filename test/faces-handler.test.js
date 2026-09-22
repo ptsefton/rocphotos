@@ -3,7 +3,7 @@ import { createNodeFsAdapter } from '../src/adapters/nodeFs.js';
 import { openNodeSqlite } from '../src/adapters/nodeSqlite.js';
 import { createFacesHandler } from '../src/core/faces/handler.js';
 import { createHandler } from '../src/core/arocapi/handler.js';
-import { ensureFacesSchema, addReferenceFace, listDetections } from '../src/core/faces/store.js';
+import { ensureFacesSchema, addReferenceFace, listDetections, listReferenceFaces } from '../src/core/faces/store.js';
 import {
   ensureSchema,
   upsertRoCrate,
@@ -37,6 +37,7 @@ let writeFaceRegion;
 const subCrateId = crateEntityId('2025');
 const photoId = imageEntityId('2025', 'photo.jpg');
 const taggedId = imageEntityId('2025', 'tagged.jpg');
+const orientedId = imageEntityId('2025', 'oriented.jpg');
 
 afterEach(async () => {
   if (currentRoot) {
@@ -56,6 +57,20 @@ beforeEach(async () => {
     thumbnailPath: null,
     sourceModifiedAt: Date.now(),
   });
+  // Real values from an actual Apple Photos-tagged file (see
+  // Spec.md's Face Recognition section): its Area is measured against
+  // the already-oriented display frame, not the raw frame — applying
+  // the (otherwise correct) orientation correction to it lands nowhere
+  // near a real face-api.js detection of the same face.
+  addImageEntity(subCrate, {
+    path: 'oriented.jpg',
+    exif: {
+      Orientation: 'Rotate 90 CW',
+      Regions: { RegionList: [{ Name: 'John', Type: 'Face', Area: { x: 0.4411362806955973, y: 0.32195010781288147, w: 0.15869951248168945, h: 0.16543585062026978 } }] },
+    },
+    thumbnailPath: null,
+    sourceModifiedAt: Date.now(),
+  });
 
   currentRoot = await createFixtureTree({
     'ro-crate-metadata.json': serializeCrate(loadOrCreateCrate(null)),
@@ -63,6 +78,7 @@ beforeEach(async () => {
       'ro-crate-metadata.json': serializeCrate(subCrate),
       'photo.jpg': 'fake jpeg bytes',
       'tagged.jpg': 'fake jpeg bytes',
+      'oriented.jpg': 'fake jpeg bytes',
     },
   });
 
@@ -78,6 +94,8 @@ beforeEach(async () => {
   upsertFile(mainStore, { id: photoId, entityId: photoId, filename: 'photo.jpg', mediaType: 'image/jpeg', size: 16, relativePath: photoId });
   upsertEntity(mainStore, { id: taggedId, roCrateId: subCrateId, entityType: ENTITY_TYPE_IMAGE, name: 'tagged.jpg', memberOf: subCrateId, title: 'tagged.jpg' });
   upsertFile(mainStore, { id: taggedId, entityId: taggedId, filename: 'tagged.jpg', mediaType: 'image/jpeg', size: 16, relativePath: taggedId });
+  upsertEntity(mainStore, { id: orientedId, roCrateId: subCrateId, entityType: ENTITY_TYPE_IMAGE, name: 'oriented.jpg', memberOf: subCrateId, title: 'oriented.jpg' });
+  upsertFile(mainStore, { id: orientedId, entityId: orientedId, filename: 'oriented.jpg', mediaType: 'image/jpeg', size: 16, relativePath: orientedId });
 
   writeFaceRegion = vi.fn().mockResolvedValue(undefined);
   handleRequest = createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion });
@@ -107,7 +125,14 @@ describe('POST /existing-regions and /backfill-reference', () => {
       body: { imageIds: [photoId, taggedId], modelName: 'face-api.js', modelVersion: '0.22.2' },
     });
     const { regions } = JSON.parse(res.body);
-    expect(regions).toEqual([{ imageId: taggedId, sourceRegionId: `${taggedId}#region-0`, personName: 'Alice', area: { x: 0.5, y: 0.4, w: 0.2, h: 0.15 } }]);
+    // No Orientation on this fixture, so raw and corrected are identical
+    // (see correctAreaForOrientation's no-op default) — both are sent so
+    // the browser can try either against a real detection (see
+    // geometry.js's bestOverlapEitherOrientation).
+    expect(regions).toEqual([{
+      imageId: taggedId, sourceRegionId: `${taggedId}#region-0`, personName: 'Alice',
+      rawArea: { x: 0.5, y: 0.4, w: 0.2, h: 0.15 }, correctedArea: { x: 0.5, y: 0.4, w: 0.2, h: 0.15 },
+    }]);
   });
 
   it('stops listing a region once its embedding has been backfilled, and the new reference is usable for matching', async () => {
@@ -134,6 +159,32 @@ describe('POST /existing-regions and /backfill-reference', () => {
       body: { imageId: photoId, modelName: 'face-api.js', modelVersion: '0.22.2', faces: [{ box: { x: 0, y: 0, w: 0.1, h: 0.1 }, embedding: [0.01, 0.01] }] },
     });
     expect(JSON.parse(detectionRes.body).created[0].suggestedPersonName).toEqual('Alice');
+  });
+
+  it('only saves one reference even when the same (image, Person) is backfilled more than once in the same pass', async () => {
+    // Regression test for a real bug: /existing-regions only checks
+    // "already backfilled?" once, against a snapshot taken at listing
+    // time — a photo with several duplicate same-named regions (exactly
+    // the kind of duplication this session's other fixes clean up) all
+    // come back in that one listing, since none of them are backfilled
+    // yet at that moment, and the browser then calls /backfill-reference
+    // once per region it was given. Confirmed against a real file: 5
+    // duplicate regions for the same person produced 5 reference rows in
+    // a single "Recognize Faces" run against a completely empty
+    // reference set. /backfill-reference must re-check for itself at the
+    // point of actually saving, not rely solely on the listing check.
+    const body = {
+      sourceImageId: taggedId, sourceRegionId: `${taggedId}#region-0`, personName: 'Alice',
+      embedding: [0, 0], modelName: 'face-api.js', modelVersion: '0.22.2',
+    };
+    const first = await handleRequest({ method: 'POST', path: '/backfill-reference', body });
+    const second = await handleRequest({ method: 'POST', path: '/backfill-reference', body: { ...body, sourceRegionId: `${taggedId}#region-1` } });
+    expect(first.status).toEqual(200);
+    expect(second.status).toEqual(200);
+    expect(JSON.parse(second.body).skipped).toBe(true);
+
+    const referenceFaces = listReferenceFaces(facesStore, 'face-api.js', '0.22.2');
+    expect(referenceFaces.filter((r) => r.sourceImageId === taggedId && r.personName === 'Alice')).toHaveLength(1);
   });
 
   it('rejects a backfill request missing required fields', async () => {
@@ -219,6 +270,25 @@ describe('POST /detections', () => {
     const created = JSON.parse(res.body).created;
     expect(created).toHaveLength(1);
     expect(created[0].box).toEqual({ x: 0, y: 0, w: 0.1, h: 0.1 });
+  });
+
+  it('still recognises an already-tagged region as such when the orientation correction would move it away from the real face (Apple Photos case)', async () => {
+    // Regression test for a real bug found in a real collection: for
+    // this file's Orientation, correcting John's Area (as digiKam-style
+    // files need) lands the box nowhere near a real detection of the
+    // same face, so a naive single-interpretation check would treat it
+    // as a brand new face every single "Recognize Faces" run — see
+    // Spec.md's Face Recognition section and geometry.js's
+    // bestOverlapEitherOrientation. The box below is a real face-api.js
+    // detection of this same file, in its own (uncorrected) frame.
+    const res = await handleRequest({
+      method: 'POST', path: '/detections',
+      body: {
+        imageId: orientedId, modelName: 'face-api.js', modelVersion: '0.22.2',
+        faces: [{ box: { x: 0.36178652445475257, y: 0.23923218250274658, w: 0.15869951248168945, h: 0.16543585062026978 }, embedding: [1] }],
+      },
+    });
+    expect(JSON.parse(res.body).created).toEqual([]);
   });
 });
 

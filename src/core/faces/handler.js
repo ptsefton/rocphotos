@@ -12,7 +12,7 @@ import { rescanImageMetadata } from '../scanImage.js';
 import { joinPath } from '../pathUtils.js';
 import { findClosestReference } from './matching.js';
 import { correctAreaForOrientation } from './orientation.js';
-import { boxOverlapRatio, centerAreaToTopLeftBox, SAME_FACE_OVERLAP_THRESHOLD } from './geometry.js';
+import { SAME_FACE_OVERLAP_THRESHOLD, bestOverlapEitherOrientation } from './geometry.js';
 import { serializeWrites } from '../writeQueue.js';
 import {
   isImageAlreadyScanned,
@@ -51,12 +51,18 @@ async function loadCrateForImage(fsAdapter, roCrateId) {
   return { crateDirPath, crate: loadOrCreateCrate(existingJson) };
 }
 
-// Every already-named Face region on an image, with its Area corrected
-// for the file's own EXIF orientation (see orientation.js) — shared by
-// /existing-regions (to find regions needing a reference embedding) and
-// /detections (to recognise a freshly detected face as one of these
+// Every already-named Face region on an image, in both the raw and the
+// orientation-corrected form of its Area (see orientation.js) — shared
+// by /existing-regions (to find regions needing a reference embedding)
+// and /detections (to recognise a freshly detected face as one of these
 // already-tagged ones, rather than offering it for review as if it were
-// new — see /detections' own comment for why that check exists).
+// new — see /detections' own comment for why that check exists). Both
+// forms are kept, not just the corrected one: confirmed against two real
+// files that different tools disagree about which frame Area is measured
+// against for the same Orientation value (one needs correcting, one
+// actively breaks if corrected), so callers try both against a real
+// detected face rather than trusting either on its own — see
+// geometry.js's bestOverlapEitherOrientation.
 // `requestCrateCache` is caller-provided so /existing-regions can share
 // one across several images in the same request; /detections, handling
 // only one image, can just pass a fresh Map.
@@ -75,7 +81,12 @@ async function loadExistingFaceRegions(fsAdapter, mainStore, requestCrateCache, 
   return record.regions
     .map((region, index) => ({ region, index }))
     .filter(({ region }) => region.type === 'Face' && region.name && region.area)
-    .map(({ region, index }) => ({ index, name: region.name, area: correctAreaForOrientation(region.area, orientation) }));
+    .map(({ region, index }) => ({
+      index,
+      name: region.name,
+      rawArea: region.area,
+      correctedArea: correctAreaForOrientation(region.area, orientation),
+    }));
 }
 
 /**
@@ -147,9 +158,9 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       const requestCrateCache = new Map();
       for (const imageId of imageIds) {
         const existingRegions = await loadExistingFaceRegions(fsAdapter, mainStore, requestCrateCache, imageId);
-        for (const { index, name, area } of existingRegions) {
+        for (const { index, name, rawArea, correctedArea } of existingRegions) {
           if (hasReferenceForPersonOnImage(facesStore, imageId, personEntityId(name), modelName, modelVersion)) continue;
-          regions.push({ imageId, sourceRegionId: `${imageId}#region-${index}`, personName: name, area });
+          regions.push({ imageId, sourceRegionId: `${imageId}#region-${index}`, personName: name, rawArea, correctedArea });
         }
       }
       return json(200, { regions });
@@ -166,6 +177,20 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       }
 
       const personId = personEntityId(personName);
+      // /existing-regions only checks this at listing time, against a
+      // single snapshot of the reference set — if the same image has
+      // more than one region for the same Person (duplicate regions from
+      // before this was fixed, or any other reason), all of them come
+      // back in that one listing (since none are backfilled yet at that
+      // moment) and would otherwise all be saved here in the same pass,
+      // regardless of the listing check. Confirmed as a real bug: a
+      // photo with 5 duplicate same-named regions produced 5 reference
+      // rows in a single "Recognize Faces" run against a completely
+      // empty reference set. Checking again here, at the point of
+      // actually saving, is what makes this genuinely idempotent.
+      if (hasReferenceForPersonOnImage(facesStore, sourceImageId, personId, modelName, modelVersion)) {
+        return json(200, { ok: true, skipped: true });
+      }
       const referenceFaceId = crypto.randomUUID();
       addReferenceFace(facesStore, { id: referenceFaceId, personId, personName, sourceRegionId, sourceImageId, embedding, modelName, modelVersion });
       await persistStore(facesStore);
@@ -203,7 +228,7 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       // detection at all.
       const existingRegions = await loadExistingFaceRegions(fsAdapter, mainStore, new Map(), imageId);
       const newFaces = faces.filter((face) => !existingRegions.some(
-        (region) => boxOverlapRatio(face.box, centerAreaToTopLeftBox(region.area)) >= SAME_FACE_OVERLAP_THRESHOLD,
+        (region) => bestOverlapEitherOrientation(face.box, region.rawArea, region.correctedArea) >= SAME_FACE_OVERLAP_THRESHOLD,
       ));
 
       const referenceFaces = listReferenceFaces(facesStore, modelName, modelVersion);

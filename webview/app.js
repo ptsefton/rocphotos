@@ -926,25 +926,59 @@ async function detectFacesForImage(imageId) {
 // converted below, then padded generously and cropped before detecting,
 // since a tight, exact face box is not always reliably re-detected on
 // its own.
-async function computeEmbeddingForKnownRegion(imageId, area) {
+// Duplicated from src/core/faces/geometry.js (webview/app.js cannot
+// import from src/core — see the note above FACE_MODEL_NAME/VERSION):
+// converts an MWG region's center-based Area to the fractional top-left
+// shape face-api.js's own detection box uses, and the IoU of two such
+// boxes. Keep in sync with that file if either changes.
+function centerAreaToTopLeftBox(area) {
+  return { x: area.x - area.w / 2, y: area.y - area.h / 2, w: area.w, h: area.h };
+}
+
+function boxOverlapRatio(boxA, boxB) {
+  const ix1 = Math.max(boxA.x, boxB.x);
+  const iy1 = Math.max(boxA.y, boxB.y);
+  const ix2 = Math.min(boxA.x + boxA.w, boxB.x + boxB.w);
+  const iy2 = Math.min(boxA.y + boxA.h, boxB.y + boxB.h);
+  const iw = Math.max(0, ix2 - ix1);
+  const ih = Math.max(0, iy2 - iy1);
+  const intersection = iw * ih;
+  if (intersection === 0) return 0;
+  const union = boxA.w * boxA.h + boxB.w * boxB.h - intersection;
+  return intersection / union;
+}
+
+const SAME_FACE_OVERLAP_THRESHOLD = 0.3;
+
+// Finds this region's embedding by running full-image detection — the
+// same reliable method already used for finding new faces — rather than
+// cropping a small, padded area around the tagged box and hoping
+// detectSingleFace finds something in it: confirmed against a real
+// collection that the crop approach silently failed for the large
+// majority of already-tagged faces (a face that is small relative to a
+// generous crop, or cut off by a tight one, often goes undetected).
+// Tries both the raw and orientation-corrected form of the region's
+// Area, since different tagging tools disagree about which frame Area
+// is measured against for the same Orientation value — confirmed
+// against two real files, one needing the correction, one broken by it.
+async function computeEmbeddingForKnownRegion(imageId, rawArea, correctedArea) {
   const img = await loadImage(entityUrl('/api/file', imageId));
-  const centerX = area.x * img.naturalWidth;
-  const centerY = area.y * img.naturalHeight;
-  const boxW = area.w * img.naturalWidth;
-  const boxH = area.h * img.naturalHeight;
-  const pad = 0.6;
-  const sx = Math.max(0, centerX - (boxW * (1 + pad)) / 2);
-  const sy = Math.max(0, centerY - (boxH * (1 + pad)) / 2);
-  const sw = Math.min(img.naturalWidth - sx, boxW * (1 + pad));
-  const sh = Math.min(img.naturalHeight - sy, boxH * (1 + pad));
+  const results = await faceapi.detectAllFaces(img).withFaceLandmarks().withFaceDescriptors();
 
-  const canvas = document.createElement('canvas');
-  canvas.width = sw;
-  canvas.height = sh;
-  canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-
-  const result = await faceapi.detectSingleFace(canvas).withFaceLandmarks().withFaceDescriptor();
-  return result ? Array.from(result.descriptor) : null;
+  const rawBox = centerAreaToTopLeftBox(rawArea);
+  const correctedBox = centerAreaToTopLeftBox(correctedArea);
+  let best = null;
+  for (const result of results) {
+    const box = {
+      x: result.detection.box.x / img.naturalWidth,
+      y: result.detection.box.y / img.naturalHeight,
+      w: result.detection.box.width / img.naturalWidth,
+      h: result.detection.box.height / img.naturalHeight,
+    };
+    const overlap = Math.max(boxOverlapRatio(box, rawBox), boxOverlapRatio(box, correctedBox));
+    if (!best || overlap > best.overlap) best = { overlap, descriptor: result.descriptor };
+  }
+  return best && best.overlap >= SAME_FACE_OVERLAP_THRESHOLD ? Array.from(best.descriptor) : null;
 }
 
 // Every image id in the whole collection, regardless of the current
@@ -982,7 +1016,7 @@ async function backfillExistingRegions(imageIds) {
   for (let i = 0; i < regions.length; i += 1) {
     statusEl.textContent = `Learning known faces… (${i + 1}/${regions.length})`;
     const region = regions[i];
-    const embedding = await computeEmbeddingForKnownRegion(region.imageId, region.area).catch(() => null);
+    const embedding = await computeEmbeddingForKnownRegion(region.imageId, region.rawArea, region.correctedArea).catch(() => null);
     if (!embedding) continue; // not reliably re-detectable from its own tagged box; skip rather than fail the whole batch
     await postEdit('/faces/backfill-reference', {
       sourceImageId: region.imageId, sourceRegionId: region.sourceRegionId, personName: region.personName,

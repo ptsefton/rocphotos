@@ -49,3 +49,28 @@ export function boxOverlapRatio(boxA, boxB) {
 // a real false positive here (two different people's faces overlapping
 // this much) would need them to be right next to each other in frame.
 export const SAME_FACE_OVERLAP_THRESHOLD = 0.3;
+
+/**
+ * The best overlap between a detected box and an MWG region's Area,
+ * trying both the raw and the orientation-corrected form of that Area
+ * (both center-based — see centerAreaToTopLeftBox) and taking whichever
+ * one actually lines up. Different tools disagree about which frame an
+ * Area is measured against for the very same Orientation value —
+ * confirmed against two real files: one (digiKam) needed correcting,
+ * another (Apple Photos) did not, and correcting it moved the box
+ * somewhere else in the photo entirely, breaking the very check this
+ * exists for (recognising a freshly detected face as one already
+ * tagged). Rather than guess which convention a given file's author
+ * used, both are always tried.
+ *
+ * @param {{x: number, y: number, w: number, h: number}} detectedBox - fractional top-left, e.g. face-api.js's own box
+ * @param {{x: number, y: number, w: number, h: number}} rawArea - the MWG region's Area exactly as read from the file, center-based
+ * @param {{x: number, y: number, w: number, h: number}} correctedArea - the same Area after orientation correction (see orientation.js)
+ * @returns {number}
+ */
+export function bestOverlapEitherOrientation(detectedBox, rawArea, correctedArea) {
+  return Math.max(
+    boxOverlapRatio(detectedBox, centerAreaToTopLeftBox(rawArea)),
+    boxOverlapRatio(detectedBox, centerAreaToTopLeftBox(correctedArea)),
+  );
+}
