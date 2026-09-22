@@ -31,6 +31,9 @@ const viewerDescriptionEl = document.querySelector('#viewer-description');
 const viewerTagsEl = document.querySelector('#viewer-tags');
 const viewerFacesEl = document.querySelector('#viewer-faces');
 const viewerFacesToggleEl = document.querySelector('#viewer-faces-toggle');
+const recognizeFacesButtonEl = document.querySelector('#recognize-faces-button');
+const facesReviewEl = document.querySelector('#faces-review');
+const facesReviewListEl = document.querySelector('#faces-review-list');
 
 // Face regions (with a bounding box) for the entity currently open in the
 // viewer, redrawn whenever the overlay is shown and whenever the image's
@@ -768,6 +771,172 @@ document.querySelector('#viewer-delete').addEventListener('click', () => {
   const idToDelete = currentViewerEntityId;
   closeViewer();
   runEditAction(() => postEdit('/edit/delete', { ids: [idToDelete] }));
+});
+
+// --- Face recognition (see Spec.md's Face Recognition section) ---
+//
+// Detection and embedding both run entirely client-side, via face-api.js
+// (webview/vendor/, loaded as a plain script — see index.html — so the
+// same code works whether app.js itself is served by the CLI's static
+// file server or bundled by Vite). Only matching against the reference
+// set, and storing pending detections for review, happen server-side
+// (POST /api/faces/detections) — see src/core/faces/handler.js.
+const FACE_MODEL_NAME = 'face-api.js';
+const FACE_MODEL_VERSION = '0.22.2';
+const FACE_MODELS_URL = 'vendor/models';
+
+let faceApiModelsLoaded = false;
+async function ensureFaceApiModelsLoaded() {
+  if (faceApiModelsLoaded) return;
+  await faceapi.nets.ssdMobilenetv1.loadFromUri(FACE_MODELS_URL);
+  await faceapi.nets.faceLandmark68Net.loadFromUri(FACE_MODELS_URL);
+  await faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODELS_URL);
+  faceApiModelsLoaded = true;
+}
+
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`Could not load ${url}`));
+    img.src = url;
+  });
+}
+
+// Runs face-api.js against one image's full-size bytes, returning each
+// detected face as a fractional (0-1) top-left box plus its 128-d
+// descriptor — face-api.js's own box is in pixels, converted here so it
+// matches the fractional convention used everywhere else in this app
+// (see Spec.md's ImageRegion notes).
+async function detectFacesForImage(imageId) {
+  const img = await loadImage(entityUrl('/api/file', imageId));
+  const results = await faceapi.detectAllFaces(img).withFaceLandmarks().withFaceDescriptors();
+  return results.map((result) => ({
+    box: {
+      x: result.detection.box.x / img.naturalWidth,
+      y: result.detection.box.y / img.naturalHeight,
+      w: result.detection.box.width / img.naturalWidth,
+      h: result.detection.box.height / img.naturalHeight,
+    },
+    embedding: Array.from(result.descriptor),
+  }));
+}
+
+recognizeFacesButtonEl.addEventListener('click', async () => {
+  if (currentEntityIds.length === 0) {
+    window.alert('No images in the current view to scan.');
+    return;
+  }
+  recognizeFacesButtonEl.disabled = true;
+  try {
+    statusEl.textContent = 'Loading face recognition models…';
+    await ensureFaceApiModelsLoaded();
+
+    const { toScan } = await postEdit('/faces/scan-status', {
+      imageIds: currentEntityIds, modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION,
+    });
+
+    for (let i = 0; i < toScan.length; i += 1) {
+      statusEl.textContent = `Finding faces… (${i + 1}/${toScan.length})`;
+      const faces = await detectFacesForImage(toScan[i]);
+      await postEdit('/faces/detections', { imageId: toScan[i], modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION, faces });
+    }
+
+    statusEl.textContent = `${currentEntityIds.length} image${currentEntityIds.length === 1 ? '' : 's'}`;
+    await openFacesReview();
+  } catch (err) {
+    window.alert(`Could not run face recognition: ${err.message}`);
+  } finally {
+    recognizeFacesButtonEl.disabled = false;
+  }
+});
+
+// Draws a detection's face, cropped from its full source image, into a
+// small canvas — done on demand for the review screen rather than
+// reusing whatever was decoded during detection, which may belong to an
+// entirely separate session (the review screen can be reopened any time
+// there are pending detections, not only right after a scan).
+async function drawFaceCrop(canvas, detection) {
+  const img = await loadImage(entityUrl('/api/file', detection.imageId));
+  const sx = detection.box.x * img.naturalWidth;
+  const sy = detection.box.y * img.naturalHeight;
+  const sw = detection.box.w * img.naturalWidth;
+  const sh = detection.box.h * img.naturalHeight;
+  canvas.width = 200;
+  canvas.height = Math.max(1, Math.round((200 * sh) / sw));
+  canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+}
+
+async function resolveDetection(detectionId, path, body) {
+  try {
+    await postEdit(path, { detectionId, ...body });
+    await openFacesReview();
+  } catch (err) {
+    window.alert(`Could not apply that change: ${err.message}`);
+  }
+}
+
+function renderFaceCard(detection) {
+  const card = document.createElement('div');
+  card.className = 'face-card';
+
+  const canvas = document.createElement('canvas');
+  card.appendChild(canvas);
+  drawFaceCrop(canvas, detection).catch(() => {});
+
+  const label = document.createElement('div');
+  label.className = 'face-card-label';
+  label.textContent = detection.suggestedPersonName
+    ? `${detection.imageTitle} — looks like ${detection.suggestedPersonName}`
+    : detection.imageTitle;
+  card.appendChild(label);
+
+  const actions = document.createElement('div');
+  actions.className = 'face-card-actions';
+
+  if (detection.suggestedPersonName) {
+    const confirmButton = document.createElement('button');
+    confirmButton.textContent = `Confirm: ${detection.suggestedPersonName}`;
+    confirmButton.addEventListener('click', () => resolveDetection(detection.id, '/faces/confirm', { personName: detection.suggestedPersonName }));
+    actions.appendChild(confirmButton);
+  }
+
+  const nameButton = document.createElement('button');
+  nameButton.textContent = detection.suggestedPersonName ? 'Reassign' : 'Name this person';
+  nameButton.addEventListener('click', () => {
+    const name = window.prompt('Who is this?', detection.suggestedPersonName || '');
+    if (name && name.trim()) resolveDetection(detection.id, '/faces/confirm', { personName: name.trim() });
+  });
+  actions.appendChild(nameButton);
+
+  const ignoreButton = document.createElement('button');
+  ignoreButton.textContent = 'Ignore';
+  ignoreButton.addEventListener('click', () => resolveDetection(detection.id, '/faces/ignore', {}));
+  actions.appendChild(ignoreButton);
+
+  const strangerButton = document.createElement('button');
+  strangerButton.textContent = 'Ignore as stranger';
+  strangerButton.title = 'Never suggest this face again, on any photo';
+  strangerButton.addEventListener('click', () => resolveDetection(detection.id, '/faces/ignore-stranger', {}));
+  actions.appendChild(strangerButton);
+
+  card.appendChild(actions);
+  return card;
+}
+
+async function openFacesReview() {
+  const response = await fetch('/api/faces/detections?status=pending');
+  const { total, detections } = await response.json();
+  document.querySelector('#faces-review-heading').textContent = `Review faces (${total} pending)`;
+  facesReviewListEl.innerHTML = '';
+  for (const detection of detections) {
+    facesReviewListEl.appendChild(renderFaceCard(detection));
+  }
+  facesReviewEl.classList.add('open');
+}
+
+document.querySelector('#faces-review-close').addEventListener('click', () => {
+  facesReviewEl.classList.remove('open');
 });
 
 loadCollections();

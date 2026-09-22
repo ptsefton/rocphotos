@@ -38,12 +38,22 @@ function serveWebviewPlugin() {
       });
     },
     generateBundle() {
-      for (const name of fs.readdirSync(webviewDir)) {
-        const filePath = path.join(webviewDir, name);
-        if (fs.statSync(filePath).isFile()) {
-          this.emitFile({ type: 'asset', fileName: `webview/${name}`, source: fs.readFileSync(filePath) });
+      // Recurses into subdirectories (webview/vendor/ — the face-api.js
+      // bundle and its model weight files, see Spec.md's Face Recognition
+      // section) rather than only copying webview/'s own top-level files,
+      // so those are bundled too, not just served correctly in dev mode.
+      const walk = (dir) => {
+        for (const name of fs.readdirSync(dir)) {
+          const filePath = path.join(dir, name);
+          if (fs.statSync(filePath).isDirectory()) {
+            walk(filePath);
+          } else {
+            const relativePath = path.relative(webviewDir, filePath).split(path.sep).join('/');
+            this.emitFile({ type: 'asset', fileName: `webview/${relativePath}`, source: fs.readFileSync(filePath) });
+          }
         }
-      }
+      };
+      walk(webviewDir);
     },
   };
 }

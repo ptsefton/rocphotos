@@ -12,6 +12,9 @@ import { walkCollection, detectLooseRootImages } from '../src/core/walker.js';
 import { extractExif } from '../src/core/exif.js';
 import { mediaTypeFor } from '../src/core/imageTypes.js';
 import { createHandler } from '../src/core/arocapi/handler.js';
+import { createFacesHandler } from '../src/core/faces/handler.js';
+import { ensureFacesSchema, FACES_INDEX_FILE_NAME } from '../src/core/faces/store.js';
+import { writeFaceRegion, isExiftoolAvailable } from '../src/adapters/exiftoolWriteback.js';
 import {
   CRATE_FILE_NAME,
   loadOrCreateCrate,
@@ -441,7 +444,7 @@ async function exportExcel(rootDir, outputPath, { includeEntityCrates = false } 
 }
 
 const WEBVIEW_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'webview');
-const STATIC_MEDIA_TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
+const STATIC_MEDIA_TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -496,10 +499,39 @@ async function serve(rootDir, { port = 8420 } = {}) {
   const store = openNodeSqlite(dbPath);
   const handleRequest = createHandler({ store, fsAdapter });
 
+  const facesDbPath = path.join(rootDir, FACES_INDEX_FILE_NAME);
+  fs.mkdirSync(path.dirname(facesDbPath), { recursive: true });
+  const facesStore = openNodeSqlite(facesDbPath);
+  ensureFacesSchema(facesStore);
+
+  const exiftoolAvailable = await isExiftoolAvailable();
+  if (!exiftoolAvailable) {
+    console.warn('Warning: the `exiftool` binary was not found — confirming a recognized face will not be able to write it back into the photo file.');
+  }
+  const handleFacesRequest = createFacesHandler({
+    mainStore: store,
+    facesStore,
+    fsAdapter,
+    // writeFaceRegion (see src/adapters/exiftoolWriteback.js) takes an
+    // absolute path; the faces handler only ever knows about paths
+    // relative to rootDir (as recorded in files.relative_path), the same
+    // as every other fsAdapter-relative path in this app.
+    writeFaceRegion: exiftoolAvailable
+      ? (relativePath, options) => writeFaceRegion(path.join(rootDir, relativePath), options)
+      : null,
+  });
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://127.0.0.1');
-      if (url.pathname.startsWith('/api/') || url.pathname === '/api') {
+      if (url.pathname.startsWith('/api/faces/')) {
+        const query = Object.fromEntries(url.searchParams);
+        const body = req.method === 'POST' ? await readJsonBody(req) : null;
+        const apiPath = url.pathname.slice('/api/faces'.length) || '/';
+        const result = await handleFacesRequest({ method: req.method, path: apiPath, query, body });
+        res.writeHead(result.status, result.headers);
+        res.end(result.body instanceof Uint8Array ? Buffer.from(result.body) : result.body);
+      } else if (url.pathname.startsWith('/api/') || url.pathname === '/api') {
         const query = Object.fromEntries(url.searchParams);
         const body = req.method === 'POST' ? await readJsonBody(req) : null;
         const apiPath = url.pathname.slice(4) || '/';

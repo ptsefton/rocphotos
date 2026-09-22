@@ -1,0 +1,277 @@
+import {
+  getEntityById,
+  getFileById,
+  crateDirPathFromEntityId,
+  crateRelativeEntityId,
+  personEntityId,
+  searchEntities,
+  ENTITY_TYPE_IMAGE,
+} from '../db/store.js';
+import { CRATE_FILE_NAME, loadOrCreateCrate, serializeCrate } from '../crateBuilder.js';
+import { rescanImageMetadata } from '../scanImage.js';
+import { joinPath } from '../pathUtils.js';
+import { findClosestReference } from './matching.js';
+import {
+  isImageAlreadyScanned,
+  markImageScanned,
+  listReferenceFaces,
+  addReferenceFace,
+  addDetection,
+  getDetection,
+  listDetections,
+  updateDetectionStatus,
+} from './store.js';
+import { loadOrCreateFacesCrate, saveFacesCrate, addReferenceFaceEntity } from './crate.js';
+
+function json(status, body) {
+  return { status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+}
+
+function notFound(message = 'Not found') {
+  return json(404, { error: message });
+}
+
+function badRequest(message) {
+  return json(400, { error: message });
+}
+
+async function persistStore(store) {
+  await store.persist?.();
+}
+
+async function loadCrateForImage(fsAdapter, roCrateId) {
+  const crateDirPath = crateDirPathFromEntityId(roCrateId);
+  const cratePath = joinPath(crateDirPath, CRATE_FILE_NAME);
+  const existingJson = (await fsAdapter.exists(cratePath)) ? new TextDecoder().decode(await fsAdapter.readFile(cratePath)) : null;
+  return { crateDirPath, crate: loadOrCreateCrate(existingJson) };
+}
+
+/**
+ * Creates a pure, transport-agnostic handler for the `/faces/*` routes
+ * (mounted at `/api/faces/*` — see bin/rocphotos.js's `serve` and
+ * src/sw.js) backing the web view's "Recognize Faces" workflow (see
+ * Spec.md's Face Recognition section). Detection and embedding both run
+ * client-side (face-api.js, in the browser, in every run mode); this
+ * handler only matches embeddings the browser already computed against
+ * the reference set, stores pending detections for review, and — when a
+ * `writeFaceRegion` implementation is supplied — writes a confirmed
+ * match back into the photo file itself via the system `exiftool`
+ * binary. Without one (the browser-only Service-Worker run mode, which
+ * cannot shell out to an external process), every route still works
+ * except /faces/confirm, which returns a clear error instead.
+ *
+ * @param {object} deps
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver & {persist?: () => Promise<void>}} deps.mainStore - the main photo index
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver & {persist?: () => Promise<void>}} deps.facesStore - the faces companion index (_rocphotos/faces/faces-index.sqlite)
+ * @param {import('../fsAdapter.js').FsAdapter} deps.fsAdapter
+ * @param {(relativePath: string, options: {name: string, area: object, imageWidth: number, imageHeight: number}) => Promise<void>} [deps.writeFaceRegion]
+ */
+export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion = null }) {
+  async function handleRequest({ method, path, query = {}, body = null }) {
+    if (method === 'POST' && path === '/scan-status') {
+      const imageIds = Array.isArray(body?.imageIds) ? body.imageIds : [];
+      const modelName = body?.modelName;
+      const modelVersion = body?.modelVersion;
+      if (!modelName || !modelVersion) return badRequest('modelName and modelVersion are required');
+
+      const toScan = [];
+      const scanned = [];
+      for (const imageId of imageIds) {
+        const fileRow = getFileById(mainStore, imageId);
+        if (!fileRow) continue;
+        const { modifiedTime } = await fsAdapter.stat(fileRow.relative_path);
+        if (isImageAlreadyScanned(facesStore, imageId, modifiedTime, modelName, modelVersion)) {
+          scanned.push(imageId);
+        } else {
+          toScan.push(imageId);
+        }
+      }
+      return json(200, { toScan, scanned });
+    }
+
+    // Submits face-api.js's own detection+embedding output for one image,
+    // computed entirely in the browser. Matches each face against the
+    // current reference set (see faces/matching.js) — a close match to a
+    // known Person suggests that name for review; a close match to a
+    // "stranger" reference is auto-ignored and never shown; anything else
+    // is unmatched, also pending review.
+    if (method === 'POST' && path === '/detections') {
+      const { imageId, modelName, modelVersion, faces } = body ?? {};
+      if (!imageId || !modelName || !modelVersion || !Array.isArray(faces)) {
+        return badRequest('imageId, modelName, modelVersion, and faces are required');
+      }
+      const fileRow = getFileById(mainStore, imageId);
+      if (!fileRow) return notFound('No such image');
+
+      const referenceFaces = listReferenceFaces(facesStore, modelName, modelVersion);
+      const created = [];
+      for (const face of faces) {
+        const match = findClosestReference(face.embedding, referenceFaces);
+        const isStranger = match && match.reference.personId === null;
+        const detection = {
+          id: crypto.randomUUID(),
+          imageId,
+          box: face.box,
+          embedding: face.embedding,
+          suggestedPersonId: match && !isStranger ? match.reference.personId : null,
+          suggestedPersonName: match && !isStranger ? match.reference.personName : null,
+          suggestedDistance: match ? match.distance : null,
+          status: isStranger ? 'auto_ignored' : 'pending',
+          modelName,
+          modelVersion,
+        };
+        addDetection(facesStore, detection);
+        created.push(detection);
+      }
+
+      const { modifiedTime } = await fsAdapter.stat(fileRow.relative_path);
+      markImageScanned(facesStore, { imageId, fileMtime: modifiedTime, modelName, modelVersion });
+      await persistStore(facesStore);
+
+      return json(200, { created: created.map(({ embedding, ...rest }) => rest) });
+    }
+
+    if (method === 'GET' && path === '/detections') {
+      const status = query.status ?? 'pending';
+      let imageIds = null;
+      if (query.memberOf) {
+        imageIds = searchEntities(mainStore, { memberOf: query.memberOf, entityType: ENTITY_TYPE_IMAGE }, { limit: 10000 })
+          .map((row) => row.id);
+      }
+      const detections = listDetections(facesStore, { status: status === 'all' ? null : status, imageIds });
+
+      const imageTitles = new Map();
+      for (const detection of detections) {
+        if (!imageTitles.has(detection.image_id)) {
+          const row = getEntityById(mainStore, detection.image_id);
+          imageTitles.set(detection.image_id, row?.title ?? row?.name ?? detection.image_id);
+        }
+      }
+
+      return json(200, {
+        total: detections.length,
+        detections: detections.map((detection) => ({
+          id: detection.id,
+          imageId: detection.image_id,
+          imageTitle: imageTitles.get(detection.image_id),
+          box: { x: detection.box_x, y: detection.box_y, w: detection.box_w, h: detection.box_h },
+          suggestedPersonId: detection.suggested_person_id,
+          suggestedPersonName: detection.suggested_person_name,
+          suggestedDistance: detection.suggested_distance,
+          status: detection.status,
+        })),
+      });
+    }
+
+    if (method === 'POST' && path === '/ignore') {
+      const detection = getDetection(facesStore, body?.detectionId);
+      if (!detection) return notFound();
+      updateDetectionStatus(facesStore, detection.id, { status: 'ignored' });
+      await persistStore(facesStore);
+      return json(200, { ok: true });
+    }
+
+    // Keeps the embedding as a permanent, unnamed reference (no `about`
+    // link to any Person): a future detection that matches it closely is
+    // auto-ignored the same way a match against a real Person is
+    // suggested — see Spec.md. Used for a recurring face that will never
+    // be identified (a stranger in the background of several photos).
+    if (method === 'POST' && path === '/ignore-stranger') {
+      const detection = getDetection(facesStore, body?.detectionId);
+      if (!detection) return notFound();
+
+      addReferenceFace(facesStore, {
+        id: crypto.randomUUID(),
+        personId: null,
+        personName: null,
+        sourceRegionId: null,
+        sourceImageId: detection.image_id,
+        embedding: detection.embedding,
+        modelName: detection.model_name,
+        modelVersion: detection.model_version,
+      });
+      updateDetectionStatus(facesStore, detection.id, { status: 'ignored' });
+      await persistStore(facesStore);
+      return json(200, { ok: true });
+    }
+
+    // Confirms a detection as a named Person — either accepting the
+    // suggested name, correcting it to a different existing Person
+    // ("Reassign"), or giving a brand new one ("New person"): all three
+    // are the same operation here, since this app identifies a person by
+    // name alone (see Spec.md's Person/Pet section) — the same name
+    // always resolves to the same entity, a new one otherwise. Writes a
+    // real MWG face region into the photo file itself (via the injected
+    // writeFaceRegion), then re-extracts that one image's EXIF so the
+    // change flows through the exact same region-ingestion pipeline a
+    // digiKam- or Lightroom-tagged photo already goes through — no
+        // separate code path for a machine-confirmed region's shape.
+    if (method === 'POST' && path === '/confirm') {
+      if (!writeFaceRegion) {
+        return json(501, { error: 'Writing face regions back into photo files requires the desktop server (rocphotos serve), not the browser-only mode.' });
+      }
+      const personName = typeof body?.personName === 'string' ? body.personName.trim() : '';
+      if (!personName) return badRequest('personName is required');
+
+      const detection = getDetection(facesStore, body?.detectionId);
+      if (!detection) return notFound();
+      if (detection.status !== 'pending') return badRequest(`Detection is already "${detection.status}"`);
+
+      const imageRow = getEntityById(mainStore, detection.image_id);
+      const fileRow = getFileById(mainStore, detection.image_id);
+      if (!imageRow || !fileRow) return notFound('Image no longer exists');
+
+      const { crateDirPath, crate } = await loadCrateForImage(fsAdapter, imageRow.ro_crate_id);
+      const imagePath = crateRelativeEntityId(imageRow.ro_crate_id, imageRow.id);
+
+      await writeFaceRegion(fileRow.relative_path, {
+        name: personName,
+        area: { x: detection.box_x, y: detection.box_y, w: detection.box_w, h: detection.box_h },
+      });
+
+      const record = await rescanImageMetadata(fsAdapter, mainStore, crateDirPath, crate, imagePath);
+      await fsAdapter.writeFile(joinPath(crateDirPath, CRATE_FILE_NAME), serializeCrate(crate));
+      await persistStore(mainStore);
+
+      // The newly-written region is always last in the region list (see
+      // the exiftool adapter, which only ever appends) — its id is
+      // therefore derivable from the freshly re-read region count,
+      // without needing writeFaceRegion to hand a region id back.
+      const sourceRegionId = `${imagePath}#region-${record.regions.length - 1}`;
+      const resolvedPersonId = personEntityId(personName);
+
+      const facesCrate = await loadOrCreateFacesCrate(fsAdapter);
+      const referenceFaceId = crypto.randomUUID();
+      addReferenceFace(facesStore, {
+        id: referenceFaceId,
+        personId: resolvedPersonId,
+        personName,
+        sourceRegionId,
+        sourceImageId: detection.image_id,
+        embedding: detection.embedding,
+        modelName: detection.model_name,
+        modelVersion: detection.model_version,
+      });
+      addReferenceFaceEntity(facesCrate, {
+        id: referenceFaceId,
+        personId: resolvedPersonId,
+        personName,
+        sourceRegionId,
+        sourceImageId: detection.image_id,
+        embedding: detection.embedding,
+        modelName: detection.model_name,
+        modelVersion: detection.model_version,
+      });
+      await saveFacesCrate(fsAdapter, facesCrate);
+
+      updateDetectionStatus(facesStore, detection.id, { status: 'confirmed', resolvedPersonId, resolvedPersonName: personName });
+      await persistStore(facesStore);
+
+      return json(200, { ok: true, personId: resolvedPersonId, personName });
+    }
+
+    return notFound(`No route for ${method} ${path}`);
+  }
+
+  return handleRequest;
+}

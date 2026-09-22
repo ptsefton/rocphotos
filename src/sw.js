@@ -10,6 +10,8 @@
 import { createBrowserFsAdapter } from './adapters/browserFs.js';
 import { openBrowserSqlite } from './adapters/browserSqlite.js';
 import { createHandler } from './core/arocapi/handler.js';
+import { createFacesHandler } from './core/faces/handler.js';
+import { ensureFacesSchema, FACES_INDEX_FILE_NAME } from './core/faces/store.js';
 import { INDEX_FILE_NAME } from './core/db/store.js';
 import sqlWasmUrl from 'sql.js/dist/sql-wasm-browser.wasm?url';
 
@@ -98,7 +100,18 @@ async function buildContext() {
   // once explicitly exported and written back — createHandler's edit
   // routes call this after every write, via the optional store.persist().
   const store = { ...driver, persist: () => fsAdapter.writeFile(INDEX_FILE_NAME, exportIndex()) };
-  return { fsAdapter, driver: store };
+
+  // The faces companion index (see Spec.md's Face Recognition section)
+  // is a second, separate SQLite file, created fresh here the first time
+  // a collection is opened in this mode (openBrowserSqlite accepts
+  // null/undefined bytes for that) — regenerable, not a second source of
+  // truth for anything the main index or the photo crates already hold.
+  const facesBytes = (await fsAdapter.exists(FACES_INDEX_FILE_NAME)) ? await fsAdapter.readFile(FACES_INDEX_FILE_NAME) : null;
+  const { driver: facesDriver, export: exportFacesIndex } = await openBrowserSqlite(facesBytes, { locateFile: () => sqlWasmUrl });
+  const facesStore = { ...facesDriver, persist: () => fsAdapter.writeFile(FACES_INDEX_FILE_NAME, exportFacesIndex()) };
+  ensureFacesSchema(facesStore);
+
+  return { fsAdapter, driver: store, facesStore };
 }
 
 async function ensureContext() {
@@ -118,7 +131,6 @@ async function handleApiRequest(request, url) {
     return jsonResponse(ctx.error.status, { error: ctx.error.message });
   }
 
-  const apiPath = url.pathname.slice('/api'.length) || '/';
   const query = Object.fromEntries(url.searchParams);
   let body = null;
   if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -129,6 +141,18 @@ async function handleApiRequest(request, url) {
     }
   }
 
+  if (url.pathname.startsWith('/api/faces/')) {
+    const apiPath = url.pathname.slice('/api/faces'.length) || '/';
+    // No writeFaceRegion here: a Service Worker cannot shell out to the
+    // system exiftool binary, so /faces/confirm returns a clear error in
+    // this run mode (see createFacesHandler) rather than silently
+    // updating the crate/index without also updating the photo file.
+    const handleFacesRequest = createFacesHandler({ mainStore: ctx.driver, facesStore: ctx.facesStore, fsAdapter: ctx.fsAdapter });
+    const result = await handleFacesRequest({ method: request.method, path: apiPath, query, body });
+    return new Response(result.body, { status: result.status, headers: result.headers });
+  }
+
+  const apiPath = url.pathname.slice('/api'.length) || '/';
   const handleRequest = createHandler({ store: ctx.driver, fsAdapter: ctx.fsAdapter });
   const result = await handleRequest({ method: request.method, path: apiPath, query, body });
   return new Response(result.body, { status: result.status, headers: result.headers });
