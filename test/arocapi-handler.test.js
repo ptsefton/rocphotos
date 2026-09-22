@@ -17,7 +17,7 @@ import {
   ENTITY_TYPE_PERSON,
   ENTITY_TYPE_PET,
 } from '../src/core/db/store.js';
-import { loadOrCreateCrate, serializeCrate, addImageEntity, addSubCrateReference } from '../src/core/crateBuilder.js';
+import { loadOrCreateCrate, serializeCrate, addImageEntity, addSubCrateReference, CRATE_FILE_NAME } from '../src/core/crateBuilder.js';
 import { createFixtureTree, removeFixtureTree } from './helpers/tempDir.js';
 
 let currentRoot = null;
@@ -422,6 +422,37 @@ describe('POST /edit/rating', () => {
       path: `/entity/${encodeURIComponent('2025/03/10/photo.jpg')}/metadata`,
     });
     expect(JSON.parse(after.body).rating).toEqual([2]);
+  });
+
+  it('serializes concurrent edits to different images in the same crate directory, so neither one\'s change is lost', async () => {
+    // Regression test for a real bug found in the face-recognition
+    // handler with the identical shape: every /edit/* route here is also
+    // a read-the-crate-then-write-the-whole-thing-back operation. Two
+    // edits to different images in the SAME crate directory, fired
+    // without awaiting one before the other, can each read the same
+    // "before" state, and whichever finishes saving last silently
+    // discards the other's change — confirmed against a real collection
+    // for the faces handler's /confirm; this handler's own /edit/*
+    // routes share the exact same shape and needed the same fix
+    // (serializeWrites, see writeQueue.js).
+    const slowFsAdapter = {
+      ...createNodeFsAdapter(currentRoot),
+      readFile: async (relPath) => {
+        if (relPath.endsWith(CRATE_FILE_NAME)) await new Promise((resolve) => setTimeout(resolve, 20));
+        return createNodeFsAdapter(currentRoot).readFile(relPath);
+      },
+    };
+    const slowHandler = createHandler({ store: db, fsAdapter: slowFsAdapter });
+
+    await Promise.all([
+      slowHandler({ method: 'POST', path: '/edit/rating', body: { ids: ['2025/03/10/photo.jpg'], rating: 4 } }),
+      slowHandler({ method: 'POST', path: '/edit/rating', body: { ids: ['2025/03/10/undated.jpg'], rating: 2 } }),
+    ]);
+
+    const photoMeta = await slowHandler({ method: 'GET', path: `/entity/${encodeURIComponent('2025/03/10/photo.jpg')}/metadata` });
+    const undatedMeta = await slowHandler({ method: 'GET', path: `/entity/${encodeURIComponent('2025/03/10/undated.jpg')}/metadata` });
+    expect(JSON.parse(photoMeta.body).rating).toEqual([4]);
+    expect(JSON.parse(undatedMeta.body).rating).toEqual([2]);
   });
 });
 

@@ -13,6 +13,7 @@ import { joinPath } from '../pathUtils.js';
 import { findClosestReference } from './matching.js';
 import { correctAreaForOrientation } from './orientation.js';
 import { boxOverlapRatio, centerAreaToTopLeftBox, SAME_FACE_OVERLAP_THRESHOLD } from './geometry.js';
+import { serializeWrites } from '../writeQueue.js';
 import {
   isImageAlreadyScanned,
   markImageScanned,
@@ -347,71 +348,85 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       const personName = typeof body?.personName === 'string' ? body.personName.trim() : '';
       if (!personName) return badRequest('personName is required');
 
-      const detection = getDetection(facesStore, body?.detectionId);
-      if (!detection) return notFound();
-      if (detection.status !== 'pending') return badRequest(`Detection is already "${detection.status}"`);
+      // Everything below is a read-modify-write of a photo file and/or a
+      // crate file (writeFaceRegion, then rescanImageMetadata's crate
+      // write, then the faces crate's own read-modify-write) — two of
+      // these confirmations running at once, for the same image or even
+      // just the same directory, can otherwise interleave and silently
+      // lose whichever one's write finishes first (see writeQueue.js).
+      // Confirmed as a real cause of data loss: batch-confirming several
+      // people in the same folder in quick succession left only one of
+      // two people actually tagged on a given photo, with the other
+      // silently reverted and resurfacing as unidentified on the next
+      // run. serializeWrites makes every confirmation across the whole
+      // process wait its turn, however close together they arrive.
+      return serializeWrites(async () => {
+        const detection = getDetection(facesStore, body?.detectionId);
+        if (!detection) return notFound();
+        if (detection.status !== 'pending') return badRequest(`Detection is already "${detection.status}"`);
 
-      const imageRow = getEntityById(mainStore, detection.image_id);
-      const fileRow = getFileById(mainStore, detection.image_id);
-      if (!imageRow || !fileRow) return notFound('Image no longer exists');
+        const imageRow = getEntityById(mainStore, detection.image_id);
+        const fileRow = getFileById(mainStore, detection.image_id);
+        if (!imageRow || !fileRow) return notFound('Image no longer exists');
 
-      const { crateDirPath, crate } = await loadCrateForImage(fsAdapter, imageRow.ro_crate_id);
-      const imagePath = crateRelativeEntityId(imageRow.ro_crate_id, imageRow.id);
+        const { crateDirPath, crate } = await loadCrateForImage(fsAdapter, imageRow.ro_crate_id);
+        const imagePath = crateRelativeEntityId(imageRow.ro_crate_id, imageRow.id);
 
-      await writeFaceRegion(fileRow.relative_path, {
-        name: personName,
-        area: { x: detection.box_x, y: detection.box_y, w: detection.box_w, h: detection.box_h },
+        await writeFaceRegion(fileRow.relative_path, {
+          name: personName,
+          area: { x: detection.box_x, y: detection.box_y, w: detection.box_w, h: detection.box_h },
+        });
+
+        const record = await rescanImageMetadata(fsAdapter, mainStore, crateDirPath, crate, imagePath);
+        await fsAdapter.writeFile(joinPath(crateDirPath, CRATE_FILE_NAME), serializeCrate(crate));
+        await persistStore(mainStore);
+        // Keeps the AROCAPI handler's own read cache (if shared — see
+        // createFacesHandler's crateCache param) from serving the
+        // pre-confirm version of this crate to GET /entity/{id}/metadata
+        // indefinitely: without this, the viewer's tags and "Show faces"
+        // overlay would keep showing whatever this crate looked like the
+        // last time anything read it, until the server was restarted.
+        crateCache?.set(imageRow.ro_crate_id, crate);
+
+        // The newly-written region is always last in the region list
+        // (see the exiftool adapter, which only ever appends) — its id
+        // is therefore derivable from the freshly re-read region count,
+        // without needing writeFaceRegion to hand a region id back. Kept
+        // for provenance/inspection only now — see
+        // hasReferenceForPersonOnImage for why the "already backfilled?"
+        // check no longer depends on this id being built consistently.
+        const sourceRegionId = `${detection.image_id}#region-${record.regions.length - 1}`;
+        const resolvedPersonId = personEntityId(personName);
+
+        const facesCrate = await loadOrCreateFacesCrate(fsAdapter);
+        const referenceFaceId = crypto.randomUUID();
+        addReferenceFace(facesStore, {
+          id: referenceFaceId,
+          personId: resolvedPersonId,
+          personName,
+          sourceRegionId,
+          sourceImageId: detection.image_id,
+          embedding: detection.embedding,
+          modelName: detection.model_name,
+          modelVersion: detection.model_version,
+        });
+        addReferenceFaceEntity(facesCrate, {
+          id: referenceFaceId,
+          personId: resolvedPersonId,
+          personName,
+          sourceRegionId,
+          sourceImageId: detection.image_id,
+          embedding: detection.embedding,
+          modelName: detection.model_name,
+          modelVersion: detection.model_version,
+        });
+        await saveFacesCrate(fsAdapter, facesCrate);
+
+        updateDetectionStatus(facesStore, detection.id, { status: 'confirmed', resolvedPersonId, resolvedPersonName: personName });
+        await persistStore(facesStore);
+
+        return json(200, { ok: true, personId: resolvedPersonId, personName });
       });
-
-      const record = await rescanImageMetadata(fsAdapter, mainStore, crateDirPath, crate, imagePath);
-      await fsAdapter.writeFile(joinPath(crateDirPath, CRATE_FILE_NAME), serializeCrate(crate));
-      await persistStore(mainStore);
-      // Keeps the AROCAPI handler's own read cache (if shared — see
-      // createFacesHandler's crateCache param) from serving the
-      // pre-confirm version of this crate to GET /entity/{id}/metadata
-      // indefinitely: without this, the viewer's tags and "Show faces"
-      // overlay would keep showing whatever this crate looked like the
-      // last time anything read it, until the server was restarted.
-      crateCache?.set(imageRow.ro_crate_id, crate);
-
-      // The newly-written region is always last in the region list (see
-      // the exiftool adapter, which only ever appends) — its id is
-      // therefore derivable from the freshly re-read region count,
-      // without needing writeFaceRegion to hand a region id back. Kept
-      // for provenance/inspection only now — see
-      // hasReferenceForPersonOnImage for why the "already backfilled?"
-      // check no longer depends on this id being built consistently.
-      const sourceRegionId = `${detection.image_id}#region-${record.regions.length - 1}`;
-      const resolvedPersonId = personEntityId(personName);
-
-      const facesCrate = await loadOrCreateFacesCrate(fsAdapter);
-      const referenceFaceId = crypto.randomUUID();
-      addReferenceFace(facesStore, {
-        id: referenceFaceId,
-        personId: resolvedPersonId,
-        personName,
-        sourceRegionId,
-        sourceImageId: detection.image_id,
-        embedding: detection.embedding,
-        modelName: detection.model_name,
-        modelVersion: detection.model_version,
-      });
-      addReferenceFaceEntity(facesCrate, {
-        id: referenceFaceId,
-        personId: resolvedPersonId,
-        personName,
-        sourceRegionId,
-        sourceImageId: detection.image_id,
-        embedding: detection.embedding,
-        modelName: detection.model_name,
-        modelVersion: detection.model_version,
-      });
-      await saveFacesCrate(fsAdapter, facesCrate);
-
-      updateDetectionStatus(facesStore, detection.id, { status: 'confirmed', resolvedPersonId, resolvedPersonName: personName });
-      await persistStore(facesStore);
-
-      return json(200, { ok: true, personId: resolvedPersonId, personName });
     }
 
     return notFound(`No route for ${method} ${path}`);

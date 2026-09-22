@@ -29,6 +29,7 @@ import {
 import { loadEntityFromCrate } from '../entityCrate.js';
 import { moveToTrash } from '../trash.js';
 import { joinPath } from '../pathUtils.js';
+import { serializeWrites } from '../writeQueue.js';
 
 // The facets this deployment supports: camera and lens (from EXIF),
 // keyword (from IPTC/XMP, possibly several per image), rating (an XMP
@@ -311,34 +312,41 @@ export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
       const ids = Array.isArray(body?.ids) ? body.ids : [];
       const toAdd = Array.isArray(body?.add) ? body.add : [];
       const toRemove = Array.isArray(body?.remove) ? body.remove : [];
-      const cache = new Map();
-      const updated = [];
-      const errors = [];
 
-      for (const id of ids) {
-        const row = getEntityById(store, id);
-        if (!row) {
-          errors.push({ id, message: 'Not found' });
-          continue;
-        }
-        const crate = await loadCrateForEdit(cache, row.ro_crate_id);
-        const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
-        const current = readImageRecord(crate, crateRelativeId);
-        if (!current) {
-          errors.push({ id, message: "Entity not found in its crate's own metadata" });
-          continue;
-        }
-        const keywords = new Set(current.keywords);
-        for (const keyword of toAdd) keywords.add(keyword);
-        for (const keyword of toRemove) keywords.delete(keyword);
-        setImageKeywords(crate, crateRelativeId, [...keywords]);
-        setEntityFacetValues(store, id, 'keyword', [...keywords]);
-        updated.push(id);
-      }
+      // Serialized against every other crate-writing request (see
+      // writeQueue.js) — this and the other /edit/* routes below are the
+      // same read-modify-write shape as the faces handler's /confirm,
+      // and can race against it or each other the same way.
+      return serializeWrites(async () => {
+        const cache = new Map();
+        const updated = [];
+        const errors = [];
 
-      await saveEditedCrates(cache);
-      await persistStore(store);
-      return json(200, { updated, errors });
+        for (const id of ids) {
+          const row = getEntityById(store, id);
+          if (!row) {
+            errors.push({ id, message: 'Not found' });
+            continue;
+          }
+          const crate = await loadCrateForEdit(cache, row.ro_crate_id);
+          const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
+          const current = readImageRecord(crate, crateRelativeId);
+          if (!current) {
+            errors.push({ id, message: "Entity not found in its crate's own metadata" });
+            continue;
+          }
+          const keywords = new Set(current.keywords);
+          for (const keyword of toAdd) keywords.add(keyword);
+          for (const keyword of toRemove) keywords.delete(keyword);
+          setImageKeywords(crate, crateRelativeId, [...keywords]);
+          setEntityFacetValues(store, id, 'keyword', [...keywords]);
+          updated.push(id);
+        }
+
+        await saveEditedCrates(cache);
+        await persistStore(store);
+        return json(200, { updated, errors });
+      });
     }
 
     if (method === 'POST' && path === '/edit/rating') {
@@ -349,128 +357,139 @@ export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
         return badRequest('rating must be an integer from 1 to 5, or null to clear it');
       }
 
-      const cache = new Map();
-      const updated = [];
-      const errors = [];
+      return serializeWrites(async () => {
+        const cache = new Map();
+        const updated = [];
+        const errors = [];
 
-      for (const id of ids) {
-        const row = getEntityById(store, id);
-        if (!row) {
-          errors.push({ id, message: 'Not found' });
-          continue;
+        for (const id of ids) {
+          const row = getEntityById(store, id);
+          if (!row) {
+            errors.push({ id, message: 'Not found' });
+            continue;
+          }
+          const crate = await loadCrateForEdit(cache, row.ro_crate_id);
+          const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
+          setImageRating(crate, crateRelativeId, rating);
+          setEntityFacetValues(store, id, 'rating', rating !== null ? [String(rating)] : []);
+          updated.push(id);
         }
-        const crate = await loadCrateForEdit(cache, row.ro_crate_id);
-        const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
-        setImageRating(crate, crateRelativeId, rating);
-        setEntityFacetValues(store, id, 'rating', rating !== null ? [String(rating)] : []);
-        updated.push(id);
-      }
 
-      await saveEditedCrates(cache);
-      await persistStore(store);
-      return json(200, { updated, errors });
+        await saveEditedCrates(cache);
+        await persistStore(store);
+        return json(200, { updated, errors });
+      });
     }
 
     if (method === 'POST' && path === '/edit/title') {
       const ids = Array.isArray(body?.ids) ? body.ids : [];
-      const cache = new Map();
-      const updated = [];
-      const errors = [];
 
-      for (const id of ids) {
-        const row = getEntityById(store, id);
-        if (!row) {
-          errors.push({ id, message: 'Not found' });
-          continue;
+      return serializeWrites(async () => {
+        const cache = new Map();
+        const updated = [];
+        const errors = [];
+
+        for (const id of ids) {
+          const row = getEntityById(store, id);
+          if (!row) {
+            errors.push({ id, message: 'Not found' });
+            continue;
+          }
+          const crate = await loadCrateForEdit(cache, row.ro_crate_id);
+          const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
+          setImageTitle(crate, crateRelativeId, body?.title);
+          // Read back rather than trusting body.title directly: an empty
+          // title falls back to the filename (see setImageTitle), and the
+          // index should record that resolved value, not a blank one.
+          const updatedTitle = readImageRecord(crate, crateRelativeId)?.title ?? row.title;
+          upsertEntityFromRow(row, { title: updatedTitle });
+          updated.push(id);
         }
-        const crate = await loadCrateForEdit(cache, row.ro_crate_id);
-        const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
-        setImageTitle(crate, crateRelativeId, body?.title);
-        // Read back rather than trusting body.title directly: an empty
-        // title falls back to the filename (see setImageTitle), and the
-        // index should record that resolved value, not a blank one.
-        const updatedTitle = readImageRecord(crate, crateRelativeId)?.title ?? row.title;
-        upsertEntityFromRow(row, { title: updatedTitle });
-        updated.push(id);
-      }
 
-      await saveEditedCrates(cache);
-      await persistStore(store);
-      return json(200, { updated, errors });
+        await saveEditedCrates(cache);
+        await persistStore(store);
+        return json(200, { updated, errors });
+      });
     }
 
     if (method === 'POST' && path === '/edit/description') {
       const ids = Array.isArray(body?.ids) ? body.ids : [];
       const description = typeof body?.description === 'string' ? body.description.trim() || null : null;
-      const cache = new Map();
-      const updated = [];
-      const errors = [];
 
-      for (const id of ids) {
-        const row = getEntityById(store, id);
-        if (!row) {
-          errors.push({ id, message: 'Not found' });
-          continue;
+      return serializeWrites(async () => {
+        const cache = new Map();
+        const updated = [];
+        const errors = [];
+
+        for (const id of ids) {
+          const row = getEntityById(store, id);
+          if (!row) {
+            errors.push({ id, message: 'Not found' });
+            continue;
+          }
+          const crate = await loadCrateForEdit(cache, row.ro_crate_id);
+          const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
+          setImageDescription(crate, crateRelativeId, description);
+          upsertEntityFromRow(row, { description });
+          updated.push(id);
         }
-        const crate = await loadCrateForEdit(cache, row.ro_crate_id);
-        const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
-        setImageDescription(crate, crateRelativeId, description);
-        upsertEntityFromRow(row, { description });
-        updated.push(id);
-      }
 
-      await saveEditedCrates(cache);
-      await persistStore(store);
-      return json(200, { updated, errors });
+        await saveEditedCrates(cache);
+        await persistStore(store);
+        return json(200, { updated, errors });
+      });
     }
 
     if (method === 'POST' && path === '/edit/delete') {
       const ids = Array.isArray(body?.ids) ? body.ids : [];
-      const cache = new Map();
-      const updated = [];
-      const errors = [];
 
-      for (const id of ids) {
-        const row = getEntityById(store, id);
-        if (!row) {
-          errors.push({ id, message: 'Not found' });
-          continue;
-        }
-        const fileRow = getFileById(store, id);
-        if (!fileRow) {
-          errors.push({ id, message: 'No file recorded for this entity' });
-          continue;
+      return serializeWrites(async () => {
+        const cache = new Map();
+        const updated = [];
+        const errors = [];
+
+        for (const id of ids) {
+          const row = getEntityById(store, id);
+          if (!row) {
+            errors.push({ id, message: 'Not found' });
+            continue;
+          }
+          const fileRow = getFileById(store, id);
+          if (!fileRow) {
+            errors.push({ id, message: 'No file recorded for this entity' });
+            continue;
+          }
+
+          // The physical move happens first: if it fails, nothing else
+          // about this id is touched, leaving it fully intact rather than
+          // looking deleted (gone from the index) while its file is still
+          // sitting exactly where it always was.
+          try {
+            await moveToTrash(fsAdapter, fileRow.relative_path);
+          } catch (err) {
+            errors.push({ id, message: `Could not move file to trash: ${err.message}` });
+            continue;
+          }
+
+          const crate = await loadCrateForEdit(cache, row.ro_crate_id);
+          const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
+          const record = readImageRecord(crate, crateRelativeId);
+          if (record?.thumbnailPath) {
+            const thumbnailFullPath = joinPath(crateDirPathFromEntityId(row.ro_crate_id), record.thumbnailPath);
+            // A missing or already-regenerated thumbnail is not an error
+            // worth failing the delete over — the source image is already
+            // safely in the trash by this point.
+            await fsAdapter.deleteFile(thumbnailFullPath).catch(() => {});
+          }
+          removeImageEntity(crate, crateRelativeId);
+          deleteEntityById(store, id);
+          updated.push(id);
         }
 
-        // The physical move happens first: if it fails, nothing else
-        // about this id is touched, leaving it fully intact rather than
-        // looking deleted (gone from the index) while its file is still
-        // sitting exactly where it always was.
-        try {
-          await moveToTrash(fsAdapter, fileRow.relative_path);
-        } catch (err) {
-          errors.push({ id, message: `Could not move file to trash: ${err.message}` });
-          continue;
-        }
-
-        const crate = await loadCrateForEdit(cache, row.ro_crate_id);
-        const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
-        const record = readImageRecord(crate, crateRelativeId);
-        if (record?.thumbnailPath) {
-          const thumbnailFullPath = joinPath(crateDirPathFromEntityId(row.ro_crate_id), record.thumbnailPath);
-          // A missing or already-regenerated thumbnail is not an error
-          // worth failing the delete over — the source image is already
-          // safely in the trash by this point.
-          await fsAdapter.deleteFile(thumbnailFullPath).catch(() => {});
-        }
-        removeImageEntity(crate, crateRelativeId);
-        deleteEntityById(store, id);
-        updated.push(id);
-      }
-
-      await saveEditedCrates(cache);
-      await persistStore(store);
-      return json(200, { updated, errors });
+        await saveEditedCrates(cache);
+        await persistStore(store);
+        return json(200, { updated, errors });
+      });
     }
 
     return notFound(`No route for ${method} ${path}`);

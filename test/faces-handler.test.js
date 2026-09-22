@@ -350,6 +350,53 @@ describe('POST /confirm', () => {
     expect(res.status).toEqual(400);
   });
 
+  it('serializes two concurrent confirmations for the same image, so neither one\'s region is lost to the other', async () => {
+    // Regression test for a real bug: writeFaceRegion (and separately,
+    // the crate write below it) is a read-the-current-state-then-write-
+    // the-whole-thing-back operation. Fired without awaiting one before
+    // the other — exactly what happens confirming two different people
+    // in the same photo in quick succession — two of these can both read
+    // the "before" state, and whichever finishes writing last overwrites
+    // the other's change entirely. A real user's collection showed
+    // exactly this: two people tagged in one photo, only one actually
+    // ending up saved.
+    const detectionA = JSON.parse((await handleRequest({
+      method: 'POST', path: '/detections',
+      body: { imageId: photoId, modelName: 'face-api.js', modelVersion: '0.22.2', faces: [{ box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 }, embedding: [1] }] },
+    })).body).created[0];
+    const detectionB = JSON.parse((await handleRequest({
+      method: 'POST', path: '/detections',
+      body: { imageId: photoId, modelName: 'face-api.js', modelVersion: '0.22.2', faces: [{ box: { x: 0.6, y: 0.6, w: 0.1, h: 0.1 }, embedding: [2] }] },
+    })).body).created[0];
+
+    // Faithfully simulates the real exiftool adapter's own read-then-
+    // (after a delay)-write shape, including its race: each call snapshots
+    // "what's on the file" immediately, waits (standing in for real I/O
+    // latency), then overwrites the file with that stale snapshot plus
+    // its own addition — losing anything written by another call in the
+    // meantime, unless the two are serialized so one never starts until
+    // the other has fully finished.
+    let fileRegions = [];
+    writeFaceRegion.mockImplementation(async (relativePath, { name, area }) => {
+      const snapshot = [...fileRegions];
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      fileRegions = [...snapshot, { Name: name, Type: 'Face', Area: area }];
+    });
+    extractExif.mockImplementation(async () => ({
+      exif: { Regions: { RegionList: [...fileRegions] } },
+      error: null,
+    }));
+
+    await Promise.all([
+      handleRequest({ method: 'POST', path: '/confirm', body: { detectionId: detectionA.id, personName: 'Alice' } }),
+      handleRequest({ method: 'POST', path: '/confirm', body: { detectionId: detectionB.id, personName: 'Bob' } }),
+    ]);
+
+    const crateJson = new TextDecoder().decode(await fsAdapter.readFile(`2025/${CRATE_FILE_NAME}`));
+    const record = readImageRecord(loadOrCreateCrate(crateJson), 'photo.jpg');
+    expect(record.people.sort()).toEqual(['Alice', 'Bob']);
+  });
+
   it('404s for an unknown detection', async () => {
     const res = await handleRequest({ method: 'POST', path: '/confirm', body: { detectionId: 'nope', personName: 'Bob' } });
     expect(res.status).toEqual(404);
