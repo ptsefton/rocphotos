@@ -332,7 +332,13 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       // the exiftool adapter, which only ever appends) — its id is
       // therefore derivable from the freshly re-read region count,
       // without needing writeFaceRegion to hand a region id back.
-      const sourceRegionId = `${imagePath}#region-${record.regions.length - 1}`;
+      // Built from detection.image_id (collection-relative — the same
+      // form /existing-regions uses), not imagePath (crate-relative):
+      // using the wrong one here meant a confirmed face's own region
+      // never matched what a later "already backfilled?" check computed
+      // for it, for any image outside the root crate — see
+      // hasReferenceFaceForRegion and repairMismatchedSourceRegionIds.
+      const sourceRegionId = `${detection.image_id}#region-${record.regions.length - 1}`;
       const resolvedPersonId = personEntityId(personName);
 
       const facesCrate = await loadOrCreateFacesCrate(fsAdapter);

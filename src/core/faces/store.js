@@ -19,6 +19,39 @@ export function ensureFacesSchema(driver) {
   if (!existingColumns.has('rejected_person_ids')) {
     driver.exec("ALTER TABLE detections ADD COLUMN rejected_person_ids TEXT NOT NULL DEFAULT '[]'");
   }
+
+  repairMismatchedSourceRegionIds(driver);
+}
+
+/**
+ * One-off data repair, safe to run on every startup: a reference face
+ * confirmed through /faces/confirm before the fix (see handler.js) had
+ * its source_region_id built from the wrong (crate-relative, not
+ * collection-relative) path for any image outside the root crate — so it
+ * never matched what /faces/existing-regions computes for the same
+ * region, and that region was endlessly re-offered for backfill on every
+ * "Recognize Faces" run instead of being recognised as already done.
+ * Fixed here by rebuilding source_region_id from the row's own (always
+ * correct) source_image_id plus the '#region-N' suffix already on it —
+ * a no-op for every row already in the right form (root-crate images,
+ * anything backfilled rather than confirmed, and stranger references,
+ * which have no source_region_id at all).
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @returns {number} how many rows were fixed
+ */
+export function repairMismatchedSourceRegionIds(driver) {
+  const rows = driver.all('SELECT id, source_image_id, source_region_id FROM reference_faces');
+  let fixed = 0;
+  for (const row of rows) {
+    if (!row.source_region_id || row.source_region_id.startsWith(row.source_image_id)) continue;
+    const hashIndex = row.source_region_id.lastIndexOf('#');
+    if (hashIndex === -1) continue;
+    const correctedId = row.source_image_id + row.source_region_id.slice(hashIndex);
+    driver.run('UPDATE reference_faces SET source_region_id = ? WHERE id = ?', [correctedId, row.id]);
+    fixed += 1;
+  }
+  return fixed;
 }
 
 /**

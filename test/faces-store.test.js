@@ -11,6 +11,7 @@ import {
   listDetections,
   updateDetectionStatus,
   updateDetectionSuggestion,
+  repairMismatchedSourceRegionIds,
 } from '../src/core/faces/store.js';
 
 let db;
@@ -150,5 +151,36 @@ describe('ensureFacesSchema migration', () => {
       ensureFacesSchema(db);
       ensureFacesSchema(db);
     }).not.toThrow();
+  });
+});
+
+describe('repairMismatchedSourceRegionIds', () => {
+  it('rebuilds a crate-relative source_region_id (the pre-fix /faces/confirm bug) from its own source_image_id', () => {
+    addReferenceFace(db, {
+      id: 'ref-1', personId: 'arcp://name,rocphoto/person/bob', personName: 'Bob',
+      sourceRegionId: 'photo.jpg#region-2', sourceImageId: '2024/02/03/photo.jpg', embedding: [1],
+      modelName: 'm', modelVersion: '1',
+    });
+    const fixed = repairMismatchedSourceRegionIds(db);
+    expect(fixed).toEqual(1);
+    expect(listReferenceFaces(db, 'm', '1')[0].sourceRegionId).toEqual('2024/02/03/photo.jpg#region-2');
+  });
+
+  it('leaves an already-correct row (root-crate images, or anything backfilled since the fix) untouched', () => {
+    addReferenceFace(db, {
+      id: 'ref-1', personId: 'arcp://name,rocphoto/person/bob', personName: 'Bob',
+      sourceRegionId: 'photo.jpg#region-0', sourceImageId: 'photo.jpg', embedding: [1],
+      modelName: 'm', modelVersion: '1',
+    });
+    expect(repairMismatchedSourceRegionIds(db)).toEqual(0);
+  });
+
+  it('leaves a stranger reference (no source_region_id at all) untouched', () => {
+    addReferenceFace(db, {
+      id: 'ref-1', personId: null, personName: null,
+      sourceRegionId: null, sourceImageId: '2024/02/03/photo.jpg', embedding: [1],
+      modelName: 'm', modelVersion: '1',
+    });
+    expect(repairMismatchedSourceRegionIds(db)).toEqual(0);
   });
 });

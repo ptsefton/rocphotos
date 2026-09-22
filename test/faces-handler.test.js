@@ -368,6 +368,31 @@ describe('POST /confirm', () => {
     expect(await fsAdapter.exists('_rocphotos/faces/ro-crate-metadata.json')).toBe(true);
   });
 
+  it('records the new reference under the same (collection-relative) region id /existing-regions itself computes, so a confirmed face is never re-offered for backfill', async () => {
+    // Regression test for a real bug: sourceRegionId was previously built
+    // from the crate-relative image path, not the collection-relative
+    // one — for any image outside the root crate (this fixture's photo.jpg
+    // lives in the '2025' sub-crate), that never matched what
+    // /existing-regions computes for the same region, so a just-confirmed
+    // face kept looking unbackfilled forever and was silently reprocessed
+    // on every later "Recognize Faces" run.
+    const created = JSON.parse((await handleRequest({
+      method: 'POST', path: '/detections',
+      body: { imageId: photoId, modelName: 'face-api.js', modelVersion: '0.22.2', faces: [{ box: { x: 0.3, y: 0.4, w: 0.2, h: 0.1 }, embedding: [1, 2, 3] }] },
+    })).body).created[0];
+    extractExif.mockResolvedValue({
+      exif: { Regions: { RegionList: [{ Name: 'Bob', Type: 'Face', Area: { x: 0.4, y: 0.45, w: 0.2, h: 0.1 } }] } },
+      error: null,
+    });
+    await handleRequest({ method: 'POST', path: '/confirm', body: { detectionId: created.id, personName: 'Bob' } });
+
+    const existing = await handleRequest({
+      method: 'POST', path: '/existing-regions',
+      body: { imageIds: [photoId], modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+    expect(JSON.parse(existing.body).regions).toEqual([]);
+  });
+
   it('rejects confirming a detection that has already been resolved', async () => {
     const created = JSON.parse((await handleRequest({
       method: 'POST', path: '/detections',
