@@ -61,11 +61,15 @@
     .face-match-group-header span { color: #eee; font-size: 0.85rem; }
     .face-match-group-header button { background: #1a5fb4; color: #fff; border: none; border-radius: 4px; padding: 0.3rem 0.7rem; font-size: 0.78rem; cursor: pointer; }
     .face-match-group-header button:disabled { opacity: 0.5; cursor: default; }
-    .face-match-thumbs { display: flex; flex-wrap: wrap; gap: 0.6rem; }
-    .face-match-thumb { position: relative; width: 90px; }
+    .face-match-thumbs { display: flex; flex-wrap: wrap; gap: 0.7rem; }
+    .face-match-thumb { position: relative; width: 150px; display: flex; flex-direction: column; gap: 0.3rem; }
     .face-match-thumb canvas { width: 100%; border-radius: 4px; background: #333; display: block; }
-    .face-match-thumb-remove { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; line-height: 18px; padding: 0; border-radius: 50%; background: #b00020; color: #fff; border: none; cursor: pointer; font-size: 0.9rem; }
+    .face-match-thumb-remove { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; line-height: 18px; padding: 0; border-radius: 50%; background: #b00020; color: #fff; border: none; cursor: pointer; font-size: 0.9rem; z-index: 1; }
     .face-match-thumb-remove:hover { background: #d0002a; }
+    .face-match-thumb-input { width: 100%; box-sizing: border-box; padding: 0.2rem 0.4rem; font-size: 0.72rem; border: 1px solid #555; border-radius: 4px; background: #111; color: #eee; }
+    .face-match-thumb-actions { display: flex; gap: 0.3rem; }
+    .face-match-thumb-actions button { flex: 1; background: #333; color: #eee; border: none; border-radius: 4px; padding: 0.2rem 0.3rem; font-size: 0.68rem; cursor: pointer; }
+    .face-match-thumb-actions button:hover { background: #1a5fb4; }
 
     #selection-bar { display: none; align-items: center; gap: 0.6rem; background: #eef4fc; border: 1px solid #bcd6f2; border-radius: 4px; padding: 0.5rem 0.7rem; margin-bottom: 1rem; font-size: 0.85rem; flex-wrap: wrap; }
     #selection-bar.visible { display: flex; }

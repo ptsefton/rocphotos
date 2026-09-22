@@ -22,6 +22,7 @@ import {
   getDetection,
   listDetections,
   updateDetectionStatus,
+  updateDetectionSuggestion,
 } from './store.js';
 import { loadOrCreateFacesCrate, saveFacesCrate, addReferenceFaceEntity } from './crate.js';
 
@@ -229,6 +230,38 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       const detection = getDetection(facesStore, body?.detectionId);
       if (!detection) return notFound();
       updateDetectionStatus(facesStore, detection.id, { status: 'ignored' });
+      await persistStore(facesStore);
+      return json(200, { ok: true });
+    }
+
+    // Rejects the detection's current suggestion — "this is not who you
+    // think it is" — and re-matches it against the reference set with
+    // that Person (and every Person rejected for it before) excluded,
+    // rather than just hiding it from the current review screen: without
+    // this, a rejected suggestion would come right back the next time
+    // detections are listed, since nothing about it would have actually
+    // changed. Stays "pending" under whatever the next-best match is (or
+    // with no suggestion at all), unless that next match is a "stranger"
+    // reference, in which case it is auto-ignored the same as a fresh
+    // detection would be.
+    if (method === 'POST' && path === '/reject-suggestion') {
+      const detection = getDetection(facesStore, body?.detectionId);
+      if (!detection) return notFound();
+      if (!detection.suggested_person_id) return badRequest('This detection has no suggestion to reject');
+
+      const rejectedPersonIds = [...new Set([...detection.rejectedPersonIds, detection.suggested_person_id])];
+      const referenceFaces = listReferenceFaces(facesStore, detection.model_name, detection.model_version)
+        .filter((reference) => !rejectedPersonIds.includes(reference.personId));
+      const match = findClosestReference(detection.embedding, referenceFaces);
+      const isStranger = match && match.reference.personId === null;
+
+      updateDetectionSuggestion(facesStore, detection.id, {
+        suggestedPersonId: match && !isStranger ? match.reference.personId : null,
+        suggestedPersonName: match && !isStranger ? match.reference.personName : null,
+        suggestedDistance: match ? match.distance : null,
+        status: isStranger ? 'auto_ignored' : 'pending',
+        rejectedPersonIds,
+      });
       await persistStore(facesStore);
       return json(200, { ok: true });
     }

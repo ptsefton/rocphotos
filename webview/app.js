@@ -1090,55 +1090,22 @@ function renderFaceCard(detection) {
 
 // A box of every pending detection presumed to be the same Person,
 // approved together in one action rather than one at a time. Removing
-// one (the [-] button) only takes it out of this batch — it stays
-// "pending" on the server and simply shows up again next time the
-// review screen opens, the same as if it had never been grouped.
-function renderMatchGroup(personName, initialDetections) {
-  let detections = initialDetections;
-
+// one (the [-] button) rejects that specific suggestion server-side
+// (/faces/reject-suggestion) — not just a local, cosmetic removal — so
+// it is re-matched against everyone else and refreshes into wherever it
+// now belongs (a different group, "Unidentified", or gone entirely if
+// the next-best match turns out to be a suppressed stranger), rather
+// than reappearing under the same wrong name the next time this screen
+// opens.
+function renderMatchGroup(personName, detections) {
   const box = document.createElement('div');
   box.className = 'face-match-group';
 
   const header = document.createElement('div');
   header.className = 'face-match-group-header';
   const title = document.createElement('span');
+  title.textContent = `Presumed: ${personName} (${detections.length})`;
   const confirmAllButton = document.createElement('button');
-  header.appendChild(title);
-  header.appendChild(confirmAllButton);
-
-  const thumbsEl = document.createElement('div');
-  thumbsEl.className = 'face-match-thumbs';
-
-  function renderThumbs() {
-    title.textContent = `Presumed: ${personName} (${detections.length})`;
-    thumbsEl.innerHTML = '';
-    for (const detection of detections) {
-      const thumb = document.createElement('div');
-      thumb.className = 'face-match-thumb';
-
-      const canvas = document.createElement('canvas');
-      thumb.appendChild(canvas);
-      drawFaceCrop(canvas, detection).catch(() => {});
-
-      const removeButton = document.createElement('button');
-      removeButton.className = 'face-match-thumb-remove';
-      removeButton.textContent = '−';
-      removeButton.title = 'Remove from this batch (leaves it pending for later)';
-      removeButton.addEventListener('click', () => {
-        detections = detections.filter((d) => d.id !== detection.id);
-        if (detections.length === 0) {
-          box.remove();
-          return;
-        }
-        renderThumbs();
-      });
-      thumb.appendChild(removeButton);
-
-      thumbsEl.appendChild(thumb);
-    }
-  }
-  renderThumbs();
-
   confirmAllButton.textContent = `Confirm all as ${personName}`;
   confirmAllButton.addEventListener('click', async () => {
     confirmAllButton.disabled = true;
@@ -1152,8 +1119,61 @@ function renderMatchGroup(personName, initialDetections) {
       confirmAllButton.disabled = false;
     }
   });
-
+  header.appendChild(title);
+  header.appendChild(confirmAllButton);
   box.appendChild(header);
+
+  const thumbsEl = document.createElement('div');
+  thumbsEl.className = 'face-match-thumbs';
+  for (const detection of detections) {
+    const thumb = document.createElement('div');
+    thumb.className = 'face-match-thumb';
+
+    const canvas = document.createElement('canvas');
+    thumb.appendChild(canvas);
+    drawFaceCrop(canvas, detection).catch(() => {});
+
+    const removeButton = document.createElement('button');
+    removeButton.className = 'face-match-thumb-remove';
+    removeButton.textContent = '−';
+    removeButton.title = `Not ${personName} — remember that and try matching again`;
+    removeButton.addEventListener('click', () => resolveDetection(detection.id, '/faces/reject-suggestion', {}));
+    thumb.appendChild(removeButton);
+
+    // Reassigning this one face directly, without waiting for the [-]
+    // button's guess-again matching: typed here rather than in a modal,
+    // sharing the same known-people autocomplete list (#person-datalist,
+    // kept filled — see openFacesReview) as the lookup dialog below.
+    const reassignInput = document.createElement('input');
+    reassignInput.type = 'text';
+    reassignInput.className = 'face-match-thumb-input';
+    reassignInput.placeholder = 'Reassign… (Enter)';
+    reassignInput.setAttribute('list', 'person-datalist');
+    reassignInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      const name = reassignInput.value.trim();
+      if (name) resolveDetection(detection.id, '/faces/confirm', { personName: name });
+    });
+    thumb.appendChild(reassignInput);
+
+    const thumbActions = document.createElement('div');
+    thumbActions.className = 'face-match-thumb-actions';
+
+    const ignoreButton = document.createElement('button');
+    ignoreButton.textContent = 'Ignore';
+    ignoreButton.addEventListener('click', () => resolveDetection(detection.id, '/faces/ignore', {}));
+    thumbActions.appendChild(ignoreButton);
+
+    const strangerButton = document.createElement('button');
+    strangerButton.textContent = 'Stranger';
+    strangerButton.title = 'Never suggest this face again, on any photo';
+    strangerButton.addEventListener('click', () => resolveDetection(detection.id, '/faces/ignore-stranger', {}));
+    thumbActions.appendChild(strangerButton);
+
+    thumb.appendChild(thumbActions);
+    thumbsEl.appendChild(thumb);
+  }
   box.appendChild(thumbsEl);
   return box;
 }
@@ -1163,6 +1183,20 @@ async function openFacesReview() {
   const { total, detections } = await response.json();
   document.querySelector('#faces-review-heading').textContent = `Review faces (${total} pending)`;
   facesReviewListEl.innerHTML = '';
+
+  // Keeps #person-datalist filled for the inline reassign inputs on
+  // each thumbnail below (see renderMatchGroup) — populated here rather
+  // than only when the lookup dialog itself opens, since those inputs
+  // need it without ever opening that dialog.
+  fetchKnownPeople().then((people) => {
+    knownPeople = people;
+    personDatalistEl.innerHTML = '';
+    for (const name of people) {
+      const option = document.createElement('option');
+      option.value = name;
+      personDatalistEl.appendChild(option);
+    }
+  });
 
   // Presumed matches are grouped together, one box per suggested Person,
   // so several can be approved (or pruned of a wrong one) in a single

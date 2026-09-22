@@ -39,7 +39,12 @@ CREATE INDEX IF NOT EXISTS idx_reference_faces_person ON reference_faces(person_
 -- the fractional top-left corner (matching face-api.js's own box shape),
 -- box_w/box_h fractional width/height — converted to MWG's center-point
 -- convention only when a confirmed detection is written back to the
--- photo file (see faces/writeback.js).
+-- photo file (see faces/writeback.js). rejected_person_ids is a JSON
+-- array: every Person a reviewer has explicitly said this detection is
+-- NOT (see /faces/reject-suggestion) — excluded from matching on every
+-- later re-match attempt for this same detection, so rejecting a wrong
+-- suggestion tries the next-best one instead of just re-suggesting the
+-- same wrong Person again.
 CREATE TABLE IF NOT EXISTS detections (
   id TEXT PRIMARY KEY,
   image_id TEXT NOT NULL,
@@ -54,6 +59,7 @@ CREATE TABLE IF NOT EXISTS detections (
   status TEXT NOT NULL DEFAULT 'pending',
   resolved_person_id TEXT,
   resolved_person_name TEXT,
+  rejected_person_ids TEXT NOT NULL DEFAULT '[]',
   model_name TEXT NOT NULL,
   model_version TEXT NOT NULL,
   created_at TEXT NOT NULL

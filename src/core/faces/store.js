@@ -9,6 +9,16 @@ export const FACES_INDEX_FILE_NAME = joinPath(FACES_DIR_NAME, 'faces-index.sqlit
  */
 export function ensureFacesSchema(driver) {
   driver.exec(FACES_SCHEMA_SQL);
+
+  // Migration for a faces index built before rejected_person_ids existed
+  // (see /faces/reject-suggestion) — CREATE TABLE IF NOT EXISTS above
+  // does not add a column to an already-existing table, and this table
+  // is real, user-facing state (an in-progress review) that should not
+  // require deleting the whole faces index to pick up.
+  const existingColumns = new Set(driver.all('PRAGMA table_info(detections)').map((row) => row.name));
+  if (!existingColumns.has('rejected_person_ids')) {
+    driver.exec("ALTER TABLE detections ADD COLUMN rejected_person_ids TEXT NOT NULL DEFAULT '[]'");
+  }
 }
 
 /**
@@ -125,7 +135,7 @@ export function addReferenceFace(driver, {
 }
 
 function parseDetectionRow(row) {
-  return { ...row, embedding: JSON.parse(row.embedding) };
+  return { ...row, embedding: JSON.parse(row.embedding), rejectedPersonIds: JSON.parse(row.rejected_person_ids ?? '[]') };
 }
 
 /**
@@ -194,5 +204,24 @@ export function updateDetectionStatus(driver, id, { status, resolvedPersonId = n
   driver.run(
     'UPDATE detections SET status = ?, resolved_person_id = ?, resolved_person_name = ? WHERE id = ?',
     [status, resolvedPersonId, resolvedPersonName, id],
+  );
+}
+
+/**
+ * Replaces a detection's suggestion, status, and rejected-Person list
+ * outright — used by /faces/reject-suggestion after re-matching a
+ * detection against the reference set with one more Person excluded.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} id
+ * @param {{suggestedPersonId: string|null, suggestedPersonName: string|null, suggestedDistance: number|null, status: string, rejectedPersonIds: string[]}} update
+ */
+export function updateDetectionSuggestion(driver, id, { suggestedPersonId, suggestedPersonName, suggestedDistance, status, rejectedPersonIds }) {
+  driver.run(
+    `UPDATE detections SET
+       suggested_person_id = ?, suggested_person_name = ?, suggested_distance = ?,
+       status = ?, rejected_person_ids = ?
+     WHERE id = ?`,
+    [suggestedPersonId, suggestedPersonName, suggestedDistance, status, JSON.stringify(rejectedPersonIds), id],
   );
 }

@@ -239,6 +239,76 @@ describe('POST /ignore-stranger', () => {
   });
 });
 
+describe('POST /reject-suggestion', () => {
+  it('re-matches against the next-closest reference once the current suggestion is rejected, excluding it for good', async () => {
+    addReferenceFace(facesStore, {
+      id: 'ref-alice', personId: personEntityId('Alice'), personName: 'Alice',
+      sourceRegionId: 'x.jpg#region-0', sourceImageId: 'x.jpg', embedding: [0, 0],
+      modelName: 'face-api.js', modelVersion: '0.22.2',
+    });
+    addReferenceFace(facesStore, {
+      id: 'ref-bob', personId: personEntityId('Bob'), personName: 'Bob',
+      sourceRegionId: 'y.jpg#region-0', sourceImageId: 'y.jpg', embedding: [0.05, 0.05],
+      modelName: 'face-api.js', modelVersion: '0.22.2',
+    });
+
+    const created = JSON.parse((await handleRequest({
+      method: 'POST', path: '/detections',
+      body: { imageId: photoId, modelName: 'face-api.js', modelVersion: '0.22.2', faces: [{ box: { x: 0, y: 0, w: 0.1, h: 0.1 }, embedding: [0.01, 0.01] }] },
+    })).body).created[0];
+    expect(created.suggestedPersonName).toEqual('Alice');
+
+    const firstReject = await handleRequest({ method: 'POST', path: '/reject-suggestion', body: { detectionId: created.id } });
+    expect(firstReject.status).toEqual(200);
+    let pending = JSON.parse((await handleRequest({ method: 'GET', path: '/detections', query: { status: 'pending' } })).body).detections;
+    expect(pending[0].suggestedPersonName).toEqual('Bob');
+
+    // Rejecting again excludes Bob too, on top of Alice from before —
+    // with nobody left to suggest, it falls back to unmatched rather
+    // than re-suggesting either rejected Person.
+    await handleRequest({ method: 'POST', path: '/reject-suggestion', body: { detectionId: created.id } });
+    pending = JSON.parse((await handleRequest({ method: 'GET', path: '/detections', query: { status: 'pending' } })).body).detections;
+    expect(pending[0].suggestedPersonName).toBeNull();
+  });
+
+  it('auto-ignores a detection whose next-best match after rejection turns out to be a stranger', async () => {
+    addReferenceFace(facesStore, {
+      id: 'ref-alice', personId: personEntityId('Alice'), personName: 'Alice',
+      sourceRegionId: 'x.jpg#region-0', sourceImageId: 'x.jpg', embedding: [0, 0],
+      modelName: 'face-api.js', modelVersion: '0.22.2',
+    });
+    addReferenceFace(facesStore, {
+      id: 'ref-stranger', personId: null, personName: null,
+      sourceRegionId: null, sourceImageId: 'z.jpg', embedding: [0.05, 0.05],
+      modelName: 'face-api.js', modelVersion: '0.22.2',
+    });
+
+    const created = JSON.parse((await handleRequest({
+      method: 'POST', path: '/detections',
+      body: { imageId: photoId, modelName: 'face-api.js', modelVersion: '0.22.2', faces: [{ box: { x: 0, y: 0, w: 0.1, h: 0.1 }, embedding: [0.01, 0.01] }] },
+    })).body).created[0];
+    expect(created.suggestedPersonName).toEqual('Alice');
+
+    await handleRequest({ method: 'POST', path: '/reject-suggestion', body: { detectionId: created.id } });
+    const pending = JSON.parse((await handleRequest({ method: 'GET', path: '/detections', query: { status: 'pending' } })).body).detections;
+    expect(pending).toHaveLength(0);
+  });
+
+  it('rejects a detection with no current suggestion to reject', async () => {
+    const created = JSON.parse((await handleRequest({
+      method: 'POST', path: '/detections',
+      body: { imageId: photoId, modelName: 'm', modelVersion: '1', faces: [{ box: { x: 0, y: 0, w: 1, h: 1 }, embedding: [1] }] },
+    })).body).created[0];
+    const res = await handleRequest({ method: 'POST', path: '/reject-suggestion', body: { detectionId: created.id } });
+    expect(res.status).toEqual(400);
+  });
+
+  it('404s for an unknown detection', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/reject-suggestion', body: { detectionId: 'nope' } });
+    expect(res.status).toEqual(404);
+  });
+});
+
 describe('POST /confirm', () => {
   it('requires a writeFaceRegion implementation (unavailable in the browser-only run mode)', async () => {
     const handler = createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion: null });

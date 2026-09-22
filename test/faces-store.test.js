@@ -10,6 +10,7 @@ import {
   getDetection,
   listDetections,
   updateDetectionStatus,
+  updateDetectionSuggestion,
 } from '../src/core/faces/store.js';
 
 let db;
@@ -94,5 +95,60 @@ describe('detections', () => {
     const detection = getDetection(db, 'det-1');
     expect(detection.status).toEqual('confirmed');
     expect(detection.resolved_person_name).toEqual('Bob');
+  });
+
+  it('starts with an empty rejected-Person list, and updateDetectionSuggestion replaces it along with the suggestion', () => {
+    addDetection(db, {
+      id: 'det-1', imageId: 'a.jpg', box: { x: 0, y: 0, w: 1, h: 1 }, embedding: [1],
+      suggestedPersonId: 'arcp://name,rocphoto/person/alice', suggestedPersonName: 'Alice', suggestedDistance: 0.2,
+      status: 'pending', modelName: 'm', modelVersion: '1',
+    });
+    expect(getDetection(db, 'det-1').rejectedPersonIds).toEqual([]);
+
+    updateDetectionSuggestion(db, 'det-1', {
+      suggestedPersonId: 'arcp://name,rocphoto/person/bob', suggestedPersonName: 'Bob', suggestedDistance: 0.4,
+      status: 'pending', rejectedPersonIds: ['arcp://name,rocphoto/person/alice'],
+    });
+    const detection = getDetection(db, 'det-1');
+    expect(detection.suggested_person_name).toEqual('Bob');
+    expect(detection.rejectedPersonIds).toEqual(['arcp://name,rocphoto/person/alice']);
+  });
+});
+
+describe('ensureFacesSchema migration', () => {
+  it('adds rejected_person_ids to a detections table created before it existed', () => {
+    const oldDb = openNodeSqlite(':memory:');
+    // A faithful stand-in for a faces index built before rejected_person_ids
+    // existed — CREATE TABLE IF NOT EXISTS alone would never add a column
+    // to this already-existing table.
+    oldDb.exec(`
+      CREATE TABLE detections (
+        id TEXT PRIMARY KEY, image_id TEXT NOT NULL, box_x REAL NOT NULL, box_y REAL NOT NULL,
+        box_w REAL NOT NULL, box_h REAL NOT NULL, embedding TEXT NOT NULL,
+        suggested_person_id TEXT, suggested_person_name TEXT, suggested_distance REAL,
+        status TEXT NOT NULL DEFAULT 'pending', resolved_person_id TEXT, resolved_person_name TEXT,
+        model_name TEXT NOT NULL, model_version TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+    `);
+    oldDb.run(
+      `INSERT INTO detections (id, image_id, box_x, box_y, box_w, box_h, embedding, status, model_name, model_version, created_at)
+       VALUES ('det-1', 'a.jpg', 0, 0, 1, 1, '[1]', 'pending', 'm', '1', '2026-01-01T00:00:00.000Z')`,
+    );
+
+    ensureFacesSchema(oldDb);
+
+    const columns = oldDb.all('PRAGMA table_info(detections)').map((row) => row.name);
+    expect(columns).toContain('rejected_person_ids');
+    // A pre-existing row gets the column's default, not null (which
+    // would violate rejected_person_ids' own NOT NULL constraint if this
+    // migration's default did not apply retroactively).
+    expect(getDetection(oldDb, 'det-1').rejectedPersonIds).toEqual([]);
+  });
+
+  it('is safe to call repeatedly without erroring once the column already exists', () => {
+    expect(() => {
+      ensureFacesSchema(db);
+      ensureFacesSchema(db);
+    }).not.toThrow();
   });
 });
