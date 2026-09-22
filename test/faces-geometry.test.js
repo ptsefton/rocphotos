@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { boxOverlapRatio, centerAreaToTopLeftBox, SAME_FACE_OVERLAP_THRESHOLD, bestOverlapEitherOrientation } from '../src/core/faces/geometry.js';
+import { boxOverlapRatio, containmentOverlapRatio, centerAreaToTopLeftBox, SAME_FACE_OVERLAP_THRESHOLD, bestOverlapEitherOrientation } from '../src/core/faces/geometry.js';
 
 describe('centerAreaToTopLeftBox', () => {
   it('converts an MWG center-based Area to a top-left box of the same size', () => {
@@ -36,6 +36,36 @@ describe('boxOverlapRatio', () => {
     const detected = { x: 0.30, y: 0.25, w: 0.12, h: 0.14 };
     const tagged = { x: 0.28, y: 0.27, w: 0.13, h: 0.13 };
     expect(boxOverlapRatio(detected, tagged)).toBeGreaterThanOrEqual(SAME_FACE_OVERLAP_THRESHOLD);
+  });
+});
+
+describe('containmentOverlapRatio', () => {
+  it('is 1 when one box is fully inside the other, regardless of the size difference', () => {
+    const big = { x: 0, y: 0, w: 1, h: 1 };
+    const small = { x: 0.4, y: 0.4, w: 0.1, h: 0.1 };
+    expect(containmentOverlapRatio(big, small)).toBeCloseTo(1, 10);
+    expect(containmentOverlapRatio(small, big)).toBeCloseTo(1, 10);
+  });
+
+  it('recognises a real match that plain IoU scores too low, because the two tools drew the box at different scales', () => {
+    // Real values from private_test_data: face-api.js's own detection of
+    // Sierra McGlinn's face, well-centered on her digiKam-tagged region
+    // but roughly half its linear size. Plain IoU scores this ~0.097
+    // (see the equivalent boxOverlapRatio assertion below) — well under
+    // any reasonable "same face" threshold, even though this clearly is
+    // the same face. This is what "Learning known faces" kept getting
+    // stuck on even after the small-face crop fallback fixed a separate,
+    // earlier issue.
+    const detected = { x: 0.6715754270553589, y: 0.5037227471669514, w: 0.02944028377532959, h: 0.0654698212941488 };
+    const tagged = centerAreaToTopLeftBox({ x: 0.72363, y: 0.52474, w: 0.06641, h: 0.08854 });
+    expect(boxOverlapRatio(detected, tagged)).toBeLessThan(SAME_FACE_OVERLAP_THRESHOLD);
+    expect(containmentOverlapRatio(detected, tagged)).toBeGreaterThanOrEqual(SAME_FACE_OVERLAP_THRESHOLD);
+  });
+
+  it('is always at least as large as plain IoU for the same pair of boxes', () => {
+    const a = { x: 0.1, y: 0.1, w: 0.3, h: 0.2 };
+    const b = { x: 0.2, y: 0.15, w: 0.1, h: 0.4 };
+    expect(containmentOverlapRatio(a, b)).toBeGreaterThanOrEqual(boxOverlapRatio(a, b));
   });
 });
 

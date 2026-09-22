@@ -929,13 +929,21 @@ async function detectFacesForImage(imageId) {
 // Duplicated from src/core/faces/geometry.js (webview/app.js cannot
 // import from src/core — see the note above FACE_MODEL_NAME/VERSION):
 // converts an MWG region's center-based Area to the fractional top-left
-// shape face-api.js's own detection box uses, and the IoU of two such
-// boxes. Keep in sync with that file if either changes.
+// shape face-api.js's own detection box uses, and a "same face?" measure
+// for two such boxes. Keep in sync with that file if either changes.
 function centerAreaToTopLeftBox(area) {
   return { x: area.x - area.w / 2, y: area.y - area.h / 2, w: area.w, h: area.h };
 }
 
-function boxOverlapRatio(boxA, boxB) {
+// Overlap relative to the SMALLER of the two boxes, not their union —
+// needed because different tools draw a face box at genuinely different
+// scales for the same face (a tight box around facial features vs. one
+// including more of the head), not just a different position; plain
+// intersection-over-union penalises that scale difference so heavily
+// that a real match can score well under any reasonable threshold. See
+// src/core/faces/geometry.js's containmentOverlapRatio for the real
+// numbers that confirmed this.
+function containmentOverlapRatio(boxA, boxB) {
   const ix1 = Math.max(boxA.x, boxB.x);
   const iy1 = Math.max(boxA.y, boxB.y);
   const ix2 = Math.min(boxA.x + boxA.w, boxB.x + boxB.w);
@@ -944,8 +952,8 @@ function boxOverlapRatio(boxA, boxB) {
   const ih = Math.max(0, iy2 - iy1);
   const intersection = iw * ih;
   if (intersection === 0) return 0;
-  const union = boxA.w * boxA.h + boxB.w * boxB.h - intersection;
-  return intersection / union;
+  const smallerArea = Math.min(boxA.w * boxA.h, boxB.w * boxB.h);
+  return intersection / smallerArea;
 }
 
 const SAME_FACE_OVERLAP_THRESHOLD = 0.3;
@@ -1014,7 +1022,7 @@ async function computeEmbeddingForKnownRegion(imageId, rawArea, correctedArea) {
       w: result.detection.box.width / img.naturalWidth,
       h: result.detection.box.height / img.naturalHeight,
     };
-    const overlap = Math.max(boxOverlapRatio(box, rawBox), boxOverlapRatio(box, correctedBox));
+    const overlap = Math.max(containmentOverlapRatio(box, rawBox), containmentOverlapRatio(box, correctedBox));
     if (!best || overlap > best.overlap) best = { overlap, descriptor: result.descriptor };
   }
   if (best && best.overlap >= SAME_FACE_OVERLAP_THRESHOLD) return Array.from(best.descriptor);
@@ -1049,21 +1057,40 @@ async function fetchAllImageIds() {
 // the given images that does not have one yet (see
 // computeEmbeddingForKnownRegion), before looking for any new faces —
 // otherwise recognition would have nothing to match against even for
-// someone tagged throughout the whole collection.
+// someone tagged throughout the whole collection. Returns how many
+// regions could not be matched even after a genuine attempt (a whole-
+// image detection pass plus the zoomed, low-confidence crop fallback) —
+// these are reported to /faces/backfill-undetectable so the server stops
+// re-examining their image on every future run (see Spec.md's Face
+// Recognition section) rather than retrying forever, and the count is
+// surfaced in the final status message so this is never a silent giveup.
 async function backfillExistingRegions(imageIds) {
   const { regions } = await postEdit('/faces/existing-regions', {
     imageIds, modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION,
   });
+  let undetectableCount = 0;
   for (let i = 0; i < regions.length; i += 1) {
     statusEl.textContent = `Learning known faces… (${i + 1}/${regions.length})`;
     const region = regions[i];
     const embedding = await computeEmbeddingForKnownRegion(region.imageId, region.rawArea, region.correctedArea).catch(() => null);
-    if (!embedding) continue; // not reliably re-detectable from its own tagged box; skip rather than fail the whole batch
+    if (!embedding) {
+      // Not reliably re-detectable from its own tagged box even with the
+      // crop fallback — a real, one-time attempt was made, so this is
+      // reported as given up rather than silently skipped (see
+      // /faces/backfill-undetectable).
+      undetectableCount += 1;
+      await postEdit('/faces/backfill-undetectable', {
+        sourceImageId: region.imageId, personName: region.personName,
+        modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION,
+      });
+      continue;
+    }
     await postEdit('/faces/backfill-reference', {
       sourceImageId: region.imageId, sourceRegionId: region.sourceRegionId, personName: region.personName,
       embedding, modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION,
     });
   }
+  return undetectableCount;
 }
 
 recognizeFacesButtonEl.addEventListener('click', async () => {
@@ -1077,7 +1104,7 @@ recognizeFacesButtonEl.addEventListener('click', async () => {
     await ensureFaceApiModelsLoaded();
 
     statusEl.textContent = 'Checking for already-tagged faces across the whole collection…';
-    await backfillExistingRegions(await fetchAllImageIds());
+    const undetectableCount = await backfillExistingRegions(await fetchAllImageIds());
 
     const { toScan } = await postEdit('/faces/scan-status', {
       imageIds: currentEntityIds, modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION,
@@ -1089,7 +1116,10 @@ recognizeFacesButtonEl.addEventListener('click', async () => {
       await postEdit('/faces/detections', { imageId: toScan[i], modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION, faces });
     }
 
-    statusEl.textContent = `${currentEntityIds.length} image${currentEntityIds.length === 1 ? '' : 's'}`;
+    const undetectableNote = undetectableCount > 0
+      ? ` (${undetectableCount} already-tagged face${undetectableCount === 1 ? '' : 's'} could not be re-matched automatically — see Spec.md)`
+      : '';
+    statusEl.textContent = `${currentEntityIds.length} image${currentEntityIds.length === 1 ? '' : 's'}${undetectableNote}`;
     await openFacesReview();
   } catch (err) {
     window.alert(`Could not run face recognition: ${err.message}`);

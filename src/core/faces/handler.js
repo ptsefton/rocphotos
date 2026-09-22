@@ -22,6 +22,8 @@ import {
   listReferenceFaces,
   addReferenceFace,
   hasReferenceForPersonOnImage,
+  isRegionUndetectable,
+  markRegionUndetectable,
   addDetection,
   getDetection,
   listDetections,
@@ -51,6 +53,31 @@ async function loadCrateForImage(fsAdapter, roCrateId) {
   const cratePath = joinPath(crateDirPath, CRATE_FILE_NAME);
   const existingJson = (await fsAdapter.exists(cratePath)) ? new TextDecoder().decode(await fsAdapter.readFile(cratePath)) : null;
   return { crateDirPath, crate: loadOrCreateCrate(existingJson) };
+}
+
+// Marks an image fully backfill-checked the moment its last outstanding
+// named region gets a reference, rather than waiting for some later
+// /existing-regions call to notice — without this, an image whose final
+// missing person is resolved in this very pass still shows up as
+// needing a check for one more whole "Recognize Faces" click before
+// settling, even though nothing further is actually needed (confirmed
+// against a real collection: the decision inside /existing-regions is
+// made from a snapshot taken before that same pass's own
+// /backfill-reference calls run, so it is always one pass behind).
+async function markImageIfNowFullyBackfilled(fsAdapter, mainStore, facesStore, imageId, modelName, modelVersion) {
+  const existingRegions = await loadExistingFaceRegions(fsAdapter, mainStore, new Map(), imageId);
+  const stillMissing = existingRegions.some((region) => {
+    const personId = personEntityId(region.name);
+    return (
+      !hasReferenceForPersonOnImage(facesStore, imageId, personId, modelName, modelVersion)
+      && !isRegionUndetectable(facesStore, imageId, personId, modelName, modelVersion)
+    );
+  });
+  if (stillMissing) return;
+  const fileRow = getFileById(mainStore, imageId);
+  if (!fileRow) return;
+  const { modifiedTime } = await fsAdapter.stat(fileRow.relative_path);
+  markBackfillFullyChecked(facesStore, { imageId, fileMtime: modifiedTime, modelName, modelVersion });
 }
 
 // Every already-named Face region on an image, in both the raw and the
@@ -172,18 +199,24 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
         if (isBackfillFullyChecked(facesStore, imageId, modifiedTime, modelName, modelVersion)) continue;
 
         const existingRegions = await loadExistingFaceRegions(fsAdapter, mainStore, requestCrateCache, imageId);
-        let allAlreadyReferenced = true;
+        let allResolved = true;
         for (const { index, name, rawArea, correctedArea } of existingRegions) {
-          if (hasReferenceForPersonOnImage(facesStore, imageId, personEntityId(name), modelName, modelVersion)) continue;
-          allAlreadyReferenced = false;
+          const personId = personEntityId(name);
+          if (hasReferenceForPersonOnImage(facesStore, imageId, personId, modelName, modelVersion)) continue;
+          // Already tried and given up on (see /backfill-undetectable) —
+          // treated the same as a real reference here so it is never
+          // listed again, but never counted as a match anywhere else.
+          if (isRegionUndetectable(facesStore, imageId, personId, modelName, modelVersion)) continue;
+          allResolved = false;
           regions.push({ imageId, sourceRegionId: `${imageId}#region-${index}`, personName: name, rawArea, correctedArea });
         }
         // Only marked done when nothing on this image was left needing a
         // reference this pass — an image with a region whose embedding
-        // fails to compute (see /backfill-reference) stays unmarked, so
-        // it is looked at again (and only that one region retried) next
-        // time, rather than the failure being silently permanent.
-        if (allAlreadyReferenced) {
+        // fails to compute and has not yet been reported as undetectable
+        // (see /backfill-undetectable) stays unmarked, so it is looked at
+        // again (and only that one region retried) next time, rather than
+        // the failure being silently permanent.
+        if (allResolved) {
           markBackfillFullyChecked(facesStore, { imageId, fileMtime: modifiedTime, modelName, modelVersion });
         }
       }
@@ -214,15 +247,43 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       // empty reference set. Checking again here, at the point of
       // actually saving, is what makes this genuinely idempotent.
       if (hasReferenceForPersonOnImage(facesStore, sourceImageId, personId, modelName, modelVersion)) {
+        await markImageIfNowFullyBackfilled(fsAdapter, mainStore, facesStore, sourceImageId, modelName, modelVersion);
+        await persistStore(facesStore);
         return json(200, { ok: true, skipped: true });
       }
       const referenceFaceId = crypto.randomUUID();
       addReferenceFace(facesStore, { id: referenceFaceId, personId, personName, sourceRegionId, sourceImageId, embedding, modelName, modelVersion });
+      await markImageIfNowFullyBackfilled(fsAdapter, mainStore, facesStore, sourceImageId, modelName, modelVersion);
       await persistStore(facesStore);
 
       const facesCrate = await loadOrCreateFacesCrate(fsAdapter);
       addReferenceFaceEntity(facesCrate, { id: referenceFaceId, personId, personName, sourceRegionId, sourceImageId, embedding, modelName, modelVersion });
       await saveFacesCrate(fsAdapter, facesCrate);
+
+      return json(200, { ok: true });
+    }
+
+    // Records that the browser genuinely tried (both a whole-image
+    // detection pass and the zoomed, low-confidence crop fallback — see
+    // webview/app.js's computeEmbeddingForKnownRegion) to compute an
+    // embedding for an already-tagged region and could not — see
+    // backfill_undetectable_regions in schema.js for why this is treated
+    // as a permanent (until the model changes) rather than a transient
+    // failure. Without this, a genuinely undetectable face (a full side
+    // profile, one behind sunglasses, one lost to motion blur or extreme
+    // backlighting — all confirmed against real examples) keeps its whole
+    // image unmarked forever, so "Recognize Faces" re-reads and re-checks
+    // that image's crate on every single run indefinitely.
+    if (method === 'POST' && path === '/backfill-undetectable') {
+      const { sourceImageId, personName, modelName, modelVersion } = body ?? {};
+      if (!sourceImageId || !personName || !modelName || !modelVersion) {
+        return badRequest('sourceImageId, personName, modelName, and modelVersion are required');
+      }
+
+      const personId = personEntityId(personName);
+      markRegionUndetectable(facesStore, { imageId: sourceImageId, personId, personName, modelName, modelVersion });
+      await markImageIfNowFullyBackfilled(fsAdapter, mainStore, facesStore, sourceImageId, modelName, modelVersion);
+      await persistStore(facesStore);
 
       return json(200, { ok: true });
     }

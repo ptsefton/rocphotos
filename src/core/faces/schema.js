@@ -32,6 +32,31 @@ CREATE TABLE IF NOT EXISTS backfill_checked_images (
   checked_at TEXT NOT NULL
 );
 
+-- One row per already-tagged region that the browser genuinely tried
+-- (both a whole-image detection pass and a zoomed, low-confidence crop
+-- fallback — see webview/app.js's computeEmbeddingForKnownRegion) and
+-- still could not compute an embedding for — confirmed, by inspecting
+-- real examples, to be faces face-api.js just cannot see: full side
+-- profiles, faces behind sunglasses, severe motion blur, extreme
+-- backlighting. Retrying the same photo with the same model on a later
+-- pass cannot produce a different result, so rather than leaving it to
+-- be silently retried (and its image re-examined) forever, it is marked
+-- here and treated the same as a real reference for the purposes of
+-- isBackfillFullyChecked — but distinctly from one, so it is never
+-- confused with an actual match. Keyed on (image, person), like
+-- reference_faces, not on a region index. A model_version bump makes
+-- last row obsolete the same way it does for reference_faces, so a
+-- future, better model naturally gets its own attempt.
+CREATE TABLE IF NOT EXISTS backfill_undetectable_regions (
+  image_id TEXT NOT NULL,
+  person_id TEXT NOT NULL,
+  person_name TEXT NOT NULL,
+  model_name TEXT NOT NULL,
+  model_version TEXT NOT NULL,
+  marked_at TEXT NOT NULL,
+  PRIMARY KEY (image_id, person_id, model_name, model_version)
+);
+
 -- One row per confirmed reference example: a face embedding known to
 -- belong to a person (person_id set), or a permanently-suppressed
 -- "stranger" (person_id NULL — see faces/store.js). A confirmed person's

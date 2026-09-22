@@ -249,6 +249,84 @@ describe('POST /existing-regions and /backfill-reference', () => {
     const fileRow = getFileById(mainStore, twoPeopleId);
     const { modifiedTime } = await fsAdapter.stat(fileRow.relative_path);
     expect(isBackfillFullyChecked(facesStore, twoPeopleId, modifiedTime, 'face-api.js', '0.22.2')).toBe(false);
+
+    // Regression test: without checking again right here, the image
+    // would stay unmarked until some later /existing-regions call
+    // happened to notice both people already had references — a whole
+    // extra "Recognize Faces" click doing nothing, for an image that was
+    // actually already fully resolved by the second backfill-reference
+    // call below.
+    await handleRequest({
+      method: 'POST', path: '/backfill-reference',
+      body: { sourceImageId: twoPeopleId, sourceRegionId: `${twoPeopleId}#region-1`, personName: 'Bob', embedding: [0, 0], modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+    expect(isBackfillFullyChecked(facesStore, twoPeopleId, modifiedTime, 'face-api.js', '0.22.2')).toBe(true);
+  });
+});
+
+describe('POST /backfill-undetectable', () => {
+  it('stops listing a region once it is marked undetectable, without ever creating a reference for it', async () => {
+    await handleRequest({
+      method: 'POST', path: '/backfill-undetectable',
+      body: { sourceImageId: taggedId, personName: 'Alice', modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+
+    const after = await handleRequest({
+      method: 'POST', path: '/existing-regions',
+      body: { imageIds: [taggedId], modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+    expect(JSON.parse(after.body).regions).toEqual([]);
+    expect(listReferenceFaces(facesStore, 'face-api.js', '0.22.2')).toEqual([]);
+  });
+
+  it('marks the image fully checked once its only region is given up on, so it is not re-examined next time', async () => {
+    await handleRequest({
+      method: 'POST', path: '/backfill-undetectable',
+      body: { sourceImageId: taggedId, personName: 'Alice', modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+
+    const fileRow = getFileById(mainStore, taggedId);
+    const { modifiedTime } = await fsAdapter.stat(fileRow.relative_path);
+    expect(isBackfillFullyChecked(facesStore, taggedId, modifiedTime, 'face-api.js', '0.22.2')).toBe(true);
+  });
+
+  it('does not mark an image checked while a sibling region still needs a reference (only one of two people given up on)', async () => {
+    const crateJson = new TextDecoder().decode(await fsAdapter.readFile(`2025/${CRATE_FILE_NAME}`));
+    const crate = loadOrCreateCrate(crateJson);
+    addImageEntity(crate, {
+      path: 'two-people-2.jpg',
+      exif: { Regions: { RegionList: [
+        { Name: 'Alice', Type: 'Face', Area: { x: 0.2, y: 0.2, w: 0.1, h: 0.1 } },
+        { Name: 'Bob', Type: 'Face', Area: { x: 0.7, y: 0.7, w: 0.1, h: 0.1 } },
+      ] } },
+      sourceModifiedAt: Date.now(),
+    });
+    await fsAdapter.writeFile(`2025/${CRATE_FILE_NAME}`, serializeCrate(crate));
+    await fsAdapter.writeFile('2025/two-people-2.jpg', 'fake jpeg bytes');
+    const twoPeopleId = imageEntityId('2025', 'two-people-2.jpg');
+    upsertEntity(mainStore, { id: twoPeopleId, roCrateId: subCrateId, entityType: ENTITY_TYPE_IMAGE, name: 'two-people-2.jpg', memberOf: subCrateId });
+    upsertFile(mainStore, { id: twoPeopleId, entityId: twoPeopleId, filename: 'two-people-2.jpg', mediaType: 'image/jpeg', size: 16, relativePath: twoPeopleId });
+
+    await handleRequest({
+      method: 'POST', path: '/backfill-undetectable',
+      body: { sourceImageId: twoPeopleId, personName: 'Alice', modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+
+    const fileRow = getFileById(mainStore, twoPeopleId);
+    const { modifiedTime } = await fsAdapter.stat(fileRow.relative_path);
+    expect(isBackfillFullyChecked(facesStore, twoPeopleId, modifiedTime, 'face-api.js', '0.22.2')).toBe(false);
+
+    const listed = await handleRequest({
+      method: 'POST', path: '/existing-regions',
+      body: { imageIds: [twoPeopleId], modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+    expect(JSON.parse(listed.body).regions.map((r) => r.personName)).toEqual(['Bob']);
+
+    await handleRequest({
+      method: 'POST', path: '/backfill-reference',
+      body: { sourceImageId: twoPeopleId, sourceRegionId: `${twoPeopleId}#region-1`, personName: 'Bob', embedding: [0, 0], modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+    expect(isBackfillFullyChecked(facesStore, twoPeopleId, modifiedTime, 'face-api.js', '0.22.2')).toBe(true);
   });
 });
 

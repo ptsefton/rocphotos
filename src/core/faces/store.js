@@ -227,6 +227,67 @@ export function hasReferenceForPersonOnImage(driver, sourceImageId, personId, mo
 }
 
 /**
+ * Whether this already-tagged region has already been tried and given up
+ * on (see markRegionUndetectable) with this exact model/version — treated
+ * the same as hasReferenceForPersonOnImage for the purpose of deciding
+ * whether an image still needs backfilling, so a region that genuinely
+ * cannot be re-detected does not get retried (and its image re-examined)
+ * on every single "Recognize Faces" run.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} sourceImageId
+ * @param {string} personId
+ * @param {string} modelName
+ * @param {string} modelVersion
+ * @returns {boolean}
+ */
+export function isRegionUndetectable(driver, sourceImageId, personId, modelName, modelVersion) {
+  const row = driver.get(
+    'SELECT 1 FROM backfill_undetectable_regions WHERE image_id = ? AND person_id = ? AND model_name = ? AND model_version = ?',
+    [sourceImageId, personId, modelName, modelVersion],
+  );
+  return !!row;
+}
+
+/**
+ * Records that this already-tagged region was genuinely attempted (both
+ * a whole-image detection and the zoomed, low-confidence crop fallback —
+ * see webview/app.js's computeEmbeddingForKnownRegion) and no embedding
+ * could be computed for it — see backfill_undetectable_regions in
+ * schema.js for why this is safe to treat as permanent until the model
+ * changes.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {{imageId: string, personId: string, personName: string, modelName: string, modelVersion: string}} options
+ */
+export function markRegionUndetectable(driver, { imageId, personId, personName, modelName, modelVersion }) {
+  driver.run(
+    `INSERT INTO backfill_undetectable_regions (image_id, person_id, person_name, model_name, model_version, marked_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(image_id, person_id, model_name, model_version) DO UPDATE SET
+       person_name = excluded.person_name, marked_at = excluded.marked_at`,
+    [imageId, personId, personName, modelName, modelVersion, new Date().toISOString()],
+  );
+}
+
+/**
+ * Every region marked undetectable for this model/version — lets a
+ * reviewer see exactly which (photo, person) pairs "Recognize Faces" has
+ * given up on, e.g. by querying faces-index.sqlite directly (see
+ * Spec.md's Face Recognition section).
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} modelName
+ * @param {string} modelVersion
+ * @returns {Array<{imageId: string, personId: string, personName: string, markedAt: string}>}
+ */
+export function listUndetectableRegions(driver, modelName, modelVersion) {
+  return driver
+    .all('SELECT * FROM backfill_undetectable_regions WHERE model_name = ? AND model_version = ?', [modelName, modelVersion])
+    .map((row) => ({ imageId: row.image_id, personId: row.person_id, personName: row.person_name, markedAt: row.marked_at }));
+}
+
+/**
  * Adds a reference example: either a confirmed sighting of a named Person
  * (personId/personName set) or a permanently-ignored "stranger" (both
  * null) — see Spec.md's Face Recognition section. Always tied to the real
