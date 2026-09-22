@@ -954,8 +954,11 @@ async function computeEmbeddingForKnownRegion(imageId, area) {
 // should depend on which directory happens to be open when "Recognize
 // Faces" is clicked, unlike finding new faces, which is deliberately
 // scoped to the current view. Already-backfilled regions are skipped
-// server-side (see hasReferenceFaceForRegion), so repeating this over
-// the whole collection on every click is cheap after the first pass.
+// server-side (see hasReferenceForPersonOnImage), so repeating this
+// full-collection check on every click never re-adds a duplicate — it
+// does still re-read and re-check every image's crate each time, though,
+// which is real (if currently unavoidable) repeated work, not just a
+// cheap no-op; see Spec.md's Face Recognition section.
 async function fetchAllImageIds() {
   const response = await fetch('/api/search', {
     method: 'POST',
@@ -1107,14 +1110,25 @@ function renderMatchGroup(personName, detections) {
   // turned out to be the wrong person.
   async function confirmAllAs(targetName, controlEl) {
     controlEl.disabled = true;
-    try {
-      for (const detection of detections) {
+    // Attempts every detection regardless of an earlier one failing, and
+    // always refreshes the review screen afterward — a version of this
+    // that aborted the loop and skipped the refresh on the first error
+    // left already-succeeded confirmations stuck showing as still
+    // pending, and retrying re-sent the whole batch in the same order,
+    // which 400s immediately on whichever one had already gone through
+    // (see Spec.md's Face Recognition section) rather than ever reaching
+    // the ones after it.
+    const errors = [];
+    for (const detection of detections) {
+      try {
         await postEdit('/faces/confirm', { detectionId: detection.id, personName: targetName });
+      } catch (err) {
+        errors.push(err.message);
       }
-      await openFacesReview();
-    } catch (err) {
-      window.alert(`Could not apply that change: ${err.message}`);
-      controlEl.disabled = false;
+    }
+    await openFacesReview();
+    if (errors.length > 0) {
+      window.alert(`${errors.length} face(s) could not be confirmed as ${targetName} (the rest were applied):\n${errors.join('\n')}`);
     }
   }
 

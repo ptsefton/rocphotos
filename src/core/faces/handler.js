@@ -108,14 +108,21 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       if (!modelName || !modelVersion) return badRequest('modelName and modelVersion are required');
 
       const regions = [];
-      const crateCache = new Map();
+      // Deliberately a separate, request-local cache from the shared
+      // crateCache param above (used by /confirm to keep AROCAPI's own
+      // read cache in sync) — this one only ever avoids re-reading the
+      // same crate twice within this one request, always starting fresh
+      // from disk, so it is never at risk of the staleness that param
+      // exists to prevent. Named differently so a future change can't
+      // absent-mindedly conflate the two.
+      const requestCrateCache = new Map();
       for (const imageId of imageIds) {
         const imageRow = getEntityById(mainStore, imageId);
         if (!imageRow) continue;
-        if (!crateCache.has(imageRow.ro_crate_id)) {
-          crateCache.set(imageRow.ro_crate_id, (await loadCrateForImage(fsAdapter, imageRow.ro_crate_id)).crate);
+        if (!requestCrateCache.has(imageRow.ro_crate_id)) {
+          requestCrateCache.set(imageRow.ro_crate_id, (await loadCrateForImage(fsAdapter, imageRow.ro_crate_id)).crate);
         }
-        const crate = crateCache.get(imageRow.ro_crate_id);
+        const crate = requestCrateCache.get(imageRow.ro_crate_id);
         const crateRelativeId = crateRelativeEntityId(imageRow.ro_crate_id, imageId);
         const record = readImageRecord(crate, crateRelativeId);
         if (!record) continue;
