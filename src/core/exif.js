@@ -36,6 +36,28 @@ const TITLE_FIELDS = ['ObjectName', 'title'];
 // reviewing/editing it.
 const DESCRIPTION_FIELDS = ['Caption', 'description'];
 
+// exifr does not decode XML character references (numeric, like
+// "&#39;", or named, like "&apos;") inside nested XMP struct fields —
+// confirmed against a real file that a region Name containing an
+// apostrophe round-trips as the literal text "Alana Mahon&#39;s
+// Daughter" rather than "Alana Mahon's Daughter", even though the raw
+// XMP on disk is valid, standard-escaped XML that any XML parser should
+// decode on its own. Applied to every free-text value read out of such a
+// struct (region names, keywords, title/description), since this is a
+// parsing gap in the library, not something specific to one field.
+const XML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+
+function decodeXmlEntities(value) {
+  if (typeof value !== 'string' || !value.includes('&')) return value;
+  return value.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);/g, (match, entity) => {
+    if (entity[0] === '#') {
+      const codePoint = entity[1] === 'x' || entity[1] === 'X' ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10);
+      return Number.isNaN(codePoint) ? match : String.fromCodePoint(codePoint);
+    }
+    return XML_ENTITIES[entity] ?? match;
+  });
+}
+
 /**
  * Extracts a small set of EXIF/IPTC/XMP fields from image bytes. A
  * missing or empty EXIF segment (common for formats such as PNG) is not
@@ -97,7 +119,7 @@ export function keywordsFromExif(exif) {
   const entries = Array.isArray(source) ? source : [source];
   const flat = new Set();
   for (const entry of entries) {
-    for (const level of String(entry).split('|')) {
+    for (const level of decodeXmlEntities(String(entry)).split('|')) {
       const trimmed = level.trim();
       if (trimmed) flat.add(trimmed);
     }
@@ -141,7 +163,7 @@ export function regionsFromExif(exif) {
   return entries
     .filter((region) => region?.Name && (region.Type === 'Face' || region.Type === 'Pet'))
     .map((region) => ({
-      name: String(region.Name).trim(),
+      name: decodeXmlEntities(String(region.Name)).trim(),
       type: region.Type,
       // Fractional (0-1) position/size of the region within the image, as
       // MWG records it — convenient for an overlay drawn with CSS
@@ -162,7 +184,7 @@ export function regionsFromExif(exif) {
 function flattenLangAlt(value) {
   if (value == null) return null;
   if (typeof value === 'string') {
-    const trimmed = value.trim();
+    const trimmed = decodeXmlEntities(value).trim();
     return trimmed || null;
   }
   if (Array.isArray(value)) {

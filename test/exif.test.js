@@ -53,6 +53,10 @@ describe('keywordsFromExif', () => {
     expect(keywordsFromExif({ Make: 'Google' })).toEqual([]);
     expect(keywordsFromExif(null)).toEqual([]);
   });
+
+  it('decodes XML character references left un-decoded by exifr (see regionsFromExif)', () => {
+    expect(keywordsFromExif({ Keywords: ["Kirra&#39;s Beach"] })).toEqual(["Kirra's Beach"]);
+  });
 });
 
 describe('ratingFromExif', () => {
@@ -117,6 +121,16 @@ describe('regionsFromExif', () => {
     expect(regionsFromExif({ Make: 'Google' })).toEqual([]);
     expect(regionsFromExif(null)).toEqual([]);
   });
+
+  it('decodes an XML character reference exifr leaves un-decoded in a region Name', () => {
+    // Confirmed against a real file: exifr does not decode entities
+    // inside this nested XMP struct field, even though the raw XMP is
+    // valid, standard-escaped XML — a name with an apostrophe round-
+    // trips through a real exiftool write/read as the literal text
+    // "Alana Mahon&#39;s Daughter" rather than "Alana Mahon's Daughter".
+    const exif = { Regions: { RegionList: { Name: 'Alana Mahon&#39;s Daughter', Type: 'Face' } } };
+    expect(regionsFromExif(exif)[0].name).toEqual("Alana Mahon's Daughter");
+  });
 });
 
 describe('titleFromExif', () => {
@@ -135,6 +149,10 @@ describe('titleFromExif', () => {
   it('returns null when there is no title field, or exif is null', () => {
     expect(titleFromExif({ Make: 'Google' })).toBeNull();
     expect(titleFromExif(null)).toBeNull();
+  });
+
+  it('decodes XML character references left un-decoded by exifr (see regionsFromExif)', () => {
+    expect(titleFromExif({ ObjectName: 'Rock &amp; Roll Museum' })).toEqual('Rock & Roll Museum');
   });
 });
 

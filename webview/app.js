@@ -1101,27 +1101,50 @@ function renderMatchGroup(personName, detections) {
   const box = document.createElement('div');
   box.className = 'face-match-group';
 
+  // Shared by "Confirm all as <name>" and "Reassign all to…" below: both
+  // are the same bulk operation, just with a different target name — the
+  // suggested one, or one the reviewer picks because the whole group
+  // turned out to be the wrong person.
+  async function confirmAllAs(targetName, controlEl) {
+    controlEl.disabled = true;
+    try {
+      for (const detection of detections) {
+        await postEdit('/faces/confirm', { detectionId: detection.id, personName: targetName });
+      }
+      await openFacesReview();
+    } catch (err) {
+      window.alert(`Could not apply that change: ${err.message}`);
+      controlEl.disabled = false;
+    }
+  }
+
   const header = document.createElement('div');
   header.className = 'face-match-group-header';
   const title = document.createElement('span');
   title.textContent = `Presumed: ${personName} (${detections.length})`;
   const confirmAllButton = document.createElement('button');
   confirmAllButton.textContent = `Confirm all as ${personName}`;
-  confirmAllButton.addEventListener('click', async () => {
-    confirmAllButton.disabled = true;
-    try {
-      for (const detection of detections) {
-        await postEdit('/faces/confirm', { detectionId: detection.id, personName });
-      }
-      await openFacesReview();
-    } catch (err) {
-      window.alert(`Could not apply that change: ${err.message}`);
-      confirmAllButton.disabled = false;
-    }
-  });
+  confirmAllButton.addEventListener('click', () => confirmAllAs(personName, confirmAllButton));
   header.appendChild(title);
   header.appendChild(confirmAllButton);
   box.appendChild(header);
+
+  const reassignAllRow = document.createElement('div');
+  reassignAllRow.className = 'face-match-group-reassign-all';
+  const reassignAllInput = document.createElement('input');
+  reassignAllInput.type = 'text';
+  reassignAllInput.className = 'face-match-group-reassign-input';
+  reassignAllInput.placeholder = 'Reassign all to… (Enter)';
+  reassignAllInput.title = `If this whole group is actually someone else, type their name and press Enter to confirm all ${detections.length} as them instead`;
+  reassignAllInput.setAttribute('list', 'person-datalist');
+  reassignAllInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    const name = reassignAllInput.value.trim();
+    if (name) confirmAllAs(name, reassignAllInput);
+  });
+  reassignAllRow.appendChild(reassignAllInput);
+  box.appendChild(reassignAllRow);
 
   const thumbsEl = document.createElement('div');
   thumbsEl.className = 'face-match-thumbs';
