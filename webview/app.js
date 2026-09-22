@@ -947,8 +947,28 @@ async function computeEmbeddingForKnownRegion(imageId, area) {
   return result ? Array.from(result.descriptor) : null;
 }
 
-// Backfills reference embeddings for every already-tagged region in the
-// current batch that does not have one yet (see
+// Every image id in the whole collection, regardless of the current
+// filters/selection — used to scope the backfill step below (see
+// recognizeFacesButtonEl's click handler): learning from an existing tag
+// is a one-time, collection-wide bit of bookkeeping, not something that
+// should depend on which directory happens to be open when "Recognize
+// Faces" is clicked, unlike finding new faces, which is deliberately
+// scoped to the current view. Already-backfilled regions are skipped
+// server-side (see hasReferenceFaceForRegion), so repeating this over
+// the whole collection on every click is cheap after the first pass.
+async function fetchAllImageIds() {
+  const response = await fetch('/api/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filters: { entityType: IMAGE_ENTITY_TYPE }, facets: [], limit: 100000 }),
+  });
+  if (!response.ok) throw new Error(`Could not list the collection's images: ${response.status}`);
+  const result = await response.json();
+  return result.entities.map((entity) => entity.id);
+}
+
+// Backfills reference embeddings for every already-tagged region across
+// the given images that does not have one yet (see
 // computeEmbeddingForKnownRegion), before looking for any new faces —
 // otherwise recognition would have nothing to match against even for
 // someone tagged throughout the whole collection.
@@ -978,7 +998,8 @@ recognizeFacesButtonEl.addEventListener('click', async () => {
     statusEl.textContent = 'Loading face recognition models…';
     await ensureFaceApiModelsLoaded();
 
-    await backfillExistingRegions(currentEntityIds);
+    statusEl.textContent = 'Checking for already-tagged faces across the whole collection…';
+    await backfillExistingRegions(await fetchAllImageIds());
 
     const { toScan } = await postEdit('/faces/scan-status', {
       imageIds: currentEntityIds, modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION,
