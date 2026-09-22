@@ -12,6 +12,8 @@ import {
   updateDetectionStatus,
   updateDetectionSuggestion,
   repairMismatchedSourceRegionIds,
+  hasReferenceForPersonOnImage,
+  deduplicateReferenceFaces,
 } from '../src/core/faces/store.js';
 
 let db;
@@ -63,6 +65,81 @@ describe('reference_faces', () => {
     expect(current.find((r) => r.id === 'ref-2').personId).toBeNull();
 
     expect(listReferenceFaces(db, 'face-api.js', '0.30.0')).toHaveLength(1);
+  });
+});
+
+describe('hasReferenceForPersonOnImage', () => {
+  it('is true only for the exact (image, person, model, version) combination', () => {
+    addReferenceFace(db, {
+      id: 'ref-1', personId: 'arcp://name,rocphoto/person/alice', personName: 'Alice',
+      sourceRegionId: 'a.jpg#region-0', sourceImageId: 'a.jpg', embedding: [0.1, 0.2],
+      modelName: 'face-api.js', modelVersion: '0.22.2',
+    });
+
+    expect(hasReferenceForPersonOnImage(db, 'a.jpg', 'arcp://name,rocphoto/person/alice', 'face-api.js', '0.22.2')).toBe(true);
+    // A different image, a different person, a different model/version,
+    // and the row-with-no-region-index-in-common case (see this
+    // function's own doc comment) all correctly say "no reference yet".
+    expect(hasReferenceForPersonOnImage(db, 'b.jpg', 'arcp://name,rocphoto/person/alice', 'face-api.js', '0.22.2')).toBe(false);
+    expect(hasReferenceForPersonOnImage(db, 'a.jpg', 'arcp://name,rocphoto/person/bob', 'face-api.js', '0.22.2')).toBe(false);
+    expect(hasReferenceForPersonOnImage(db, 'a.jpg', 'arcp://name,rocphoto/person/alice', 'face-api.js', '0.30.0')).toBe(false);
+  });
+
+  it('is unaffected by what source_region_id happens to be, unlike the old region-id-based check it replaced', () => {
+    // The exact bug this function exists to avoid: a crate-relative vs.
+    // collection-relative mismatch (or any other inconsistency in how
+    // source_region_id was built) used to make an already-backfilled
+    // face look unbackfilled forever. This check never looks at
+    // source_region_id at all, so it cannot repeat that.
+    addReferenceFace(db, {
+      id: 'ref-1', personId: 'arcp://name,rocphoto/person/alice', personName: 'Alice',
+      sourceRegionId: 'some-completely-unrelated-string', sourceImageId: '2024/02/03/a.jpg', embedding: [0.1],
+      modelName: 'm', modelVersion: '1',
+    });
+    expect(hasReferenceForPersonOnImage(db, '2024/02/03/a.jpg', 'arcp://name,rocphoto/person/alice', 'm', '1')).toBe(true);
+  });
+});
+
+describe('deduplicateReferenceFaces', () => {
+  it('keeps one row per (image, person, model, version) and removes the rest', () => {
+    addReferenceFace(db, {
+      id: 'ref-1', personId: 'arcp://name,rocphoto/person/alice', personName: 'Alice',
+      sourceRegionId: 'a.jpg#region-0', sourceImageId: 'a.jpg', embedding: [0.1],
+      modelName: 'm', modelVersion: '1',
+    });
+    // Simulates the duplicate this whole bug produced: the same person,
+    // same image, same model, added again on a later run that failed to
+    // recognise the first one as already backfilled.
+    addReferenceFace(db, {
+      id: 'ref-2', personId: 'arcp://name,rocphoto/person/alice', personName: 'Alice',
+      sourceRegionId: 'a.jpg#region-1', sourceImageId: 'a.jpg', embedding: [0.11],
+      modelName: 'm', modelVersion: '1',
+    });
+    // A different image is a real, separate reference — not a duplicate.
+    addReferenceFace(db, {
+      id: 'ref-3', personId: 'arcp://name,rocphoto/person/alice', personName: 'Alice',
+      sourceRegionId: 'b.jpg#region-0', sourceImageId: 'b.jpg', embedding: [0.12],
+      modelName: 'm', modelVersion: '1',
+    });
+
+    const removed = deduplicateReferenceFaces(db);
+    expect(removed).toEqual(1);
+    expect(listReferenceFaces(db, 'm', '1')).toHaveLength(2);
+  });
+
+  it('never removes a stranger reference (no person_id), even several from the same image', () => {
+    addReferenceFace(db, {
+      id: 'ref-1', personId: null, personName: null,
+      sourceRegionId: null, sourceImageId: 'a.jpg', embedding: [0.9],
+      modelName: 'm', modelVersion: '1',
+    });
+    addReferenceFace(db, {
+      id: 'ref-2', personId: null, personName: null,
+      sourceRegionId: null, sourceImageId: 'a.jpg', embedding: [0.91],
+      modelName: 'm', modelVersion: '1',
+    });
+    expect(deduplicateReferenceFaces(db)).toEqual(0);
+    expect(listReferenceFaces(db, 'm', '1')).toHaveLength(2);
   });
 });
 

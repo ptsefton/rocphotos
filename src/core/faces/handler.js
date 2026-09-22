@@ -17,7 +17,7 @@ import {
   markImageScanned,
   listReferenceFaces,
   addReferenceFace,
-  hasReferenceFaceForRegion,
+  hasReferenceForPersonOnImage,
   addDetection,
   getDetection,
   listDetections,
@@ -123,8 +123,8 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
 
         record.regions.forEach((region, index) => {
           if (region.type !== 'Face' || !region.name || !region.area) return;
+          if (hasReferenceForPersonOnImage(facesStore, imageId, personEntityId(region.name), modelName, modelVersion)) return;
           const sourceRegionId = `${imageId}#region-${index}`;
-          if (hasReferenceFaceForRegion(facesStore, sourceRegionId, modelName, modelVersion)) return;
           regions.push({ imageId, sourceRegionId, personName: region.name, area: correctAreaForOrientation(region.area, orientation) });
         });
       }
@@ -339,13 +339,10 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       // The newly-written region is always last in the region list (see
       // the exiftool adapter, which only ever appends) — its id is
       // therefore derivable from the freshly re-read region count,
-      // without needing writeFaceRegion to hand a region id back.
-      // Built from detection.image_id (collection-relative — the same
-      // form /existing-regions uses), not imagePath (crate-relative):
-      // using the wrong one here meant a confirmed face's own region
-      // never matched what a later "already backfilled?" check computed
-      // for it, for any image outside the root crate — see
-      // hasReferenceFaceForRegion and repairMismatchedSourceRegionIds.
+      // without needing writeFaceRegion to hand a region id back. Kept
+      // for provenance/inspection only now — see
+      // hasReferenceForPersonOnImage for why the "already backfilled?"
+      // check no longer depends on this id being built consistently.
       const sourceRegionId = `${detection.image_id}#region-${record.regions.length - 1}`;
       const resolvedPersonId = personEntityId(personName);
 

@@ -21,6 +21,7 @@ export function ensureFacesSchema(driver) {
   }
 
   repairMismatchedSourceRegionIds(driver);
+  deduplicateReferenceFaces(driver);
 }
 
 /**
@@ -52,6 +53,36 @@ export function repairMismatchedSourceRegionIds(driver) {
     fixed += 1;
   }
   return fixed;
+}
+
+/**
+ * One-off data repair, safe to run on every startup: removes duplicate
+ * reference_faces rows left over from before hasReferenceForPersonOnImage
+ * replaced the old, fragile source_region_id-based "already backfilled?"
+ * check — every prior run that failed to recognise a face as already
+ * backfilled (see repairMismatchedSourceRegionIds's own history) added
+ * another reference for it instead of skipping it, so the same (image,
+ * Person, model) combination can have accumulated several redundant
+ * rows. Keeps one arbitrary row per combination and deletes the rest;
+ * never touches a stranger reference (person_id NULL), since those are
+ * not keyed on a Person at all.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @returns {number} how many rows were removed
+ */
+export function deduplicateReferenceFaces(driver) {
+  const before = driver.get('SELECT COUNT(*) as count FROM reference_faces WHERE person_id IS NOT NULL').count;
+  driver.run(`
+    DELETE FROM reference_faces
+    WHERE person_id IS NOT NULL
+    AND id NOT IN (
+      SELECT MIN(id) FROM reference_faces
+      WHERE person_id IS NOT NULL
+      GROUP BY source_image_id, person_id, model_name, model_version
+    )
+  `);
+  const after = driver.get('SELECT COUNT(*) as count FROM reference_faces WHERE person_id IS NOT NULL').count;
+  return before - after;
 }
 
 /**
@@ -120,22 +151,33 @@ export function listReferenceFaces(driver, modelName, modelVersion) {
 }
 
 /**
- * Whether a reference face already exists for this exact source region
- * (with this model/version) — used to backfill embeddings for
- * already-tagged regions (from digiKam, Lightroom, or an earlier
+ * Whether this Person already has a reference embedding from this
+ * specific image (with this model/version) — used to backfill embeddings
+ * for already-tagged regions (from digiKam, Lightroom, or an earlier
  * rocphotos confirmation) without adding the same one twice on a
  * repeated backfill pass.
  *
+ * Deliberately keyed on (image, person), not on a region's own computed
+ * id: a previous version of this check compared exact source_region_id
+ * strings, which meant any inconsistency in how that id happened to be
+ * built (crate-relative vs. collection-relative — see
+ * repairMismatchedSourceRegionIds's own history) silently broke it,
+ * making an already-backfilled face look unbackfilled forever and
+ * reprocessing it on every run. What actually matters — has this Person
+ * already got a reference from this photo — does not depend on region
+ * indices or path forms at all, so it cannot have that class of bug.
+ *
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
- * @param {string} sourceRegionId
+ * @param {string} sourceImageId
+ * @param {string} personId
  * @param {string} modelName
  * @param {string} modelVersion
  * @returns {boolean}
  */
-export function hasReferenceFaceForRegion(driver, sourceRegionId, modelName, modelVersion) {
+export function hasReferenceForPersonOnImage(driver, sourceImageId, personId, modelName, modelVersion) {
   const row = driver.get(
-    'SELECT 1 FROM reference_faces WHERE source_region_id = ? AND model_name = ? AND model_version = ?',
-    [sourceRegionId, modelName, modelVersion],
+    'SELECT 1 FROM reference_faces WHERE source_image_id = ? AND person_id = ? AND model_name = ? AND model_version = ?',
+    [sourceImageId, personId, modelName, modelVersion],
   );
   return !!row;
 }
