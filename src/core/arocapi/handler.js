@@ -131,10 +131,10 @@ async function persistStore(store) {
  * @param {object} deps
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver & {persist?: () => Promise<void>}} deps.store
  * @param {import('../fsAdapter.js').FsAdapter} deps.fsAdapter
+ * @param {Map<string, import('ro-crate').ROCrate>} [deps.crateCache] - the long-lived read cache below; accepted rather than always created fresh so another writer of the same crate files (see faces/handler.js's /confirm route) can share and keep it in sync too. Defaults to a private one when not given (e.g. in tests, or the browser SW's per-request handler — see src/sw.js).
  * @returns {(request: {method: string, path: string, query?: object, body?: object}) => Promise<{status: number, headers: object, body: string|Uint8Array}>}
  */
-export function createHandler({ store, fsAdapter }) {
-  const crateCache = new Map();
+export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
 
   // A short-lived, per-edit-request cache of crates being written to —
   // deliberately not the same long-lived crateCache the read routes

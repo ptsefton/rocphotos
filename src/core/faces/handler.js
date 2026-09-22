@@ -68,8 +68,9 @@ async function loadCrateForImage(fsAdapter, roCrateId) {
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver & {persist?: () => Promise<void>}} deps.facesStore - the faces companion index (_rocphotos/faces/faces-index.sqlite)
  * @param {import('../fsAdapter.js').FsAdapter} deps.fsAdapter
  * @param {(relativePath: string, options: {name: string, area: object, imageWidth: number, imageHeight: number}) => Promise<void>} [deps.writeFaceRegion]
+ * @param {Map<string, import('ro-crate').ROCrate>} [deps.crateCache] - the AROCAPI handler's own long-lived read cache (see arocapi/handler.js), shared here so /confirm's crate write is reflected immediately in GET /entity/{id}/metadata (the viewer's tags and its "Show faces" overlay) rather than only after the crate is next evicted/reloaded. Optional — a caller that never shares one (tests; the browser SW, which mints a fresh handler and cache per request anyway) just does not get this cross-handler sync, which is harmless in those cases.
  */
-export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion = null }) {
+export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion = null, crateCache = null }) {
   async function handleRequest({ method, path, query = {}, body = null }) {
     if (method === 'POST' && path === '/scan-status') {
       const imageIds = Array.isArray(body?.imageIds) ? body.imageIds : [];
@@ -327,6 +328,13 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       const record = await rescanImageMetadata(fsAdapter, mainStore, crateDirPath, crate, imagePath);
       await fsAdapter.writeFile(joinPath(crateDirPath, CRATE_FILE_NAME), serializeCrate(crate));
       await persistStore(mainStore);
+      // Keeps the AROCAPI handler's own read cache (if shared — see
+      // createFacesHandler's crateCache param) from serving the
+      // pre-confirm version of this crate to GET /entity/{id}/metadata
+      // indefinitely: without this, the viewer's tags and "Show faces"
+      // overlay would keep showing whatever this crate looked like the
+      // last time anything read it, until the server was restarted.
+      crateCache?.set(imageRow.ro_crate_id, crate);
 
       // The newly-written region is always last in the region list (see
       // the exiftool adapter, which only ever appends) — its id is

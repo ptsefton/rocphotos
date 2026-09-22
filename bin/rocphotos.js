@@ -497,7 +497,15 @@ async function serve(rootDir, { port = 8420 } = {}) {
 
   const fsAdapter = createNodeFsAdapter(rootDir);
   const store = openNodeSqlite(dbPath);
-  const handleRequest = createHandler({ store, fsAdapter });
+  // Shared with the faces handler below (see its own crateCache param):
+  // this is the AROCAPI handler's long-lived read cache for GET
+  // /entity/{id}/metadata (the viewer's tags and "Show faces" overlay).
+  // Without sharing it, a face confirmed via the faces handler would
+  // update the crate file and the index correctly, but this process
+  // would keep serving whichever version of that crate it last read
+  // until restarted.
+  const crateCache = new Map();
+  const handleRequest = createHandler({ store, fsAdapter, crateCache });
 
   const facesDbPath = path.join(rootDir, FACES_INDEX_FILE_NAME);
   fs.mkdirSync(path.dirname(facesDbPath), { recursive: true });
@@ -512,6 +520,7 @@ async function serve(rootDir, { port = 8420 } = {}) {
     mainStore: store,
     facesStore,
     fsAdapter,
+    crateCache,
     // writeFaceRegion (see src/adapters/exiftoolWriteback.js) takes an
     // absolute path; the faces handler only ever knows about paths
     // relative to rootDir (as recorded in files.relative_path), the same

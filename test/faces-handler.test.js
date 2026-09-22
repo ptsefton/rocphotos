@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createNodeFsAdapter } from '../src/adapters/nodeFs.js';
 import { openNodeSqlite } from '../src/adapters/nodeSqlite.js';
 import { createFacesHandler } from '../src/core/faces/handler.js';
+import { createHandler } from '../src/core/arocapi/handler.js';
 import { ensureFacesSchema, addReferenceFace, listDetections } from '../src/core/faces/store.js';
 import {
   ensureSchema,
@@ -391,6 +392,40 @@ describe('POST /confirm', () => {
       body: { imageIds: [photoId], modelName: 'face-api.js', modelVersion: '0.22.2' },
     });
     expect(JSON.parse(existing.body).regions).toEqual([]);
+  });
+
+  it('updates a shared AROCAPI read cache, so the viewer\'s tags/"Show faces" overlay reflect a confirm immediately rather than a stale pre-confirm crate', async () => {
+    // Regression test for a real bug: the AROCAPI handler (createHandler)
+    // keeps a long-lived in-memory cache of parsed crates for GET
+    // /entity/{id}/metadata, which the viewer uses for its tags and
+    // "Show faces" overlay. The faces handler writes the confirmed
+    // region straight to disk, correctly, but without also updating that
+    // same cache (if shared with it — see createFacesHandler's
+    // crateCache param), a long-running `rocphotos serve` process kept
+    // serving whatever it had last read for that crate, so a newly
+    // confirmed face never showed up there until the server restarted,
+    // even though the crate file and the index were both already correct.
+    const crateCache = new Map();
+    const arocapiHandler = createHandler({ store: mainStore, fsAdapter, crateCache });
+    const facesHandlerWithSharedCache = createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion, crateCache });
+
+    // Populates the AROCAPI handler's cache with the pre-confirm crate —
+    // the same thing opening the viewer on this photo beforehand would do.
+    const before = await arocapiHandler({ method: 'GET', path: `/entity/${encodeURIComponent(photoId)}/metadata` });
+    expect(JSON.parse(before.body).about).toBeUndefined();
+
+    const created = JSON.parse((await facesHandlerWithSharedCache({
+      method: 'POST', path: '/detections',
+      body: { imageId: photoId, modelName: 'face-api.js', modelVersion: '0.22.2', faces: [{ box: { x: 0.3, y: 0.4, w: 0.2, h: 0.1 }, embedding: [1, 2, 3] }] },
+    })).body).created[0];
+    extractExif.mockResolvedValue({
+      exif: { Regions: { RegionList: [{ Name: 'Bob', Type: 'Face', Area: { x: 0.4, y: 0.45, w: 0.2, h: 0.1 } }] } },
+      error: null,
+    });
+    await facesHandlerWithSharedCache({ method: 'POST', path: '/confirm', body: { detectionId: created.id, personName: 'Bob' } });
+
+    const after = await arocapiHandler({ method: 'GET', path: `/entity/${encodeURIComponent(photoId)}/metadata` });
+    expect(JSON.parse(after.body).about[0].name).toEqual('Bob');
   });
 
   it('rejects confirming a detection that has already been resolved', async () => {
