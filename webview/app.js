@@ -1332,6 +1332,19 @@ async function openFacesReview() {
 
   const response = await fetch('/api/faces/detections?status=pending');
   const { total, detections } = await response.json();
+
+  // Nothing left to review — closes the full-screen panel rather than
+  // leaving it open showing an empty "No faces waiting for review."
+  // placeholder, since there is nothing left to do here once every
+  // detection has been resolved (whether that was true when this screen
+  // was first opened, or became true from the last action taken in it).
+  if (total === 0) {
+    facesReviewEl.classList.remove('open');
+    facesReviewListEl.innerHTML = '';
+    statusEl.textContent = 'Done matching — no faces left to review.';
+    return;
+  }
+
   document.querySelector('#faces-review-heading').textContent = `Review faces (${total} pending)`;
   facesReviewListEl.innerHTML = '';
 
