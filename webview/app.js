@@ -1250,6 +1250,15 @@ function renderMatchGroup(personName, detections) {
 }
 
 async function openFacesReview() {
+  // openFacesReview is called after every confirm/ignore/reject action
+  // (see resolveDetection and confirmAllAs), not only when the screen
+  // first opens — without also refreshing the main grid here, a person
+  // just confirmed from the review screen would not show up in it (its
+  // people facet, its viewer tags) until something else happened to
+  // trigger a fresh search(), such as changing a filter or reloading the
+  // page, even though the underlying data was already correct.
+  search();
+
   const response = await fetch('/api/faces/detections?status=pending');
   const { total, detections } = await response.json();
   document.querySelector('#faces-review-heading').textContent = `Review faces (${total} pending)`;
