@@ -77,6 +77,27 @@ export function listReferenceFaces(driver, modelName, modelVersion) {
 }
 
 /**
+ * Whether a reference face already exists for this exact source region
+ * (with this model/version) — used to backfill embeddings for
+ * already-tagged regions (from digiKam, Lightroom, or an earlier
+ * rocphotos confirmation) without adding the same one twice on a
+ * repeated backfill pass.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} sourceRegionId
+ * @param {string} modelName
+ * @param {string} modelVersion
+ * @returns {boolean}
+ */
+export function hasReferenceFaceForRegion(driver, sourceRegionId, modelName, modelVersion) {
+  const row = driver.get(
+    'SELECT 1 FROM reference_faces WHERE source_region_id = ? AND model_name = ? AND model_version = ?',
+    [sourceRegionId, modelName, modelVersion],
+  );
+  return !!row;
+}
+
+/**
  * Adds a reference example: either a confirmed sighting of a named Person
  * (personId/personName set) or a permanently-ignored "stranger" (both
  * null) — see Spec.md's Face Recognition section. Always tied to the real

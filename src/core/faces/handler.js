@@ -7,15 +7,17 @@ import {
   searchEntities,
   ENTITY_TYPE_IMAGE,
 } from '../db/store.js';
-import { CRATE_FILE_NAME, loadOrCreateCrate, serializeCrate } from '../crateBuilder.js';
+import { CRATE_FILE_NAME, loadOrCreateCrate, serializeCrate, readImageRecord } from '../crateBuilder.js';
 import { rescanImageMetadata } from '../scanImage.js';
 import { joinPath } from '../pathUtils.js';
 import { findClosestReference } from './matching.js';
+import { correctAreaForOrientation } from './orientation.js';
 import {
   isImageAlreadyScanned,
   markImageScanned,
   listReferenceFaces,
   addReferenceFace,
+  hasReferenceFaceForRegion,
   addDetection,
   getDetection,
   listDetections,
@@ -87,6 +89,66 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
         }
       }
       return json(200, { toScan, scanned });
+    }
+
+    // Faces tagged by another tool (digiKam, Lightroom) or confirmed in
+    // an earlier rocphotos session already have a name and a box, but no
+    // embedding of their own yet — the reference set otherwise starts
+    // empty and never learns about them, so a first "Recognize Faces" run
+    // has nothing to suggest even for someone tagged throughout the
+    // whole collection. Lists each such region so the browser can crop
+    // it, compute its embedding, and hand it back via /backfill-reference
+    // below, before running detection on anything new.
+    if (method === 'POST' && path === '/existing-regions') {
+      const imageIds = Array.isArray(body?.imageIds) ? body.imageIds : [];
+      const modelName = body?.modelName;
+      const modelVersion = body?.modelVersion;
+      if (!modelName || !modelVersion) return badRequest('modelName and modelVersion are required');
+
+      const regions = [];
+      const crateCache = new Map();
+      for (const imageId of imageIds) {
+        const imageRow = getEntityById(mainStore, imageId);
+        if (!imageRow) continue;
+        if (!crateCache.has(imageRow.ro_crate_id)) {
+          crateCache.set(imageRow.ro_crate_id, (await loadCrateForImage(fsAdapter, imageRow.ro_crate_id)).crate);
+        }
+        const crate = crateCache.get(imageRow.ro_crate_id);
+        const crateRelativeId = crateRelativeEntityId(imageRow.ro_crate_id, imageId);
+        const record = readImageRecord(crate, crateRelativeId);
+        if (!record) continue;
+        const orientation = record.exifEntries.find((entry) => entry.name === 'Orientation')?.value;
+
+        record.regions.forEach((region, index) => {
+          if (region.type !== 'Face' || !region.name || !region.area) return;
+          const sourceRegionId = `${imageId}#region-${index}`;
+          if (hasReferenceFaceForRegion(facesStore, sourceRegionId, modelName, modelVersion)) return;
+          regions.push({ imageId, sourceRegionId, personName: region.name, area: correctAreaForOrientation(region.area, orientation) });
+        });
+      }
+      return json(200, { regions });
+    }
+
+    // Records an embedding the browser computed for an already-tagged
+    // region (see /existing-regions above) — ground truth from a human
+    // tagging tool, so unlike /confirm this never touches the photo file
+    // or goes through a review step, it only grows the reference set.
+    if (method === 'POST' && path === '/backfill-reference') {
+      const { sourceImageId, sourceRegionId, personName, embedding, modelName, modelVersion } = body ?? {};
+      if (!sourceImageId || !sourceRegionId || !personName || !Array.isArray(embedding) || !modelName || !modelVersion) {
+        return badRequest('sourceImageId, sourceRegionId, personName, embedding, modelName, and modelVersion are required');
+      }
+
+      const personId = personEntityId(personName);
+      const referenceFaceId = crypto.randomUUID();
+      addReferenceFace(facesStore, { id: referenceFaceId, personId, personName, sourceRegionId, sourceImageId, embedding, modelName, modelVersion });
+      await persistStore(facesStore);
+
+      const facesCrate = await loadOrCreateFacesCrate(fsAdapter);
+      addReferenceFaceEntity(facesCrate, { id: referenceFaceId, personId, personName, sourceRegionId, sourceImageId, embedding, modelName, modelVersion });
+      await saveFacesCrate(fsAdapter, facesCrate);
+
+      return json(200, { ok: true });
     }
 
     // Submits face-api.js's own detection+embedding output for one image,

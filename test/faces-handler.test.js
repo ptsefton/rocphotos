@@ -35,6 +35,7 @@ let handleRequest;
 let writeFaceRegion;
 const subCrateId = crateEntityId('2025');
 const photoId = imageEntityId('2025', 'photo.jpg');
+const taggedId = imageEntityId('2025', 'tagged.jpg');
 
 afterEach(async () => {
   if (currentRoot) {
@@ -48,12 +49,19 @@ beforeEach(async () => {
   const subCrate = loadOrCreateCrate(null);
   subCrate.rootDataset.name = '2025';
   addImageEntity(subCrate, { path: 'photo.jpg', exif: null, thumbnailPath: null, sourceModifiedAt: Date.now() });
+  addImageEntity(subCrate, {
+    path: 'tagged.jpg',
+    exif: { Regions: { RegionList: [{ Name: 'Alice', Type: 'Face', Area: { x: 0.5, y: 0.4, w: 0.2, h: 0.15 } }] } },
+    thumbnailPath: null,
+    sourceModifiedAt: Date.now(),
+  });
 
   currentRoot = await createFixtureTree({
     'ro-crate-metadata.json': serializeCrate(loadOrCreateCrate(null)),
     2025: {
       'ro-crate-metadata.json': serializeCrate(subCrate),
       'photo.jpg': 'fake jpeg bytes',
+      'tagged.jpg': 'fake jpeg bytes',
     },
   });
 
@@ -67,6 +75,8 @@ beforeEach(async () => {
   upsertEntity(mainStore, { id: subCrateId, roCrateId: subCrateId, entityType: ENTITY_TYPE_COLLECTION, name: '2025' });
   upsertEntity(mainStore, { id: photoId, roCrateId: subCrateId, entityType: ENTITY_TYPE_IMAGE, name: 'photo.jpg', memberOf: subCrateId, title: 'photo.jpg' });
   upsertFile(mainStore, { id: photoId, entityId: photoId, filename: 'photo.jpg', mediaType: 'image/jpeg', size: 16, relativePath: photoId });
+  upsertEntity(mainStore, { id: taggedId, roCrateId: subCrateId, entityType: ENTITY_TYPE_IMAGE, name: 'tagged.jpg', memberOf: subCrateId, title: 'tagged.jpg' });
+  upsertFile(mainStore, { id: taggedId, entityId: taggedId, filename: 'tagged.jpg', mediaType: 'image/jpeg', size: 16, relativePath: taggedId });
 
   writeFaceRegion = vi.fn().mockResolvedValue(undefined);
   handleRequest = createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion });
@@ -85,6 +95,48 @@ describe('POST /scan-status', () => {
 
   it('rejects a request missing model info', async () => {
     const res = await handleRequest({ method: 'POST', path: '/scan-status', body: { imageIds: [photoId] } });
+    expect(res.status).toEqual(400);
+  });
+});
+
+describe('POST /existing-regions and /backfill-reference', () => {
+  it('lists an already-tagged region with no reference embedding yet', async () => {
+    const res = await handleRequest({
+      method: 'POST', path: '/existing-regions',
+      body: { imageIds: [photoId, taggedId], modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+    const { regions } = JSON.parse(res.body);
+    expect(regions).toEqual([{ imageId: taggedId, sourceRegionId: `${taggedId}#region-0`, personName: 'Alice', area: { x: 0.5, y: 0.4, w: 0.2, h: 0.15 } }]);
+  });
+
+  it('stops listing a region once its embedding has been backfilled, and the new reference is usable for matching', async () => {
+    const backfill = await handleRequest({
+      method: 'POST', path: '/backfill-reference',
+      body: {
+        sourceImageId: taggedId, sourceRegionId: `${taggedId}#region-0`, personName: 'Alice',
+        embedding: [0, 0], modelName: 'face-api.js', modelVersion: '0.22.2',
+      },
+    });
+    expect(backfill.status).toEqual(200);
+
+    const after = await handleRequest({
+      method: 'POST', path: '/existing-regions',
+      body: { imageIds: [taggedId], modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+    expect(JSON.parse(after.body).regions).toEqual([]);
+
+    // The backfilled reference is a real, usable one: a fresh detection
+    // close to it is now suggested as Alice, exactly as if she had first
+    // been confirmed through the review screen.
+    const detectionRes = await handleRequest({
+      method: 'POST', path: '/detections',
+      body: { imageId: photoId, modelName: 'face-api.js', modelVersion: '0.22.2', faces: [{ box: { x: 0, y: 0, w: 0.1, h: 0.1 }, embedding: [0.01, 0.01] }] },
+    });
+    expect(JSON.parse(detectionRes.body).created[0].suggestedPersonName).toEqual('Alice');
+  });
+
+  it('rejects a backfill request missing required fields', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/backfill-reference', body: { personName: 'Alice' } });
     expect(res.status).toEqual(400);
   });
 });

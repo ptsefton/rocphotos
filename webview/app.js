@@ -822,6 +822,58 @@ async function detectFacesForImage(imageId) {
   }));
 }
 
+// Computes an embedding for a region already tagged by another tool (or
+// confirmed in an earlier session), so the reference set is not limited
+// to faces confirmed through this app's own review screen — otherwise a
+// person tagged throughout a whole collection would never be suggested
+// on the very first run, since the reference set starts empty. `area` is
+// MWG's own center-point convention (x/y at the box's center — see
+// Spec.md), unlike face-api.js's own top-left box used elsewhere here;
+// converted below, then padded generously and cropped before detecting,
+// since a tight, exact face box is not always reliably re-detected on
+// its own.
+async function computeEmbeddingForKnownRegion(imageId, area) {
+  const img = await loadImage(entityUrl('/api/file', imageId));
+  const centerX = area.x * img.naturalWidth;
+  const centerY = area.y * img.naturalHeight;
+  const boxW = area.w * img.naturalWidth;
+  const boxH = area.h * img.naturalHeight;
+  const pad = 0.6;
+  const sx = Math.max(0, centerX - (boxW * (1 + pad)) / 2);
+  const sy = Math.max(0, centerY - (boxH * (1 + pad)) / 2);
+  const sw = Math.min(img.naturalWidth - sx, boxW * (1 + pad));
+  const sh = Math.min(img.naturalHeight - sy, boxH * (1 + pad));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = sw;
+  canvas.height = sh;
+  canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+
+  const result = await faceapi.detectSingleFace(canvas).withFaceLandmarks().withFaceDescriptor();
+  return result ? Array.from(result.descriptor) : null;
+}
+
+// Backfills reference embeddings for every already-tagged region in the
+// current batch that does not have one yet (see
+// computeEmbeddingForKnownRegion), before looking for any new faces —
+// otherwise recognition would have nothing to match against even for
+// someone tagged throughout the whole collection.
+async function backfillExistingRegions(imageIds) {
+  const { regions } = await postEdit('/faces/existing-regions', {
+    imageIds, modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION,
+  });
+  for (let i = 0; i < regions.length; i += 1) {
+    statusEl.textContent = `Learning known faces… (${i + 1}/${regions.length})`;
+    const region = regions[i];
+    const embedding = await computeEmbeddingForKnownRegion(region.imageId, region.area).catch(() => null);
+    if (!embedding) continue; // not reliably re-detectable from its own tagged box; skip rather than fail the whole batch
+    await postEdit('/faces/backfill-reference', {
+      sourceImageId: region.imageId, sourceRegionId: region.sourceRegionId, personName: region.personName,
+      embedding, modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION,
+    });
+  }
+}
+
 recognizeFacesButtonEl.addEventListener('click', async () => {
   if (currentEntityIds.length === 0) {
     window.alert('No images in the current view to scan.');
@@ -831,6 +883,8 @@ recognizeFacesButtonEl.addEventListener('click', async () => {
   try {
     statusEl.textContent = 'Loading face recognition models…';
     await ensureFaceApiModelsLoaded();
+
+    await backfillExistingRegions(currentEntityIds);
 
     const { toScan } = await postEdit('/faces/scan-status', {
       imageIds: currentEntityIds, modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION,
