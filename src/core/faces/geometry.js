@@ -1,0 +1,51 @@
+// Fractional top-left boxes ({x, y, w, h}, face-api.js's own convention —
+// see Spec.md's Face Recognition section) — distinct from MWG's own
+// center-based Area convention, which is converted to this shape via
+// centerAreaToTopLeftBox before comparing.
+
+/**
+ * Converts an MWG region's Area (center-based, fractional — see
+ * Spec.md) to the same fractional top-left shape face-api.js's own
+ * detection box uses, so the two can be compared directly (see
+ * boxOverlapRatio).
+ *
+ * @param {{x: number, y: number, w: number, h: number}} area
+ * @returns {{x: number, y: number, w: number, h: number}}
+ */
+export function centerAreaToTopLeftBox(area) {
+  return { x: area.x - area.w / 2, y: area.y - area.h / 2, w: area.w, h: area.h };
+}
+
+/**
+ * Intersection-over-union of two fractional top-left boxes — 0 for no
+ * overlap, 1 for identical boxes. Used to tell whether a newly detected
+ * face is really the same physical face as an already-tagged region,
+ * regardless of the two boxes not lining up pixel-for-pixel (a fresh
+ * face-api.js detection and a human- or previously-machine-drawn MWG
+ * region rarely agree exactly).
+ *
+ * @param {{x: number, y: number, w: number, h: number}} boxA
+ * @param {{x: number, y: number, w: number, h: number}} boxB
+ * @returns {number}
+ */
+export function boxOverlapRatio(boxA, boxB) {
+  const ix1 = Math.max(boxA.x, boxB.x);
+  const iy1 = Math.max(boxA.y, boxB.y);
+  const ix2 = Math.min(boxA.x + boxA.w, boxB.x + boxB.w);
+  const iy2 = Math.min(boxA.y + boxA.h, boxB.y + boxB.h);
+  const intersectionW = Math.max(0, ix2 - ix1);
+  const intersectionH = Math.max(0, iy2 - iy1);
+  const intersection = intersectionW * intersectionH;
+  if (intersection === 0) return 0;
+  const union = boxA.w * boxA.h + boxB.w * boxB.h - intersection;
+  return intersection / union;
+}
+
+// Two boxes at or above this much overlap are treated as the same
+// physical face — chosen loosely (well below the ~0.5 IoU convention for
+// "the same detection" in object-detection benchmarks) since an MWG
+// region's box and a fresh face-api.js detection of the same face are
+// drawn by two different, disagreeing methods and rarely align tightly;
+// a real false positive here (two different people's faces overlapping
+// this much) would need them to be right next to each other in frame.
+export const SAME_FACE_OVERLAP_THRESHOLD = 0.3;

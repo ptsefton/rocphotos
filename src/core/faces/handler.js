@@ -12,6 +12,7 @@ import { rescanImageMetadata } from '../scanImage.js';
 import { joinPath } from '../pathUtils.js';
 import { findClosestReference } from './matching.js';
 import { correctAreaForOrientation } from './orientation.js';
+import { boxOverlapRatio, centerAreaToTopLeftBox, SAME_FACE_OVERLAP_THRESHOLD } from './geometry.js';
 import {
   isImageAlreadyScanned,
   markImageScanned,
@@ -47,6 +48,33 @@ async function loadCrateForImage(fsAdapter, roCrateId) {
   const cratePath = joinPath(crateDirPath, CRATE_FILE_NAME);
   const existingJson = (await fsAdapter.exists(cratePath)) ? new TextDecoder().decode(await fsAdapter.readFile(cratePath)) : null;
   return { crateDirPath, crate: loadOrCreateCrate(existingJson) };
+}
+
+// Every already-named Face region on an image, with its Area corrected
+// for the file's own EXIF orientation (see orientation.js) — shared by
+// /existing-regions (to find regions needing a reference embedding) and
+// /detections (to recognise a freshly detected face as one of these
+// already-tagged ones, rather than offering it for review as if it were
+// new — see /detections' own comment for why that check exists).
+// `requestCrateCache` is caller-provided so /existing-regions can share
+// one across several images in the same request; /detections, handling
+// only one image, can just pass a fresh Map.
+async function loadExistingFaceRegions(fsAdapter, mainStore, requestCrateCache, imageId) {
+  const imageRow = getEntityById(mainStore, imageId);
+  if (!imageRow) return [];
+  if (!requestCrateCache.has(imageRow.ro_crate_id)) {
+    requestCrateCache.set(imageRow.ro_crate_id, (await loadCrateForImage(fsAdapter, imageRow.ro_crate_id)).crate);
+  }
+  const crate = requestCrateCache.get(imageRow.ro_crate_id);
+  const crateRelativeId = crateRelativeEntityId(imageRow.ro_crate_id, imageId);
+  const record = readImageRecord(crate, crateRelativeId);
+  if (!record) return [];
+  const orientation = record.exifEntries.find((entry) => entry.name === 'Orientation')?.value;
+
+  return record.regions
+    .map((region, index) => ({ region, index }))
+    .filter(({ region }) => region.type === 'Face' && region.name && region.area)
+    .map(({ region, index }) => ({ index, name: region.name, area: correctAreaForOrientation(region.area, orientation) }));
 }
 
 /**
@@ -117,23 +145,11 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       // absent-mindedly conflate the two.
       const requestCrateCache = new Map();
       for (const imageId of imageIds) {
-        const imageRow = getEntityById(mainStore, imageId);
-        if (!imageRow) continue;
-        if (!requestCrateCache.has(imageRow.ro_crate_id)) {
-          requestCrateCache.set(imageRow.ro_crate_id, (await loadCrateForImage(fsAdapter, imageRow.ro_crate_id)).crate);
+        const existingRegions = await loadExistingFaceRegions(fsAdapter, mainStore, requestCrateCache, imageId);
+        for (const { index, name, area } of existingRegions) {
+          if (hasReferenceForPersonOnImage(facesStore, imageId, personEntityId(name), modelName, modelVersion)) continue;
+          regions.push({ imageId, sourceRegionId: `${imageId}#region-${index}`, personName: name, area });
         }
-        const crate = requestCrateCache.get(imageRow.ro_crate_id);
-        const crateRelativeId = crateRelativeEntityId(imageRow.ro_crate_id, imageId);
-        const record = readImageRecord(crate, crateRelativeId);
-        if (!record) continue;
-        const orientation = record.exifEntries.find((entry) => entry.name === 'Orientation')?.value;
-
-        record.regions.forEach((region, index) => {
-          if (region.type !== 'Face' || !region.name || !region.area) return;
-          if (hasReferenceForPersonOnImage(facesStore, imageId, personEntityId(region.name), modelName, modelVersion)) return;
-          const sourceRegionId = `${imageId}#region-${index}`;
-          regions.push({ imageId, sourceRegionId, personName: region.name, area: correctAreaForOrientation(region.area, orientation) });
-        });
       }
       return json(200, { regions });
     }
@@ -174,9 +190,24 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       const fileRow = getFileById(mainStore, imageId);
       if (!fileRow) return notFound('No such image');
 
+      // face-api.js's own detector has no idea a region is already
+      // named — without this, an already-tagged face gets detected
+      // again as if it were new, suggested (a near-exact match to the
+      // reference it was just backfilled from), and, if confirmed
+      // (especially via "Confirm all"), written as a second, genuinely
+      // duplicate MWG region on the same photo with a second reference
+      // for the same (image, Person) pair — every single run. Anything
+      // whose box substantially overlaps an existing named region is
+      // the same physical face and is dropped here, never becoming a
+      // detection at all.
+      const existingRegions = await loadExistingFaceRegions(fsAdapter, mainStore, new Map(), imageId);
+      const newFaces = faces.filter((face) => !existingRegions.some(
+        (region) => boxOverlapRatio(face.box, centerAreaToTopLeftBox(region.area)) >= SAME_FACE_OVERLAP_THRESHOLD,
+      ));
+
       const referenceFaces = listReferenceFaces(facesStore, modelName, modelVersion);
       const created = [];
-      for (const face of faces) {
+      for (const face of newFaces) {
         const match = findClosestReference(face.embedding, referenceFaces);
         const isStranger = match && match.reference.personId === null;
         const detection = {

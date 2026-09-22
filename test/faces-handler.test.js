@@ -192,6 +192,34 @@ describe('POST /detections', () => {
     const pending = await handleRequest({ method: 'GET', path: '/detections', query: { status: 'pending' } });
     expect(JSON.parse(pending.body).total).toEqual(0);
   });
+
+  it('drops a detected face that overlaps an already-tagged region, without creating a detection for it', async () => {
+    // Regression test for a real bug: face-api.js's own detector has no
+    // idea "tagged.jpg" already has a named region for Alice (see the
+    // fixture, Area {x:0.5,y:0.4,w:0.2,h:0.15}) — without this check, it
+    // would detect that same physical face again, suggest Alice (a near-
+    // exact embedding match to her own just-backfilled reference), and
+    // confirming it would write a second, duplicate MWG region onto the
+    // same photo with a second reference for the same (image, Alice)
+    // pair — exactly what a real user's faces-index.sqlite showed
+    // happening, over and over, on every "Recognize Faces" run.
+    const res = await handleRequest({
+      method: 'POST', path: '/detections',
+      body: {
+        imageId: taggedId, modelName: 'face-api.js', modelVersion: '0.22.2',
+        faces: [
+          // Overlaps Alice's own tagged region almost exactly (Area
+          // center 0.5,0.4 w0.2 h0.15 -> top-left 0.4,0.325 w0.2 h0.15).
+          { box: { x: 0.4, y: 0.325, w: 0.2, h: 0.15 }, embedding: [1, 1] },
+          // A genuinely different part of the photo — a real, new face.
+          { box: { x: 0, y: 0, w: 0.1, h: 0.1 }, embedding: [2, 2] },
+        ],
+      },
+    });
+    const created = JSON.parse(res.body).created;
+    expect(created).toHaveLength(1);
+    expect(created[0].box).toEqual({ x: 0, y: 0, w: 0.1, h: 0.1 });
+  });
 });
 
 describe('GET /detections', () => {
