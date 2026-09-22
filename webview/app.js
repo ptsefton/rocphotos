@@ -961,10 +961,49 @@ const SAME_FACE_OVERLAP_THRESHOLD = 0.3;
 // Area, since different tagging tools disagree about which frame Area
 // is measured against for the same Orientation value — confirmed
 // against two real files, one needing the correction, one broken by it.
+// Falls back to a generously-padded, tightly zoomed crop around a known
+// region, at a much lower confidence threshold than normal detection
+// ever uses — confirmed empirically (see Spec.md's Face Recognition
+// section) against a real, small background face in a group photo that
+// full-image detection missed outright, since face-api.js downscales
+// the whole image internally, and a small face can end up too tiny to
+// recognize (or score below the default 0.5 confidence cutoff even when
+// it is technically found). A low threshold is safe only because a
+// human already confirmed a face is exactly here — there is nothing
+// else inside a crop this tight to misattribute a detection to.
+async function detectInCrop(img, area) {
+  const centerX = area.x * img.naturalWidth;
+  const centerY = area.y * img.naturalHeight;
+  const boxW = area.w * img.naturalWidth;
+  const boxH = area.h * img.naturalHeight;
+  const pad = 1.5;
+  const sx = Math.max(0, centerX - (boxW * (1 + pad)) / 2);
+  const sy = Math.max(0, centerY - (boxH * (1 + pad)) / 2);
+  const sw = Math.min(img.naturalWidth - sx, boxW * (1 + pad));
+  const sh = Math.min(img.naturalHeight - sy, boxH * (1 + pad));
+  if (sw <= 0 || sh <= 0) return null;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = sw;
+  canvas.height = sh;
+  canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+
+  const result = await faceapi
+    .detectSingleFace(canvas, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.1 }))
+    .withFaceLandmarks()
+    .withFaceDescriptor();
+  return result ? Array.from(result.descriptor) : null;
+}
+
 async function computeEmbeddingForKnownRegion(imageId, rawArea, correctedArea) {
   const img = await loadImage(entityUrl('/api/file', imageId));
-  const results = await faceapi.detectAllFaces(img).withFaceLandmarks().withFaceDescriptors();
 
+  // Whole-image detection first, at the normal confidence threshold:
+  // reliable for an ordinary-sized face, and — since it is matched by
+  // position against the known region, the same as /detections' own
+  // duplicate check — never at risk of confusing this region with a
+  // different nearby face the way a crop alone could.
+  const results = await faceapi.detectAllFaces(img).withFaceLandmarks().withFaceDescriptors();
   const rawBox = centerAreaToTopLeftBox(rawArea);
   const correctedBox = centerAreaToTopLeftBox(correctedArea);
   let best = null;
@@ -978,7 +1017,9 @@ async function computeEmbeddingForKnownRegion(imageId, rawArea, correctedArea) {
     const overlap = Math.max(boxOverlapRatio(box, rawBox), boxOverlapRatio(box, correctedBox));
     if (!best || overlap > best.overlap) best = { overlap, descriptor: result.descriptor };
   }
-  return best && best.overlap >= SAME_FACE_OVERLAP_THRESHOLD ? Array.from(best.descriptor) : null;
+  if (best && best.overlap >= SAME_FACE_OVERLAP_THRESHOLD) return Array.from(best.descriptor);
+
+  return (await detectInCrop(img, rawArea)) ?? (await detectInCrop(img, correctedArea));
 }
 
 // Every image id in the whole collection, regardless of the current
