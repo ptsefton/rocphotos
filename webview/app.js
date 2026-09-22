@@ -23,6 +23,11 @@ const keywordChipListEl = document.querySelector('#keyword-chip-list');
 const keywordInputEl = document.querySelector('#keyword-input');
 const keywordDatalistEl = document.querySelector('#keyword-datalist');
 const keywordSuggestionsListEl = document.querySelector('#keyword-suggestions-list');
+const personDialogEl = document.querySelector('#person-dialog');
+const personDialogDescriptionEl = document.querySelector('#person-dialog-description');
+const personInputEl = document.querySelector('#person-input');
+const personDatalistEl = document.querySelector('#person-datalist');
+const personSuggestionsListEl = document.querySelector('#person-suggestions-list');
 const viewerEl = document.querySelector('#viewer');
 const viewerImageEl = document.querySelector('#viewer-image');
 const viewerRatingEl = document.querySelector('#viewer-rating');
@@ -653,6 +658,95 @@ function promptKeywords(description) {
   });
 }
 
+// A single-value counterpart to the keyword dialog above, for naming or
+// reassigning a face (see the Face Recognition review screen): the same
+// lookup — a native datalist dropdown plus an always-visible, click-to-
+// fill suggestion list narrowing as you type — but resolving with one
+// name rather than building up a list, since a face belongs to exactly
+// one person.
+let knownPeople = [];
+
+async function fetchKnownPeople() {
+  try {
+    const response = await fetch(`/api/entities?entityType=${encodeURIComponent('http://schema.org/Person')}`);
+    if (!response.ok) return [];
+    const result = await response.json();
+    return result.entities.map((entity) => entity.name).sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
+
+function renderPersonSuggestions() {
+  personSuggestionsListEl.innerHTML = '';
+  const typed = personInputEl.value.trim().toLowerCase();
+  const matches = knownPeople.filter((name) => !typed || name.toLowerCase().includes(typed));
+
+  for (const name of matches) {
+    const suggestion = document.createElement('button');
+    suggestion.type = 'button';
+    suggestion.className = 'keyword-suggestion';
+    suggestion.textContent = name;
+    suggestion.addEventListener('click', () => {
+      personInputEl.value = name;
+      personInputEl.focus();
+    });
+    personSuggestionsListEl.appendChild(suggestion);
+  }
+}
+
+personInputEl.addEventListener('input', renderPersonSuggestions);
+
+document.querySelector('#person-dialog-cancel').addEventListener('click', () => {
+  personDialogEl.close('cancel');
+});
+
+let personDialogResolve = null;
+
+personDialogEl.addEventListener('close', () => {
+  if (personDialogEl.returnValue !== 'submit') {
+    personDialogResolve?.(null);
+    personDialogResolve = null;
+    return;
+  }
+  const name = personInputEl.value.trim();
+  personDialogResolve?.(name || null);
+  personDialogResolve = null;
+});
+
+/**
+ * Opens the single-name lookup dialog and resolves with the name
+ * entered (typed fresh, or picked from a suggestion), or null if
+ * cancelled or submitted blank.
+ *
+ * @param {string} description - e.g. "Who is this?"
+ * @param {string} [currentValue] - pre-filled, e.g. an existing suggestion being corrected
+ * @returns {Promise<string|null>}
+ */
+function promptPersonName(description, currentValue = '') {
+  return new Promise((resolve) => {
+    personDialogResolve = resolve;
+    personDialogDescriptionEl.textContent = description;
+    personInputEl.value = currentValue;
+    knownPeople = [];
+    personDatalistEl.innerHTML = '';
+    renderPersonSuggestions();
+    personDialogEl.showModal();
+    personInputEl.focus();
+    personInputEl.select();
+
+    fetchKnownPeople().then((people) => {
+      knownPeople = people;
+      for (const name of people) {
+        const option = document.createElement('option');
+        option.value = name;
+        personDatalistEl.appendChild(option);
+      }
+      renderPersonSuggestions();
+    });
+  });
+}
+
 function promptRating(description) {
   const input = window.prompt(`Set rating (1-5, or leave blank to clear) for ${description}:`);
   if (input === null) return undefined; // cancelled
@@ -930,6 +1024,10 @@ async function resolveDetection(detectionId, path, body) {
   }
 }
 
+// For a detection with no suggestion: naming it (via the lookup dialog),
+// ignoring it, or ignoring it as a permanent stranger. A suggested match
+// is never rendered this way — see renderMatchGroup below, which groups
+// those together for batch approval instead.
 function renderFaceCard(detection) {
   const card = document.createElement('div');
   card.className = 'face-card';
@@ -940,26 +1038,17 @@ function renderFaceCard(detection) {
 
   const label = document.createElement('div');
   label.className = 'face-card-label';
-  label.textContent = detection.suggestedPersonName
-    ? `${detection.imageTitle} — looks like ${detection.suggestedPersonName}`
-    : detection.imageTitle;
+  label.textContent = detection.imageTitle;
   card.appendChild(label);
 
   const actions = document.createElement('div');
   actions.className = 'face-card-actions';
 
-  if (detection.suggestedPersonName) {
-    const confirmButton = document.createElement('button');
-    confirmButton.textContent = `Confirm: ${detection.suggestedPersonName}`;
-    confirmButton.addEventListener('click', () => resolveDetection(detection.id, '/faces/confirm', { personName: detection.suggestedPersonName }));
-    actions.appendChild(confirmButton);
-  }
-
   const nameButton = document.createElement('button');
-  nameButton.textContent = detection.suggestedPersonName ? 'Reassign' : 'Name this person';
-  nameButton.addEventListener('click', () => {
-    const name = window.prompt('Who is this?', detection.suggestedPersonName || '');
-    if (name && name.trim()) resolveDetection(detection.id, '/faces/confirm', { personName: name.trim() });
+  nameButton.textContent = 'Name this person';
+  nameButton.addEventListener('click', async () => {
+    const name = await promptPersonName('Who is this?');
+    if (name) resolveDetection(detection.id, '/faces/confirm', { personName: name });
   });
   actions.appendChild(nameButton);
 
@@ -978,14 +1067,114 @@ function renderFaceCard(detection) {
   return card;
 }
 
+// A box of every pending detection presumed to be the same Person,
+// approved together in one action rather than one at a time. Removing
+// one (the [-] button) only takes it out of this batch — it stays
+// "pending" on the server and simply shows up again next time the
+// review screen opens, the same as if it had never been grouped.
+function renderMatchGroup(personName, initialDetections) {
+  let detections = initialDetections;
+
+  const box = document.createElement('div');
+  box.className = 'face-match-group';
+
+  const header = document.createElement('div');
+  header.className = 'face-match-group-header';
+  const title = document.createElement('span');
+  const confirmAllButton = document.createElement('button');
+  header.appendChild(title);
+  header.appendChild(confirmAllButton);
+
+  const thumbsEl = document.createElement('div');
+  thumbsEl.className = 'face-match-thumbs';
+
+  function renderThumbs() {
+    title.textContent = `Presumed: ${personName} (${detections.length})`;
+    thumbsEl.innerHTML = '';
+    for (const detection of detections) {
+      const thumb = document.createElement('div');
+      thumb.className = 'face-match-thumb';
+
+      const canvas = document.createElement('canvas');
+      thumb.appendChild(canvas);
+      drawFaceCrop(canvas, detection).catch(() => {});
+
+      const removeButton = document.createElement('button');
+      removeButton.className = 'face-match-thumb-remove';
+      removeButton.textContent = '−';
+      removeButton.title = 'Remove from this batch (leaves it pending for later)';
+      removeButton.addEventListener('click', () => {
+        detections = detections.filter((d) => d.id !== detection.id);
+        if (detections.length === 0) {
+          box.remove();
+          return;
+        }
+        renderThumbs();
+      });
+      thumb.appendChild(removeButton);
+
+      thumbsEl.appendChild(thumb);
+    }
+  }
+  renderThumbs();
+
+  confirmAllButton.textContent = `Confirm all as ${personName}`;
+  confirmAllButton.addEventListener('click', async () => {
+    confirmAllButton.disabled = true;
+    try {
+      for (const detection of detections) {
+        await postEdit('/faces/confirm', { detectionId: detection.id, personName });
+      }
+      await openFacesReview();
+    } catch (err) {
+      window.alert(`Could not apply that change: ${err.message}`);
+      confirmAllButton.disabled = false;
+    }
+  });
+
+  box.appendChild(header);
+  box.appendChild(thumbsEl);
+  return box;
+}
+
 async function openFacesReview() {
   const response = await fetch('/api/faces/detections?status=pending');
   const { total, detections } = await response.json();
   document.querySelector('#faces-review-heading').textContent = `Review faces (${total} pending)`;
   facesReviewListEl.innerHTML = '';
+
+  // Presumed matches are grouped together, one box per suggested Person,
+  // so several can be approved (or pruned of a wrong one) in a single
+  // action; a detection with no suggestion gets its own card below.
+  const matchGroups = new Map();
+  const unmatched = [];
   for (const detection of detections) {
-    facesReviewListEl.appendChild(renderFaceCard(detection));
+    if (!detection.suggestedPersonName) {
+      unmatched.push(detection);
+      continue;
+    }
+    if (!matchGroups.has(detection.suggestedPersonName)) matchGroups.set(detection.suggestedPersonName, []);
+    matchGroups.get(detection.suggestedPersonName).push(detection);
   }
+
+  for (const [personName, group] of matchGroups) {
+    facesReviewListEl.appendChild(renderMatchGroup(personName, group));
+  }
+
+  if (unmatched.length > 0) {
+    const heading = document.createElement('h3');
+    heading.className = 'faces-review-subheading';
+    heading.textContent = 'Unidentified';
+    facesReviewListEl.appendChild(heading);
+
+    const grid = document.createElement('div');
+    grid.className = 'faces-review-grid';
+    for (const detection of unmatched) {
+      grid.appendChild(renderFaceCard(detection));
+    }
+    facesReviewListEl.appendChild(grid);
+  }
+
   facesReviewEl.classList.add('open');
 }
 

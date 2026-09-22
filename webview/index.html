@@ -45,14 +45,27 @@
     #faces-review.open { display: flex; }
     #faces-review h2 { color: #eee; font-size: 1rem; margin: 0 0 1rem; }
     #faces-review-close { position: fixed; top: 1rem; right: 1.5rem; color: #fff; font-size: 2rem; line-height: 1; cursor: pointer; background: none; border: none; }
-    #faces-review-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; }
-    #faces-review-list:empty::after { content: 'No faces waiting for review.'; color: #ccc; grid-column: 1 / -1; }
+    #faces-review-list { display: flex; flex-direction: column; gap: 1.2rem; }
+    #faces-review-list:empty::after { content: 'No faces waiting for review.'; color: #ccc; }
+    .faces-review-subheading { color: #ccc; font-size: 0.8rem; text-transform: uppercase; margin: 0; }
+    .faces-review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; }
     .face-card { background: #222; border-radius: 6px; padding: 0.6rem; display: flex; flex-direction: column; gap: 0.4rem; }
     .face-card canvas { width: 100%; border-radius: 4px; background: #333; }
     .face-card-label { color: #eee; font-size: 0.8rem; }
     .face-card-actions { display: flex; flex-wrap: wrap; gap: 0.3rem; }
     .face-card-actions button { background: #333; color: #eee; border: none; border-radius: 4px; padding: 0.25rem 0.5rem; font-size: 0.72rem; cursor: pointer; }
     .face-card-actions button:hover { background: #1a5fb4; }
+
+    .face-match-group { background: #1c1c1c; border: 1px solid #3a3a3a; border-radius: 8px; padding: 0.8rem; }
+    .face-match-group-header { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; }
+    .face-match-group-header span { color: #eee; font-size: 0.85rem; }
+    .face-match-group-header button { background: #1a5fb4; color: #fff; border: none; border-radius: 4px; padding: 0.3rem 0.7rem; font-size: 0.78rem; cursor: pointer; }
+    .face-match-group-header button:disabled { opacity: 0.5; cursor: default; }
+    .face-match-thumbs { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+    .face-match-thumb { position: relative; width: 90px; }
+    .face-match-thumb canvas { width: 100%; border-radius: 4px; background: #333; display: block; }
+    .face-match-thumb-remove { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; line-height: 18px; padding: 0; border-radius: 50%; background: #b00020; color: #fff; border: none; cursor: pointer; font-size: 0.9rem; }
+    .face-match-thumb-remove:hover { background: #d0002a; }
 
     #selection-bar { display: none; align-items: center; gap: 0.6rem; background: #eef4fc; border: 1px solid #bcd6f2; border-radius: 4px; padding: 0.5rem 0.7rem; margin-bottom: 1rem; font-size: 0.85rem; flex-wrap: wrap; }
     #selection-bar.visible { display: flex; }
@@ -78,6 +91,18 @@
     #keyword-dialog-actions button { padding: 0.3rem 0.8rem; font-size: 0.82rem; border-radius: 4px; cursor: pointer; }
     #keyword-dialog-submit { background: #1a5fb4; color: #fff; border: none; }
     #keyword-dialog-cancel { background: none; border: 1px solid #bbb; }
+
+    dialog#person-dialog { border: none; border-radius: 6px; padding: 1rem 1.2rem; width: 22rem; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25); }
+    dialog#person-dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
+    #person-dialog p { margin: 0 0 0.6rem; font-size: 0.85rem; color: #333; }
+    #person-input { width: 100%; box-sizing: border-box; padding: 0.3rem 0.5rem; font-size: 0.85rem; border: 1px solid #bbb; border-radius: 4px; margin-bottom: 0.6rem; }
+    #person-suggestions-label { font-size: 0.75rem; text-transform: uppercase; color: #888; margin: 0 0 0.3rem; }
+    #person-suggestions-list { display: flex; flex-wrap: wrap; gap: 0.3rem; max-height: 8rem; overflow-y: auto; margin-bottom: 0.8rem; }
+    #person-suggestions-list:empty::after { content: 'No matches'; color: #999; font-size: 0.8rem; }
+    #person-dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+    #person-dialog-actions button { padding: 0.3rem 0.8rem; font-size: 0.82rem; border-radius: 4px; cursor: pointer; }
+    #person-dialog-submit { background: #1a5fb4; color: #fff; border: none; }
+    #person-dialog-cancel { background: none; border: 1px solid #bbb; }
 
     #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; }
     figure { position: relative; margin: 0; border: 1px solid #ddd; border-radius: 4px; padding: 0.5rem; cursor: pointer; }
@@ -180,6 +205,20 @@
       <div id="keyword-dialog-actions">
         <button type="button" id="keyword-dialog-cancel">Cancel</button>
         <button type="submit" id="keyword-dialog-submit" value="submit">Add</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="person-dialog">
+    <form method="dialog">
+      <p id="person-dialog-description"></p>
+      <input type="text" id="person-input" list="person-datalist" placeholder="Type a name" autocomplete="off" />
+      <datalist id="person-datalist"></datalist>
+      <p id="person-suggestions-label">Existing people:</p>
+      <div id="person-suggestions-list"></div>
+      <div id="person-dialog-actions">
+        <button type="button" id="person-dialog-cancel">Cancel</button>
+        <button type="submit" id="person-dialog-submit" value="submit">Confirm</button>
       </div>
     </form>
   </dialog>
