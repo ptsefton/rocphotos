@@ -13,6 +13,25 @@ CREATE TABLE IF NOT EXISTS scanned_images (
   scanned_at TEXT NOT NULL
 );
 
+-- Which images have had every one of their already-tagged Face regions
+-- backfilled (see faces/store.js's isBackfillFullyChecked) — an image is
+-- only ever marked here once every named region on it already has a
+-- reference; one that still has a region without one (an embedding that
+-- failed to compute, say) is left unmarked, so it is looked at again
+-- (and only its still-missing region retried, via
+-- hasReferenceForPersonOnImage) on a later pass rather than silently
+-- never being retried. Lets /faces/existing-regions skip reading and
+-- parsing an unchanged image's crate at all on a later "Recognize
+-- Faces" run, instead of re-examining every tagged image in the whole
+-- collection on every single click.
+CREATE TABLE IF NOT EXISTS backfill_checked_images (
+  image_id TEXT PRIMARY KEY,
+  file_mtime INTEGER NOT NULL,
+  model_name TEXT NOT NULL,
+  model_version TEXT NOT NULL,
+  checked_at TEXT NOT NULL
+);
+
 -- One row per confirmed reference example: a face embedding known to
 -- belong to a person (person_id set), or a permanently-suppressed
 -- "stranger" (person_id NULL — see faces/store.js). A confirmed person's

@@ -17,6 +17,8 @@ import { serializeWrites } from '../writeQueue.js';
 import {
   isImageAlreadyScanned,
   markImageScanned,
+  isBackfillFullyChecked,
+  markBackfillFullyChecked,
   listReferenceFaces,
   addReferenceFace,
   hasReferenceForPersonOnImage,
@@ -157,12 +159,35 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
       // absent-mindedly conflate the two.
       const requestCrateCache = new Map();
       for (const imageId of imageIds) {
+        // isBackfillFullyChecked skips reading/parsing this image's
+        // crate at all once every named region on it already has a
+        // reference — without it, every single "Recognize Faces" click
+        // re-examines every tagged image in the whole collection, even
+        // ones nothing has changed about since the last click, which is
+        // the entire visible cost of this step once the collection's
+        // reference set has caught up.
+        const fileRow = getFileById(mainStore, imageId);
+        if (!fileRow) continue;
+        const { modifiedTime } = await fsAdapter.stat(fileRow.relative_path);
+        if (isBackfillFullyChecked(facesStore, imageId, modifiedTime, modelName, modelVersion)) continue;
+
         const existingRegions = await loadExistingFaceRegions(fsAdapter, mainStore, requestCrateCache, imageId);
+        let allAlreadyReferenced = true;
         for (const { index, name, rawArea, correctedArea } of existingRegions) {
           if (hasReferenceForPersonOnImage(facesStore, imageId, personEntityId(name), modelName, modelVersion)) continue;
+          allAlreadyReferenced = false;
           regions.push({ imageId, sourceRegionId: `${imageId}#region-${index}`, personName: name, rawArea, correctedArea });
         }
+        // Only marked done when nothing on this image was left needing a
+        // reference this pass — an image with a region whose embedding
+        // fails to compute (see /backfill-reference) stays unmarked, so
+        // it is looked at again (and only that one region retried) next
+        // time, rather than the failure being silently permanent.
+        if (allAlreadyReferenced) {
+          markBackfillFullyChecked(facesStore, { imageId, fileMtime: modifiedTime, modelName, modelVersion });
+        }
       }
+      await persistStore(facesStore);
       return json(200, { regions });
     }
 

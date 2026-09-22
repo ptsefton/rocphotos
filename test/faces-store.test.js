@@ -4,6 +4,8 @@ import {
   ensureFacesSchema,
   isImageAlreadyScanned,
   markImageScanned,
+  isBackfillFullyChecked,
+  markBackfillFullyChecked,
   addReferenceFace,
   listReferenceFaces,
   addDetection,
@@ -38,6 +40,24 @@ describe('scanned_images', () => {
   it('treats a different model version as not scanned, so a model upgrade re-scans', () => {
     markImageScanned(db, { imageId: 'a.jpg', fileMtime: 1000, modelName: 'face-api.js', modelVersion: '0.22.2' });
     expect(isImageAlreadyScanned(db, 'a.jpg', 1000, 'face-api.js', '0.23.0')).toBe(false);
+  });
+});
+
+describe('backfill_checked_images', () => {
+  it('reports an image as not fully checked until markBackfillFullyChecked is called for its current mtime/model', () => {
+    expect(isBackfillFullyChecked(db, 'a.jpg', 1000, 'face-api.js', '0.22.2')).toBe(false);
+    markBackfillFullyChecked(db, { imageId: 'a.jpg', fileMtime: 1000, modelName: 'face-api.js', modelVersion: '0.22.2' });
+    expect(isBackfillFullyChecked(db, 'a.jpg', 1000, 'face-api.js', '0.22.2')).toBe(true);
+  });
+
+  it('treats a changed mtime as not checked, so an edited file (including one this app just wrote a confirmed region into) is looked at again', () => {
+    markBackfillFullyChecked(db, { imageId: 'a.jpg', fileMtime: 1000, modelName: 'face-api.js', modelVersion: '0.22.2' });
+    expect(isBackfillFullyChecked(db, 'a.jpg', 2000, 'face-api.js', '0.22.2')).toBe(false);
+  });
+
+  it('treats a different model version as not checked, so a model upgrade re-examines everything', () => {
+    markBackfillFullyChecked(db, { imageId: 'a.jpg', fileMtime: 1000, modelName: 'face-api.js', modelVersion: '0.22.2' });
+    expect(isBackfillFullyChecked(db, 'a.jpg', 1000, 'face-api.js', '0.23.0')).toBe(false);
   });
 });
 

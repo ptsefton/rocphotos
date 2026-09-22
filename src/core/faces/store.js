@@ -122,6 +122,50 @@ export function markImageScanned(driver, { imageId, fileMtime, modelName, modelV
   );
 }
 
+/**
+ * Whether this image can be skipped entirely on this "Recognize Faces"
+ * backfill pass — every named region it had was already fully
+ * backfilled as of this exact file mtime, so there is nothing left to
+ * check without even reading its crate. A changed mtime (the file was
+ * edited — including by this app's own /faces/confirm) always fails
+ * this check, so an image is never skipped based on stale information.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} imageId
+ * @param {number} fileMtime
+ * @param {string} modelName
+ * @param {string} modelVersion
+ * @returns {boolean}
+ */
+export function isBackfillFullyChecked(driver, imageId, fileMtime, modelName, modelVersion) {
+  const row = driver.get('SELECT * FROM backfill_checked_images WHERE image_id = ?', [imageId]);
+  if (!row) return false;
+  return row.file_mtime === fileMtime && row.model_name === modelName && row.model_version === modelVersion;
+}
+
+/**
+ * Records that every named region on this image already has a
+ * reference as of this exact file mtime — see isBackfillFullyChecked.
+ * The caller is responsible for only calling this when that is actually
+ * true (i.e. nothing on this image was left needing a reference this
+ * pass); marking an image done while it still has an unbackfilled
+ * region would mean that region is never looked at again.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {{imageId: string, fileMtime: number, modelName: string, modelVersion: string}} options
+ */
+export function markBackfillFullyChecked(driver, { imageId, fileMtime, modelName, modelVersion }) {
+  const now = new Date().toISOString();
+  driver.run(
+    `INSERT INTO backfill_checked_images (image_id, file_mtime, model_name, model_version, checked_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(image_id) DO UPDATE SET
+       file_mtime = excluded.file_mtime, model_name = excluded.model_name,
+       model_version = excluded.model_version, checked_at = excluded.checked_at`,
+    [imageId, fileMtime, modelName, modelVersion, now],
+  );
+}
+
 // Mapped to camelCase here (unlike most of this module's other rows,
 // returned as raw SQL columns) since this shape is consumed directly by
 // faces/matching.js's findClosestReference, which is also used against

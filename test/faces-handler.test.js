@@ -3,7 +3,7 @@ import { createNodeFsAdapter } from '../src/adapters/nodeFs.js';
 import { openNodeSqlite } from '../src/adapters/nodeSqlite.js';
 import { createFacesHandler } from '../src/core/faces/handler.js';
 import { createHandler } from '../src/core/arocapi/handler.js';
-import { ensureFacesSchema, addReferenceFace, listDetections, listReferenceFaces } from '../src/core/faces/store.js';
+import { ensureFacesSchema, addReferenceFace, listDetections, listReferenceFaces, isBackfillFullyChecked } from '../src/core/faces/store.js';
 import {
   ensureSchema,
   upsertRoCrate,
@@ -14,6 +14,7 @@ import {
   imageEntityId,
   personEntityId,
   listFacetValuesForEntity,
+  getFileById,
   ENTITY_TYPE_COLLECTION,
   ENTITY_TYPE_IMAGE,
 } from '../src/core/db/store.js';
@@ -190,6 +191,64 @@ describe('POST /existing-regions and /backfill-reference', () => {
   it('rejects a backfill request missing required fields', async () => {
     const res = await handleRequest({ method: 'POST', path: '/backfill-reference', body: { personName: 'Alice' } });
     expect(res.status).toEqual(400);
+  });
+
+  it('marks an image fully checked once every region on it has a reference, so a later pass skips it without reading its crate again', async () => {
+    // Regression/behavior test for the "why does it keep re-examining
+    // photos it already handled" complaint: without this, every
+    // "Recognize Faces" click re-reads and re-checks every tagged
+    // image's crate in the whole collection, even ones nothing has
+    // changed about since the last click.
+    await handleRequest({
+      method: 'POST', path: '/backfill-reference',
+      body: { sourceImageId: taggedId, sourceRegionId: `${taggedId}#region-0`, personName: 'Alice', embedding: [0, 0], modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+
+    const before = await handleRequest({
+      method: 'POST', path: '/existing-regions',
+      body: { imageIds: [taggedId], modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+    expect(JSON.parse(before.body).regions).toEqual([]);
+
+    const fileRow = getFileById(mainStore, taggedId);
+    const { modifiedTime } = await fsAdapter.stat(fileRow.relative_path);
+    expect(isBackfillFullyChecked(facesStore, taggedId, modifiedTime, 'face-api.js', '0.22.2')).toBe(true);
+  });
+
+  it('does not mark an image checked while one of its regions still needs a reference, so that one is retried next time', async () => {
+    // photo.jpg has no regions of its own in this fixture; give it two
+    // named ones directly via the crate, backfill only one.
+    const crateJson = new TextDecoder().decode(await fsAdapter.readFile(`2025/${CRATE_FILE_NAME}`));
+    const crate = loadOrCreateCrate(crateJson);
+    addImageEntity(crate, {
+      path: 'two-people.jpg',
+      exif: { Regions: { RegionList: [
+        { Name: 'Alice', Type: 'Face', Area: { x: 0.2, y: 0.2, w: 0.1, h: 0.1 } },
+        { Name: 'Bob', Type: 'Face', Area: { x: 0.7, y: 0.7, w: 0.1, h: 0.1 } },
+      ] } },
+      sourceModifiedAt: Date.now(),
+    });
+    await fsAdapter.writeFile(`2025/${CRATE_FILE_NAME}`, serializeCrate(crate));
+    await fsAdapter.writeFile('2025/two-people.jpg', 'fake jpeg bytes');
+    const twoPeopleId = imageEntityId('2025', 'two-people.jpg');
+    upsertEntity(mainStore, { id: twoPeopleId, roCrateId: subCrateId, entityType: ENTITY_TYPE_IMAGE, name: 'two-people.jpg', memberOf: subCrateId });
+    upsertFile(mainStore, { id: twoPeopleId, entityId: twoPeopleId, filename: 'two-people.jpg', mediaType: 'image/jpeg', size: 16, relativePath: twoPeopleId });
+
+    await handleRequest({
+      method: 'POST', path: '/backfill-reference',
+      body: { sourceImageId: twoPeopleId, sourceRegionId: `${twoPeopleId}#region-0`, personName: 'Alice', embedding: [0, 0], modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+
+    const after = await handleRequest({
+      method: 'POST', path: '/existing-regions',
+      body: { imageIds: [twoPeopleId], modelName: 'face-api.js', modelVersion: '0.22.2' },
+    });
+    // Bob still needs a reference, so he is still listed...
+    expect(JSON.parse(after.body).regions.map((r) => r.personName)).toEqual(['Bob']);
+    // ...and the image itself is not marked fully checked.
+    const fileRow = getFileById(mainStore, twoPeopleId);
+    const { modifiedTime } = await fsAdapter.stat(fileRow.relative_path);
+    expect(isBackfillFullyChecked(facesStore, twoPeopleId, modifiedTime, 'face-api.js', '0.22.2')).toBe(false);
   });
 });
 
