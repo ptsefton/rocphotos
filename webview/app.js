@@ -1,7 +1,17 @@
 const IMAGE_ENTITY_TYPE = 'http://pcdm.org/models#Object';
 const FACET_NAMES = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'year'];
-const FACET_LABELS = { camera: 'Camera', lens: 'Lens', keyword: 'Keywords', rating: 'Rating', people: 'People', pets: 'Pets', year: 'Year', memberOf: 'Collection' };
+const FACET_LABELS = { camera: 'Camera', lens: 'Lens', keyword: 'Keywords', rating: 'Rating', people: 'People', pets: 'Pets', year: 'Year', month: 'Month', day: 'Day', memberOf: 'Collection' };
 const FACET_ICONS = { people: '👤', pets: '🐕', keyword: '🏷️' };
+
+// ro-crate-js wraps a scalar-assigned property (e.g. an image entity's
+// own dateCreated — see crateBuilder.js's own unwrap, which handles this
+// same quirk server-side for internal use) in a one-element array when
+// read back — the raw, resolved metadata document GET
+// /entity/{id}/metadata returns is not re-normalized out of this, so any
+// caller reading such a field here has to.
+function unwrapJsonLdValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
 
 function labelWithIcon(facetName) {
   const icon = FACET_ICONS[facetName];
@@ -34,6 +44,10 @@ const viewerRatingEl = document.querySelector('#viewer-rating');
 const viewerCaptionEl = document.querySelector('#viewer-caption');
 const viewerDescriptionEl = document.querySelector('#viewer-description');
 const viewerTagsEl = document.querySelector('#viewer-tags');
+const viewerMetadataEl = document.querySelector('#viewer-metadata');
+const viewerBreadcrumbEl = document.querySelector('#viewer-breadcrumb');
+const viewerPrevEl = document.querySelector('#viewer-prev');
+const viewerNextEl = document.querySelector('#viewer-next');
 const viewerFacesEl = document.querySelector('#viewer-faces');
 const viewerFacesToggleEl = document.querySelector('#viewer-faces-toggle');
 const recognizeFacesButtonEl = document.querySelector('#recognize-faces-button');
@@ -63,6 +77,13 @@ let selectedIds = new Set();
 // entity matching it (the search itself is capped at 200 results; there
 // is no pagination yet for "all" to mean more than that).
 let currentEntityIds = [];
+
+// The full entities currently rendered in the grid, in the same order —
+// lets the viewer's Prev/Next buttons and arrow-key navigation step
+// through whatever result set (or collection) was being browsed when it
+// was opened, via openViewer's own entity shape, without an extra fetch
+// per step. Same 200-result cap as currentEntityIds above.
+let currentEntities = [];
 
 // Every search implicitly scopes to images: this is a photo browser, not
 // a general entity browser, so sub-collection Dataset entities never show
@@ -132,6 +153,21 @@ function toggleFilter(facetName, value) {
 // rather than opening back up on the same photo.
 function applyFilterAndCloseViewer(facetName, value) {
   activeFilters[facetName] = value;
+  closeViewer();
+  search();
+}
+
+// Used by the viewer's date breadcrumb (see renderViewerBreadcrumb):
+// narrows to a year, a year+month, or a full year+month+day — always
+// replacing whichever of month/day was previously active rather than
+// layering on top of it, since clicking "2024" after "2024 › 09 › 03"
+// means "show me the whole year", not "the whole year, but only
+// September the 3rd". month/day are otherwise meaningless without the
+// year they belong to (see buildSearchQuery in db/store.js).
+function applyDateFilterAndCloseViewer(year, month, day) {
+  activeFilters.year = year;
+  if (month) activeFilters.month = month; else delete activeFilters.month;
+  if (day) activeFilters.day = day; else delete activeFilters.day;
   closeViewer();
   search();
 }
@@ -314,6 +350,96 @@ function renderViewerRating(rating) {
   }));
 }
 
+// A clickable "2024 › 09 › 03" in the viewer's top-left corner, built
+// from the entity's own dateCreated (ISO 8601, e.g. "2024-09-03T...").
+// Each segment applies progressively more of the date as a filter (see
+// applyDateFilterAndCloseViewer) — clicking "09" means "everyone in
+// September 2024", not just this one photo. Segments are read out of
+// fixed string offsets rather than parsed as a Date so that a future
+// year-only or year+month-only date (no day, or no month — e.g. from an
+// old scanned negative with only an approximate date known) degrades
+// gracefully to a shorter breadcrumb instead of showing "NaN" or
+// throwing: nothing here assumes every photo has a full date.
+function renderViewerBreadcrumb(dateCreated) {
+  viewerBreadcrumbEl.innerHTML = '';
+  if (!dateCreated || dateCreated.length < 4) return;
+
+  const year = dateCreated.slice(0, 4);
+  const month = dateCreated.length >= 7 ? dateCreated.slice(5, 7) : null;
+  const day = dateCreated.length >= 10 ? dateCreated.slice(8, 10) : null;
+
+  const segments = [['year', year, () => applyDateFilterAndCloseViewer(year)]];
+  if (month) segments.push(['month', month, () => applyDateFilterAndCloseViewer(year, month)]);
+  if (day) segments.push(['day', day, () => applyDateFilterAndCloseViewer(year, month, day)]);
+
+  segments.forEach(([key, label, onClick], index) => {
+    if (index > 0) {
+      const sep = document.createElement('span');
+      sep.className = 'date-crumb-sep';
+      sep.textContent = '›';
+      viewerBreadcrumbEl.appendChild(sep);
+    }
+    const button = document.createElement('button');
+    button.textContent = label;
+    button.title = `Show every photo from ${key === 'year' ? year : key === 'month' ? `${year}-${month}` : `${year}-${month}-${day}`}`;
+    button.addEventListener('click', onClick);
+    viewerBreadcrumbEl.appendChild(button);
+  });
+}
+
+// Camera/lens combined the same way the 'camera'/'lens' facets
+// themselves are (see facetValuesFromRecord in db/store.js) — duplicated
+// here rather than imported, since webview/app.js cannot import from
+// src/core/ (see Spec.md's Face Recognition section for why). Shown
+// alongside pixel dimensions, the one piece of EXIF "we have room for"
+// that has no facet of its own to be discovered through.
+function renderViewerMetadata(exifData) {
+  viewerMetadataEl.innerHTML = '';
+  const exifByName = Object.fromEntries((exifData ?? []).map((entry) => [entry.name, entry.value]));
+  const camera = [exifByName.Make, exifByName.Model].filter(Boolean).join(' ');
+  const lens = exifByName.LensModel || exifByName.LensMake || '';
+  const dimensions = exifByName.ImageWidth && exifByName.ImageHeight ? `${exifByName.ImageWidth}×${exifByName.ImageHeight}` : '';
+  viewerMetadataEl.textContent = [camera, lens, dimensions].filter(Boolean).join(' · ');
+}
+
+// The index of whichever entity the viewer currently shows within
+// currentEntities — always looked up fresh (rather than cached) so it
+// reflects whatever the grid was last searched to, even if that changed
+// since the viewer opened.
+function currentViewerIndex() {
+  return currentEntities.findIndex((entity) => entity.id === currentViewerEntityId);
+}
+
+function updateViewerNavButtons() {
+  const index = currentViewerIndex();
+  viewerPrevEl.disabled = index <= 0;
+  viewerNextEl.disabled = index === -1 || index >= currentEntities.length - 1;
+}
+
+// Steps to the next/previous entity in whatever result set (or
+// collection) was being browsed when the viewer was opened — the same
+// order the grid itself renders in (see renderGrid/currentEntities),
+// so Prev/Next and the arrow keys below walk it the same way paging
+// through the grid by eye would.
+function openViewerAtOffset(delta) {
+  const index = currentViewerIndex();
+  const nextIndex = index + delta;
+  if (index === -1 || nextIndex < 0 || nextIndex >= currentEntities.length) return;
+  openViewer(currentEntities[nextIndex]);
+}
+
+viewerPrevEl.addEventListener('click', () => openViewerAtOffset(-1));
+viewerNextEl.addEventListener('click', () => openViewerAtOffset(1));
+
+document.addEventListener('keydown', (event) => {
+  if (!viewerEl.classList.contains('open')) return;
+  // Typing a name/keyword into an input elsewhere while the viewer
+  // happens to be open should never be hijacked as navigation.
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) return;
+  if (event.key === 'ArrowLeft') openViewerAtOffset(-1);
+  else if (event.key === 'ArrowRight') openViewerAtOffset(1);
+});
+
 async function openViewer(entity) {
   currentViewerEntityId = entity.id;
   viewerImageEl.src = entityUrl('/api/file', entity.id);
@@ -326,6 +452,8 @@ async function openViewer(entity) {
   viewerDescriptionEl.textContent = entity.description ?? '';
   renderViewerRating(entity.rating);
   viewerTagsEl.innerHTML = '';
+  viewerMetadataEl.innerHTML = '';
+  viewerBreadcrumbEl.innerHTML = '';
   currentFaceRegions = [];
   viewerFacesEl.innerHTML = '';
   viewerFacesEl.classList.add('hidden');
@@ -333,11 +461,12 @@ async function openViewer(entity) {
   viewerFacesToggleEl.classList.remove('active');
   viewerFacesToggleEl.disabled = true;
   viewerEl.classList.add('open');
+  updateViewerNavButtons();
 
   // The grid only ever fetches the flat facet columns it needs for
-  // search (see search() above); keywords, people/pets, and face regions
-  // live in the entity's own full RO-Crate document, fetched only once a
-  // photo is actually opened.
+  // search (see search() above); keywords, people/pets, face regions,
+  // and the full EXIF list live in the entity's own full RO-Crate
+  // document, fetched only once a photo is actually opened.
   try {
     const response = await fetch(entityUrl('/api/entity', entity.id) + '/metadata');
     if (!response.ok) return;
@@ -350,6 +479,8 @@ async function openViewer(entity) {
       if (about['@type'] === 'Person') addViewerTag('people', about.name);
       else if (about['@type'] === 'Pet') addViewerTag('pets', about.name);
     }
+    renderViewerMetadata(metadata.exifData);
+    renderViewerBreadcrumb(unwrapJsonLdValue(metadata.dateCreated));
 
     // A pet is tagged the same way as a person (Type: "Pet" rather than
     // "Face" — MWG has no separate "animal face" region type), so it
@@ -452,6 +583,7 @@ function renderStarRating(rating, onRate) {
 function renderGrid(entities) {
   gridEl.innerHTML = '';
   currentEntityIds = entities.map((entity) => entity.id);
+  currentEntities = entities;
   for (const entity of entities) {
     const figure = document.createElement('figure');
 

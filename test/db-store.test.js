@@ -358,6 +358,23 @@ describe('search and facetCounts', () => {
     expect(results2024).toHaveLength(0);
   });
 
+  it('filters by year+month, set together the way the viewer\'s date breadcrumb does', () => {
+    const march = searchEntities(db, { year: '2025', month: '03' });
+    expect(march.map((r) => r.id)).toEqual(['a.jpg']);
+    // A month alone would span every year, which is never what the
+    // breadcrumb means by clicking a month segment — always paired with
+    // the year it belongs to (see buildSearchQuery in db/store.js).
+    const juneAnyYear = searchEntities(db, { month: '06' });
+    expect(juneAnyYear.map((r) => r.id)).toEqual(['b.jpg']);
+  });
+
+  it('filters by year+month+day', () => {
+    const exactDay = searchEntities(db, { year: '2024', month: '12', day: '25' });
+    expect(exactDay.map((r) => r.id)).toEqual(['c.jpg']);
+    const wrongDay = searchEntities(db, { year: '2024', month: '12', day: '24' });
+    expect(wrongDay).toHaveLength(0);
+  });
+
   it('filters by a keyword, and combines it with a column-backed facet (AND)', () => {
     const byKeyword = searchEntities(db, { keyword: 'Bird' });
     expect(byKeyword.map((r) => r.id).sort()).toEqual(['a.jpg', 'c.jpg']);

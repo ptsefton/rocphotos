@@ -137,11 +137,23 @@
     #viewer-tags { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center; max-width: 80vw; }
     .viewer-tag { background: #333; color: #eee; border: none; border-radius: 12px; padding: 0.2rem 0.7rem; font-size: 0.78rem; cursor: pointer; }
     .viewer-tag:hover { background: #1a5fb4; color: #fff; }
+    #viewer-metadata { color: #999; font-size: 0.78rem; text-align: center; }
+    #viewer-metadata:empty { display: none; }
     #viewer-controls { display: flex; gap: 0.6rem; }
     #viewer-controls button { background: #333; color: #eee; border: none; border-radius: 4px; padding: 0.35rem 0.8rem; font-size: 0.8rem; cursor: pointer; }
     #viewer-controls button.active { background: #1a5fb4; color: #fff; }
     #viewer-controls button:disabled { opacity: 0.4; cursor: default; }
     #viewer-close { position: fixed; top: 1rem; right: 1.5rem; color: #fff; font-size: 2rem; line-height: 1; cursor: pointer; background: none; border: none; }
+    #viewer-breadcrumb { position: fixed; top: 1rem; left: 1.5rem; display: flex; gap: 0.3rem; align-items: center; font-size: 0.95rem; z-index: 1; }
+    #viewer-breadcrumb:empty { display: none; }
+    #viewer-breadcrumb button { background: none; border: none; color: #ccc; font-size: 0.95rem; cursor: pointer; padding: 0.1rem 0.2rem; border-radius: 3px; }
+    #viewer-breadcrumb button:hover { background: #333; color: #fff; }
+    #viewer-breadcrumb span.date-crumb-sep { color: #666; }
+    #viewer-prev, #viewer-next { position: fixed; top: 50%; transform: translateY(-50%); color: #fff; font-size: 2.5rem; line-height: 1; cursor: pointer; background: rgba(0, 0, 0, 0.3); border: none; border-radius: 6px; padding: 0.5rem 0.7rem; }
+    #viewer-prev:hover, #viewer-next:hover { background: rgba(0, 0, 0, 0.6); }
+    #viewer-prev:disabled, #viewer-next:disabled { opacity: 0.25; cursor: default; }
+    #viewer-prev { left: 1rem; }
+    #viewer-next { right: 1rem; }
   </style>
 </head>
 <body>
@@ -174,6 +186,9 @@
 
   <div id="viewer">
     <button id="viewer-close" aria-label="Close">&times;</button>
+    <div id="viewer-breadcrumb"></div>
+    <button id="viewer-prev" aria-label="Previous image">&#8249;</button>
+    <button id="viewer-next" aria-label="Next image">&#8250;</button>
     <div id="viewer-image-wrap">
       <img id="viewer-image" alt="" />
       <div id="viewer-faces" class="hidden"></div>
@@ -188,6 +203,7 @@
     </div>
     <div id="viewer-caption"></div>
     <div id="viewer-description"></div>
+    <div id="viewer-metadata"></div>
     <div id="viewer-tags"></div>
   </div>
 

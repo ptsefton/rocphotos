@@ -94,7 +94,10 @@ function fileToJson(row) {
 // two stay in sync.
 function filtersFrom(source) {
   const filters = {};
-  for (const key of ['entityType', 'memberOf', 'camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'year']) {
+  // 'month'/'day' are plain date-part filters, not facets of their own
+  // (no sidebar breakdown of counts) — set by the viewer's clickable
+  // date breadcrumb alongside 'year', see buildSearchQuery in db/store.js.
+  for (const key of ['entityType', 'memberOf', 'camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'year', 'month', 'day']) {
     if (source[key]) filters[key] = source[key];
   }
   return filters;

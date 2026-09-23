@@ -437,6 +437,8 @@ function assertKnownFacet(facetName) {
  * @param {string} [filters.entityType]
  * @param {string} [filters.memberOf]
  * @param {string} [filters.year] - a 4-digit year
+ * @param {string} [filters.month] - a 2-digit month (01-12); meaningful combined with `year`, since a month alone would span every year
+ * @param {string} [filters.day] - a 2-digit day of month (01-31); meaningful combined with `year` and `month`
  * @param {string} [filters.camera]
  * @param {string} [filters.lens]
  * @param {string} [filters.keyword]
@@ -458,6 +460,20 @@ function buildSearchQuery(filters, excludeFacet = null) {
   if (filters.year && excludeFacet !== 'year') {
     whereClauses.push('substr(e.date_created, 1, 4) = ?');
     whereParams.push(filters.year);
+  }
+  // Not derived facets like 'year' (no sidebar breakdown of counts by
+  // month/day exists), just plain date-part filters — set together by
+  // the viewer's clickable date breadcrumb (Section 3.2's web view) to
+  // scope to a specific year+month or year+month+day, always alongside
+  // the 'year' filter above rather than instead of it, since a month or
+  // day value alone would otherwise span every year.
+  if (filters.month) {
+    whereClauses.push('substr(e.date_created, 6, 2) = ?');
+    whereParams.push(filters.month);
+  }
+  if (filters.day) {
+    whereClauses.push('substr(e.date_created, 9, 2) = ?');
+    whereParams.push(filters.day);
   }
 
   let aliasIndex = 0;
