@@ -137,8 +137,10 @@
     #viewer-tags { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center; max-width: 80vw; }
     .viewer-tag { background: #333; color: #eee; border: none; border-radius: 12px; padding: 0.2rem 0.7rem; font-size: 0.78rem; cursor: pointer; }
     .viewer-tag:hover { background: #1a5fb4; color: #fff; }
-    #viewer-metadata { color: #999; font-size: 0.78rem; text-align: center; }
+    #viewer-metadata { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center; align-items: center; max-width: 80vw; }
     #viewer-metadata:empty { display: none; }
+    #viewer-metadata .viewer-tag { font-size: 0.78rem; padding: 0.15rem 0.6rem; }
+    .viewer-metadata-plain { color: #999; font-size: 0.78rem; }
     #viewer-controls { display: flex; gap: 0.6rem; }
     #viewer-controls button { background: #333; color: #eee; border: none; border-radius: 4px; padding: 0.35rem 0.8rem; font-size: 0.8rem; cursor: pointer; }
     #viewer-controls button.active { background: #1a5fb4; color: #fff; }

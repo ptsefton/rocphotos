@@ -322,14 +322,14 @@ collectionsAllEl.addEventListener('click', () => {
   search();
 });
 
-function addViewerTag(facetName, value) {
+function addViewerTag(facetName, value, container = viewerTagsEl) {
   const tag = document.createElement('button');
   tag.className = 'viewer-tag';
   const icon = FACET_ICONS[facetName];
   tag.textContent = icon ? `${icon} ${value}` : value;
-  tag.title = `Find more tagged "${value}"`;
+  tag.title = `Filter to ${FACET_LABELS[facetName] ?? facetName}: ${value}`;
   tag.addEventListener('click', () => applyFilterAndCloseViewer(facetName, value));
-  viewerTagsEl.appendChild(tag);
+  container.appendChild(tag);
 }
 
 // Re-rendered after a click, with the rating just set, rather than
@@ -390,16 +390,26 @@ function renderViewerBreadcrumb(dateCreated) {
 // Camera/lens combined the same way the 'camera'/'lens' facets
 // themselves are (see facetValuesFromRecord in db/store.js) — duplicated
 // here rather than imported, since webview/app.js cannot import from
-// src/core/ (see Spec.md's Face Recognition section for why). Shown
-// alongside pixel dimensions, the one piece of EXIF "we have room for"
-// that has no facet of its own to be discovered through.
+// src/core/ (see Spec.md's Face Recognition section for why). Rendered
+// as the same clickable facet tags as keywords/people/pets (see
+// addViewerTag) — filters the grid to that camera or lens, the same as
+// clicking one in the sidebar would. Pixel dimensions have no facet of
+// their own to filter by, so that one stays plain text.
 function renderViewerMetadata(exifData) {
   viewerMetadataEl.innerHTML = '';
   const exifByName = Object.fromEntries((exifData ?? []).map((entry) => [entry.name, entry.value]));
   const camera = [exifByName.Make, exifByName.Model].filter(Boolean).join(' ');
   const lens = exifByName.LensModel || exifByName.LensMake || '';
   const dimensions = exifByName.ImageWidth && exifByName.ImageHeight ? `${exifByName.ImageWidth}×${exifByName.ImageHeight}` : '';
-  viewerMetadataEl.textContent = [camera, lens, dimensions].filter(Boolean).join(' · ');
+
+  if (camera) addViewerTag('camera', camera, viewerMetadataEl);
+  if (lens) addViewerTag('lens', lens, viewerMetadataEl);
+  if (dimensions) {
+    const span = document.createElement('span');
+    span.className = 'viewer-metadata-plain';
+    span.textContent = dimensions;
+    viewerMetadataEl.appendChild(span);
+  }
 }
 
 // The index of whichever entity the viewer currently shows within
