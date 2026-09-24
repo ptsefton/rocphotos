@@ -25,6 +25,14 @@
     .collection-row.active { background: #1a5fb4; color: #fff; }
     .collection-folder-name { padding: 0.1rem 0.4rem; font-size: 0.85rem; }
 
+    #albums { margin-bottom: 1.5rem; }
+    #albums h2 { font-size: 0.85rem; text-transform: uppercase; color: #888; margin: 0 0 0.4rem; }
+    #albums-list { max-height: 200px; overflow-y: auto; font-size: 0.85rem; }
+    #albums-list:empty::after { content: 'No albums yet — use "New Album" to create one.'; color: #999; font-size: 0.78rem; }
+    .album-row { display: block; width: 100%; text-align: left; background: none; border: none; padding: 0.2rem 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+    .album-row:hover { background: #f0f0f0; }
+    .album-row.active { background: #1a5fb4; color: #fff; }
+
     .facet-group { margin-bottom: 1.5rem; }
     .facet-group h2 { font-size: 0.85rem; text-transform: uppercase; color: #888; margin: 0 0 0.4rem; }
     .facet-group .facet-values { max-height: 220px; overflow-y: auto; }
@@ -189,6 +197,10 @@
       <h2>Collections</h2>
       <button id="collections-all">All collections</button>
       <div id="collections-tree"></div>
+    </div>
+    <div id="albums">
+      <h2>Albums</h2>
+      <div id="albums-list"></div>
     </div>
     <div id="facets"></div>
   </div>

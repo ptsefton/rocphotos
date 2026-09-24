@@ -22,6 +22,7 @@ const facetsEl = document.querySelector('#facets');
 const activeFiltersEl = document.querySelector('#active-filters');
 const collectionsAllEl = document.querySelector('#collections-all');
 const collectionsTreeEl = document.querySelector('#collections-tree');
+const albumsListEl = document.querySelector('#albums-list');
 const statusEl = document.querySelector('#status');
 const selectAllButtonEl = document.querySelector('#select-all');
 const gridEl = document.querySelector('#grid');
@@ -92,6 +93,12 @@ let currentEntityIds = [];
 // per step. Same 200-result cap as currentEntityIds above.
 let currentEntities = [];
 
+// The album currently open in the grid (see openAlbum), or null when the
+// grid shows an ordinary search result instead — album membership is not
+// a facet (see Spec.md's Albums section), so viewing one is a completely
+// separate path from search(), which always clears this back to null.
+let currentAlbumId = null;
+
 // Every search implicitly scopes to images: this is a photo browser, not
 // a general entity browser, so sub-collection Dataset entities never show
 // up as tiles in the grid.
@@ -118,6 +125,10 @@ async function postEdit(path, body) {
 }
 
 async function search() {
+  // Any ordinary search supersedes viewing an album (see openAlbum) —
+  // there is no facet-based way to combine the two yet.
+  currentAlbumId = null;
+  syncAlbumsActiveState();
   statusEl.textContent = 'Loading…';
   try {
     const response = await fetch('/api/search', {
@@ -328,6 +339,65 @@ collectionsAllEl.addEventListener('click', () => {
   delete activeFilters.memberOf;
   search();
 });
+
+// Toggles the .active class on whichever album row matches the one
+// currently open in the grid (see openAlbum) — same idea as
+// syncCollectionsActiveState above, kept a separate function since an
+// open album and an active memberOf/facet filter are mutually exclusive
+// states, not two facets of the same selection.
+function syncAlbumsActiveState() {
+  albumsListEl.querySelectorAll('.album-row').forEach((row) => {
+    row.classList.toggle('active', row.dataset.albumId === currentAlbumId);
+  });
+}
+
+async function loadAlbumsList() {
+  try {
+    const response = await fetch('/api/albums');
+    if (!response.ok) return;
+    const result = await response.json();
+    albumsListEl.innerHTML = '';
+    for (const album of result.albums ?? []) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'album-row';
+      row.textContent = album.name;
+      row.title = album.description ?? '';
+      row.dataset.albumId = album.id;
+      row.addEventListener('click', () => openAlbum(album.id, album.name));
+      albumsListEl.appendChild(row);
+    }
+    syncAlbumsActiveState();
+  } catch {
+    // Albums nav is a secondary aid; leave the list empty rather than
+    // blocking the rest of the page on this fetch.
+  }
+}
+
+// Shows an album's own contents in the grid, in their album order —
+// bypassing search()/activeFilters entirely, since album membership is
+// not a facet (see Spec.md's Albums section): the grid just renders
+// whatever entity list it's given, the same way it already does for a
+// search result, so reusing renderGrid here for real ones means
+// selection, ratings, and the viewer's Prev/Next all keep working
+// unchanged.
+async function openAlbum(id, name) {
+  statusEl.textContent = 'Loading…';
+  try {
+    const response = await fetch(`/api/albums/${encodeURIComponent(id)}`);
+    if (!response.ok) throw new Error(`Could not load album: ${response.status}`);
+    const album = await response.json();
+    currentAlbumId = id;
+    syncAlbumsActiveState();
+    selectedIds = new Set();
+    renderGrid(album.members);
+    renderSelectionBar();
+    const count = album.members.length;
+    statusEl.textContent = `Album: ${name} (${count} image${count === 1 ? '' : 's'})`;
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+  }
+}
 
 function addViewerTag(facetName, value, container = viewerTagsEl) {
   const tag = document.createElement('button');
@@ -1036,6 +1106,7 @@ document.querySelector('#new-album-button').addEventListener('click', async () =
   try {
     await postEdit('/albums', album);
     statusEl.textContent = `Created album "${album.name}".`;
+    await loadAlbumsList();
   } catch (err) {
     window.alert(`Could not create the album: ${err.message}`);
   }
@@ -1047,6 +1118,9 @@ document.querySelector('#selection-add-to-album').addEventListener('click', asyn
   try {
     await postEdit(`/albums/${encodeURIComponent(album.id)}/add`, { imageIds: [...selectedIds] });
     statusEl.textContent = `Added ${selectedIds.size} image(s) to "${album.name}".`;
+    // Bumps the album to the top of the sidebar list, matching its new
+    // "most recently used" position (see touchAlbum in db/store.js).
+    await loadAlbumsList();
   } catch (err) {
     window.alert(`Could not add to that album: ${err.message}`);
   }
@@ -1707,4 +1781,5 @@ document.querySelector('#faces-review-close').addEventListener('click', () => {
 });
 
 loadCollections();
+loadAlbumsList();
 search();
