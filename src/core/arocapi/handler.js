@@ -14,6 +14,12 @@ import {
   deleteEntityById,
   getEntityRating,
   upsertEntity,
+  crateEntityId,
+  createOrUpdateAlbum,
+  getAlbumById,
+  listAlbums,
+  addAlbumMembers,
+  listAlbumMemberIds,
 } from '../db/store.js';
 import {
   CRATE_FILE_NAME,
@@ -25,6 +31,7 @@ import {
   setImageTitle,
   setImageDescription,
   removeImageEntity,
+  setAlbumEntity,
 } from '../crateBuilder.js';
 import { loadEntityFromCrate } from '../entityCrate.js';
 import { moveToTrash } from '../trash.js';
@@ -492,6 +499,65 @@ export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
         await saveEditedCrates(cache);
         await persistStore(store);
         return json(200, { updated, errors });
+      });
+    }
+
+    // Albums (Section 3's Albums, Section 2.2's data model) — not part of
+    // AROCAPI proper, the same way /edit/* above is not. An album's own
+    // entity lives only in the root crate (setAlbumEntity), unlike
+    // Person/Pet, which get duplicated into every crate that depicts
+    // them: an album is a collection-wide concept with no natural "home"
+    // crate of its own to also live in.
+
+    if (method === 'POST' && path === '/albums') {
+      const name = typeof body?.name === 'string' ? body.name.trim() : '';
+      const description = typeof body?.description === 'string' ? body.description.trim() || null : null;
+      if (!name) return badRequest('name is required');
+
+      return serializeWrites(async () => {
+        const album = createOrUpdateAlbum(store, { name, description });
+        const cache = new Map();
+        const rootCrate = await loadCrateForEdit(cache, crateEntityId(''));
+        setAlbumEntity(rootCrate, { ...album, memberIds: listAlbumMemberIds(store, album.id) });
+        await saveEditedCrates(cache);
+        await persistStore(store);
+        return json(200, album);
+      });
+    }
+
+    if (method === 'GET' && path === '/albums') {
+      const albums = listAlbums(store, { query: query.q ?? '' });
+      return json(200, { albums });
+    }
+
+    if (method === 'GET' && parts[0] === 'albums' && parts.length === 2) {
+      const album = getAlbumById(store, decodeURIComponent(parts[1]));
+      if (!album) return notFound();
+      const memberIds = listAlbumMemberIds(store, album.id);
+      const members = memberIds.map((id) => getEntityById(store, id)).filter(Boolean).map((row) => entityToJson(store, row));
+      return json(200, { ...album, members });
+    }
+
+    if (method === 'POST' && parts[0] === 'albums' && parts.length === 3 && parts[2] === 'add') {
+      const album = getAlbumById(store, decodeURIComponent(parts[1]));
+      if (!album) return notFound();
+      const ids = Array.isArray(body?.imageIds) ? body.imageIds : [];
+
+      return serializeWrites(async () => {
+        const errors = [];
+        const validIds = [];
+        for (const id of ids) {
+          if (getEntityById(store, id)) validIds.push(id);
+          else errors.push({ id, message: 'Not found' });
+        }
+
+        const added = addAlbumMembers(store, album.id, validIds);
+        const cache = new Map();
+        const rootCrate = await loadCrateForEdit(cache, crateEntityId(''));
+        setAlbumEntity(rootCrate, { ...album, memberIds: listAlbumMemberIds(store, album.id) });
+        await saveEditedCrates(cache);
+        await persistStore(store);
+        return json(200, { added, errors });
       });
     }
 

@@ -38,6 +38,13 @@ const personDialogDescriptionEl = document.querySelector('#person-dialog-descrip
 const personInputEl = document.querySelector('#person-input');
 const personDatalistEl = document.querySelector('#person-datalist');
 const personSuggestionsListEl = document.querySelector('#person-suggestions-list');
+const newAlbumDialogEl = document.querySelector('#new-album-dialog');
+const newAlbumNameEl = document.querySelector('#new-album-name');
+const newAlbumDescriptionEl = document.querySelector('#new-album-description');
+const albumPickerDialogEl = document.querySelector('#album-picker-dialog');
+const albumPickerDescriptionEl = document.querySelector('#album-picker-description');
+const albumPickerInputEl = document.querySelector('#album-picker-input');
+const albumPickerListEl = document.querySelector('#album-picker-list');
 const viewerEl = document.querySelector('#viewer');
 const viewerImageEl = document.querySelector('#viewer-image');
 const viewerRatingEl = document.querySelector('#viewer-rating');
@@ -888,6 +895,162 @@ function promptPersonName(description, currentValue = '') {
     });
   });
 }
+
+// Albums (Section 3's Albums): a "New Album" dialog for creating one
+// (name + optional description), and a separate picker for "Add to
+// album" that only ever chooses among existing albums — matching the
+// spec's own "build one at a time" split between creating an album and
+// adding images to it.
+
+document.querySelector('#new-album-dialog-cancel').addEventListener('click', () => {
+  newAlbumDialogEl.close('cancel');
+});
+
+let newAlbumDialogResolve = null;
+
+newAlbumDialogEl.addEventListener('close', () => {
+  if (newAlbumDialogEl.returnValue !== 'submit') {
+    newAlbumDialogResolve?.(null);
+    newAlbumDialogResolve = null;
+    return;
+  }
+  const name = newAlbumNameEl.value.trim();
+  newAlbumDialogResolve?.(name ? { name, description: newAlbumDescriptionEl.value.trim() || null } : null);
+  newAlbumDialogResolve = null;
+});
+
+/**
+ * Opens the "New Album" dialog and resolves with {name, description}, or
+ * null if cancelled or submitted with a blank name.
+ *
+ * @returns {Promise<{name: string, description: string|null}|null>}
+ */
+function promptNewAlbum() {
+  return new Promise((resolve) => {
+    newAlbumDialogResolve = resolve;
+    newAlbumNameEl.value = '';
+    newAlbumDescriptionEl.value = '';
+    newAlbumDialogEl.showModal();
+    newAlbumNameEl.focus();
+  });
+}
+
+// Every album, most-recently-used first (see listAlbums in db/store.js) —
+// fetched once when the picker opens and then filtered client-side as
+// the search box narrows it, the same "fetch the whole small vocabulary
+// once" approach the keyword dialog's suggestion list already uses,
+// rather than a network round trip per keystroke.
+let knownAlbums = [];
+
+async function fetchAlbums() {
+  try {
+    const response = await fetch('/api/albums');
+    if (!response.ok) return [];
+    const result = await response.json();
+    return result.albums ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function renderAlbumPickerOptions() {
+  albumPickerListEl.innerHTML = '';
+  const typed = albumPickerInputEl.value.trim().toLowerCase();
+  // With nothing typed, only the 3 most recently used are shown (the
+  // quick-access list the spec calls for); typing narrows across every
+  // album, not just those 3.
+  const matches = typed
+    ? knownAlbums.filter((album) => album.name.toLowerCase().includes(typed))
+    : knownAlbums.slice(0, 3);
+
+  for (const album of matches) {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'album-picker-option';
+    const name = document.createElement('span');
+    name.className = 'album-picker-option-name';
+    name.textContent = album.name;
+    option.appendChild(name);
+    if (album.description) {
+      const description = document.createElement('span');
+      description.className = 'album-picker-option-description';
+      description.textContent = album.description;
+      option.appendChild(description);
+    }
+    // Picking an album is the whole action — unlike the keyword/person
+    // suggestion lists, which only fill the input for further editing,
+    // there is nothing left to refine once an album is chosen.
+    option.addEventListener('click', () => {
+      albumPickerDialogEl.returnValue = 'submit';
+      albumPickerResolve?.(album);
+      albumPickerResolve = null;
+      albumPickerDialogEl.close();
+    });
+    albumPickerListEl.appendChild(option);
+  }
+}
+
+albumPickerInputEl.addEventListener('input', renderAlbumPickerOptions);
+
+document.querySelector('#album-picker-cancel').addEventListener('click', () => {
+  albumPickerDialogEl.close('cancel');
+});
+
+let albumPickerResolve = null;
+
+albumPickerDialogEl.addEventListener('close', () => {
+  // A picked album already resolved and cleared albumPickerResolve
+  // itself (see renderAlbumPickerOptions) before calling close(); this
+  // only handles Cancel or a dismissal (Escape key).
+  albumPickerResolve?.(null);
+  albumPickerResolve = null;
+});
+
+/**
+ * Opens the "Add to album" picker and resolves with the chosen album
+ * ({id, name, description}), or null if cancelled.
+ *
+ * @param {string} description - e.g. "Add 3 image(s) to album:"
+ * @returns {Promise<{id: string, name: string, description: string|null}|null>}
+ */
+function promptAlbumPicker(description) {
+  return new Promise((resolve) => {
+    albumPickerResolve = resolve;
+    albumPickerDescriptionEl.textContent = description;
+    albumPickerInputEl.value = '';
+    knownAlbums = [];
+    renderAlbumPickerOptions();
+    albumPickerDialogEl.showModal();
+    albumPickerInputEl.focus();
+
+    fetchAlbums().then((albums) => {
+      knownAlbums = albums;
+      renderAlbumPickerOptions();
+    });
+  });
+}
+
+document.querySelector('#new-album-button').addEventListener('click', async () => {
+  const album = await promptNewAlbum();
+  if (!album) return;
+  try {
+    await postEdit('/albums', album);
+    statusEl.textContent = `Created album "${album.name}".`;
+  } catch (err) {
+    window.alert(`Could not create the album: ${err.message}`);
+  }
+});
+
+document.querySelector('#selection-add-to-album').addEventListener('click', async () => {
+  const album = await promptAlbumPicker(`Add ${selectedIds.size} image(s) to album:`);
+  if (!album) return;
+  try {
+    await postEdit(`/albums/${encodeURIComponent(album.id)}/add`, { imageIds: [...selectedIds] });
+    statusEl.textContent = `Added ${selectedIds.size} image(s) to "${album.name}".`;
+  } catch (err) {
+    window.alert(`Could not add to that album: ${err.message}`);
+  }
+});
 
 function promptRating(description) {
   const input = window.prompt(`Set rating (1-5, or leave blank to clear) for ${description}:`);

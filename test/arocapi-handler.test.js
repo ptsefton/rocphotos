@@ -566,3 +566,89 @@ describe('unmatched routes', () => {
     expect(res.status).toEqual(404);
   });
 });
+
+describe('Albums', () => {
+  it('creates an album, written into the root crate as an ImageGallery entity', async () => {
+    const res = await handleRequest({
+      method: 'POST',
+      path: '/albums',
+      body: { name: 'Road Trip 2025', description: 'Driving up the coast' },
+    });
+    expect(res.status).toEqual(200);
+    const album = JSON.parse(res.body);
+    expect(album.name).toEqual('Road Trip 2025');
+    expect(album.description).toEqual('Driving up the coast');
+
+    // Reflected immediately in the root crate file on disk, the same way
+    // an edited image's crate is (see /edit/keywords above) — not only in
+    // the index.
+    const rootCrateJson = new TextDecoder().decode(await createNodeFsAdapter(currentRoot).readFile(CRATE_FILE_NAME));
+    const rootGraph = JSON.parse(rootCrateJson)['@graph'];
+    const albumNode = rootGraph.find((entity) => entity['@id'] === album.id);
+    expect(albumNode).toMatchObject({ '@type': 'ImageGallery', name: 'Road Trip 2025', description: 'Driving up the coast' });
+  });
+
+  it('rejects creating an album with a blank name', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/albums', body: { name: '   ' } });
+    expect(res.status).toEqual(400);
+  });
+
+  it('updates an existing album\'s description rather than creating a second one when the name matches', async () => {
+    const first = JSON.parse((await handleRequest({ method: 'POST', path: '/albums', body: { name: 'Road Trip' } })).body);
+    const second = JSON.parse((await handleRequest({ method: 'POST', path: '/albums', body: { name: 'Road Trip', description: 'Updated' } })).body);
+    expect(second.id).toEqual(first.id);
+
+    const listRes = await handleRequest({ method: 'GET', path: '/albums' });
+    const albums = JSON.parse(listRes.body).albums;
+    expect(albums.filter((a) => a.id === first.id)).toHaveLength(1);
+    expect(albums.find((a) => a.id === first.id).description).toEqual('Updated');
+  });
+
+  it('lists albums filtered by a name search', async () => {
+    await handleRequest({ method: 'POST', path: '/albums', body: { name: 'Road Trip 2025' } });
+    await handleRequest({ method: 'POST', path: '/albums', body: { name: 'Family Reunion' } });
+
+    const res = await handleRequest({ method: 'GET', path: '/albums', query: { q: 'road' } });
+    expect(JSON.parse(res.body).albums.map((a) => a.name)).toEqual(['Road Trip 2025']);
+  });
+
+  it('adds images to an album and returns them resolved, in order, from GET /albums/{id}', async () => {
+    const album = JSON.parse((await handleRequest({ method: 'POST', path: '/albums', body: { name: 'Favourites' } })).body);
+
+    const addRes = await handleRequest({
+      method: 'POST',
+      path: `/albums/${encodeURIComponent(album.id)}/add`,
+      body: { imageIds: ['2025/03/10/photo.jpg', '2025/03/10/undated.jpg'] },
+    });
+    expect(JSON.parse(addRes.body)).toEqual({ added: 2, errors: [] });
+
+    const detailRes = await handleRequest({ method: 'GET', path: `/albums/${encodeURIComponent(album.id)}` });
+    const detail = JSON.parse(detailRes.body);
+    expect(detail.members.map((m) => m.id)).toEqual(['2025/03/10/photo.jpg', '2025/03/10/undated.jpg']);
+
+    // Also reflected in the root crate's own hasPart list for the album.
+    const rootCrateJson = new TextDecoder().decode(await createNodeFsAdapter(currentRoot).readFile(CRATE_FILE_NAME));
+    const albumNode = JSON.parse(rootCrateJson)['@graph'].find((entity) => entity['@id'] === album.id);
+    expect(albumNode.hasPart.map((ref) => ref['@id'])).toEqual(['2025/03/10/photo.jpg', '2025/03/10/undated.jpg']);
+  });
+
+  it('reports an unknown image id as an error without failing the rest of the batch', async () => {
+    const album = JSON.parse((await handleRequest({ method: 'POST', path: '/albums', body: { name: 'Favourites' } })).body);
+    const res = await handleRequest({
+      method: 'POST',
+      path: `/albums/${encodeURIComponent(album.id)}/add`,
+      body: { imageIds: ['2025/03/10/photo.jpg', 'nope.jpg'] },
+    });
+    expect(JSON.parse(res.body)).toEqual({ added: 1, errors: [{ id: 'nope.jpg', message: 'Not found' }] });
+  });
+
+  it('404s adding to an unknown album', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/albums/nope/add', body: { imageIds: [] } });
+    expect(res.status).toEqual(404);
+  });
+
+  it('404s fetching an unknown album', async () => {
+    const res = await handleRequest({ method: 'GET', path: '/albums/nope' });
+    expect(res.status).toEqual(404);
+  });
+});

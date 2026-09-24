@@ -12,6 +12,8 @@ T
 
 ## 2. Data Model
 
+### 2.1 File structure
+
 The data structure is as follows:
 
 1. The root of the collection is an RO-Crate (it has an `ro-crate-metadata.json` file). 
@@ -20,6 +22,18 @@ The data structure is as follows:
 3. Crate depth is capped at two levels by default: the root crate and its immediate sub-collection crates. Sub-collection boundaries are determined by a top-down filesystem walk from the root: the first directory encountered that contains an image file becomes a sub-collection crate. Any further nested directories and images beneath that point, regardless of depth, are absorbed into that same sub-collection crate rather than becoming crates of their own.
 
 There's a _rocphotos directory with config/ and trash/ and backup/ directories (backup to be implemented later)
+
+### 2.2 RO-Crate models
+
+Three kinds of RO-Crate exist in a scanned collection, each its own standalone `ro-crate-metadata.json` — a crate never depends on another crate's file to be a complete description of what it directly contains:
+
+- **The root crate**, one per collection, at the collection's own root directory: a `Collection` entity (PCDM's `http://pcdm.org/models#Collection`) that mainly exists to anchor the collection and list its sub-collections. In the case where the root directory holds images directly rather than sub-directories (Section 3.1's "Loose Images in the Collection Root"), it also holds `Object` entities the same way a sub-collection crate does, and is treated as the collection's only crate.
+  - May also contain ImageGallery (from schema.org, needs no prefix in a crate) entities which are virtual collections of images
+- **Sub-collection crates**, one per sub-collection directory (Section 2.1) — also a `Collection` entity, `memberOf` the root — holding the actual `Object` entity per photo/scan in that directory: its EXIF-derived metadata (camera, lens, dates, keywords, rating), and an `ImageRegion` entity for every named face/pet box tagged on it, each pointing to a shared `Person`/`Pet` entity (Section 3.2). A `Person`/`Pet` depicted across several sub-collections is duplicated into each one that depicts them, rather than defined once and referenced from the rest — "the RO-Crate way."
+- **The faces crate** (`_rocphotos/faces/ro-crate-metadata.json`), a single crate outside the root/sub-collection hierarchy, holding one `FaceEmbedding` entity per confirmed face-recognition reference example (Section 3's Face Recognition). Each points back to the real `ImageRegion`/Person it came from rather than duplicating any image data, so it stays just a mirror, for inspectability — matching and review actually query its own companion SQLite file, `_rocphotos/faces/faces-index.sqlite`, not this crate.
+
+The main SQLite index (`rocphotos-index.sqlite`, Section 3.2) is a queryable, read-only materialisation of the root crate and every sub-collection crate combined — the faces crate and its own SQLite file are a separate, parallel pair, not folded into this index.
+
 
 ## 3. Application Behaviour
 
@@ -78,6 +92,24 @@ The browser SPA does not yet offer either the interactive prompt or the command-
 
  Face recognition lets people be found and confirmed automatically instead of only via manual tagging in another tool — see Face Recognition below.
 
+ ### Albums (ImageGallery virtual collections)
+
+ The user can create Galleries which are ordered virtual collections of images via a New Album button. This adds an ImageGallery entity to the root crate.
+
+ User can add selected images to the gallery in a similar way to adding keywords via and Add to album button - show the last three albums that have been used and offer a wayt to search for other albums as well.
+
+ Album features (to build one at a time):
+ - Create an album — **implemented.**
+ - Add images to album, by selecting them first — **implemented.**
+ - Export images to an _exports directory, preserving the file-paths they have with or without ro-crate metadata alongside — not yet implemented.
+ - Create stand-alone HTML album view with an option to include images as datauris for a single-file distribution (option for self-playing slide show, with text overlays) — not yet implemented.
+
+ **Implementation.** An album is a real entity (`ENTITY_TYPE_ALBUM`, `http://schema.org/ImageGallery`) — the same way a Person/Pet is, reusing its existing `name`/`description` columns rather than a parallel table with its own copies of them — keyed by name via `albumEntityId` (same `arcp://` scheme and same name-based identity as `personEntityId`/`petEntityId`, in its own `.../album/` id space so it never collides with a person or pet of the same name). Unlike Person/Pet, which get duplicated into every crate that depicts them, an album's own entity lives only in the root crate (`setAlbumEntity` in crateBuilder.js): a collection-wide concept with no natural "home" crate of its own to also live in. `date_created` doubles as "last used" for an album — bumped both on creation and on every add — so "recently used albums" (the picker's quick-access list) is a plain `ORDER BY` on a column that already exists, no dedicated one needed. Membership and its order are the only genuinely new storage: `album_members(album_id, image_id, position)`, one row per image added, position assigned once and never renumbered, so an album's order survives images being added in more than one batch over time; the crate's own copy of this order is the `hasPart` array on the album's entity (array order preserved), kept in sync with the index on every add.
+
+ Routes (not part of AROCAPI, the same way `/edit/*` above is not): `POST /albums` (create, or update name/description of an existing one with the same name), `GET /albums` (every album, most recently used first, or `?q=` to search by name), `GET /albums/{id}` (name, description, and its members resolved and ordered), `POST /albums/{id}/add` (adds a bulk selection's ids, skipping ones already a member). The web view's "New Album" button (next to Recognize Faces) opens a small name+description dialog; the selection bar's "Add to album" opens a picker of the 3 most-recently-used albums, narrowed by a search box as you type — matching the two UI patterns described above. Neither dialog can create an album inline from the picker: creating and adding are deliberately separate actions, per the "build one at a time" list above.
+
+ Browsing an album's own contents (beyond `GET /albums/{id}`) is not yet wired into the main grid — there is no `albums` facet, unlike `people`/`pets`, so an album cannot currently be opened the way a directory or a person can. This was a deliberate scope cut for the basic create/add functionality above, not an oversight: doing it properly would mean deciding whether album order should override the grid's usual date ordering when browsing one, which matters more once export/slideshow (both order-sensitive) exist.
+
  ### Face Recognition
 
  Extends the existing Person and `ImageRegion` model (Section 3.2): a confirmed face becomes an ordinary `ImageRegion`, written into the photo file's own XMP metadata (via the system `exiftool` binary) exactly as a human-tagged face already is, then re-extracted through the same EXIF pipeline scanning itself uses — no separate code path for a machine-confirmed region's shape.
@@ -121,7 +153,7 @@ The browser SPA does not yet offer either the interactive prompt or the command-
 
 At scan time, the application also builds a SQLite index, `rocphotos-index.sqlite`, at the root of the scanned collection — one database per collection, covering the root crate and every sub-collection crate beneath it (there is no separate index file per sub-crate). This index is a read-only materialised view of what scanning has already written to the crate JSON; it is not a second source of truth, and nothing writes to a crate's `ro-crate-metadata.json` by going through the index.
 
-The schema is a minimal subset of the [AROCAPI specification](https://github.com/crate-works/ro-crate-api), drawn from the [PCDM](http://pcdm.org/models) vocabulary:
+The schema is a minimal subset of the [AROCAPI specification](https://github.com/crate-works/ro-crate-api), drawn from the [PCDM](http://pcdm.org/models) vocabulary. Every entry point that opens an *existing* index — not only `scan`, which builds one — must call `ensureSchema` on it before using it, the same way `serve` already does for the faces companion index's own `ensureFacesSchema`: confirmed as a real bug when the Albums feature's new `album_members` table was added and `rocphotos serve` (both the CLI's and the Service Worker's) turned out to only ever call `ensureSchema` at scan time, so a table added since a collection was last scanned silently never existed for any already-scanned collection until its next full rescan.
 
 - `ro_crates(id, path, name, created_at, updated_at)` — one row per crate directory (the root and every sub-collection crate).
 - `entities(id, ro_crate_id, entity_type, name, title, description, processing_error, member_of, metadata_license_id, content_license_id, access_metadata, access_content, date_created)` — one row per crate-as-Collection and one row per image-as-Object. `title`/`description`/`processing_error` are added by `ensureSchema` via `ALTER TABLE` for an index built before they existed, rather than requiring a `--fresh` rescan.

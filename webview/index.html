@@ -37,8 +37,8 @@
     #active-filters button { margin-left: 0.4rem; cursor: pointer; }
     #status-bar { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 1rem; }
     #status { color: #555; font-size: 0.9rem; }
-    #select-all, #recognize-faces-button { background: none; border: 1px solid #bbb; border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.8rem; cursor: pointer; color: #333; }
-    #select-all:hover, #recognize-faces-button:hover { background: #f0f0f0; }
+    #select-all, #recognize-faces-button, #new-album-button { background: none; border: 1px solid #bbb; border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.8rem; cursor: pointer; color: #333; }
+    #select-all:hover, #recognize-faces-button:hover, #new-album-button:hover { background: #f0f0f0; }
     #recognize-faces-button:disabled { opacity: 0.5; cursor: default; }
 
     #faces-review { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.92); z-index: 100; flex-direction: column; padding: 1.5rem; box-sizing: border-box; overflow-y: auto; }
@@ -110,6 +110,29 @@
     #person-dialog-submit { background: #1a5fb4; color: #fff; border: none; }
     #person-dialog-cancel { background: none; border: 1px solid #bbb; }
 
+    dialog#new-album-dialog { border: none; border-radius: 6px; padding: 1rem 1.2rem; width: 22rem; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25); }
+    dialog#new-album-dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
+    #new-album-dialog p { margin: 0 0 0.6rem; font-size: 0.85rem; color: #333; }
+    #new-album-name { width: 100%; box-sizing: border-box; padding: 0.3rem 0.5rem; font-size: 0.85rem; border: 1px solid #bbb; border-radius: 4px; margin-bottom: 0.6rem; }
+    #new-album-description { width: 100%; box-sizing: border-box; padding: 0.3rem 0.5rem; font-size: 0.85rem; border: 1px solid #bbb; border-radius: 4px; margin-bottom: 0.6rem; font-family: inherit; resize: vertical; }
+    #new-album-dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+    #new-album-dialog-actions button { padding: 0.3rem 0.8rem; font-size: 0.82rem; border-radius: 4px; cursor: pointer; }
+    #new-album-dialog-submit { background: #1a5fb4; color: #fff; border: none; }
+    #new-album-dialog-cancel { background: none; border: 1px solid #bbb; }
+
+    dialog#album-picker-dialog { border: none; border-radius: 6px; padding: 1rem 1.2rem; width: 22rem; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25); }
+    dialog#album-picker-dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
+    #album-picker-dialog p { margin: 0 0 0.6rem; font-size: 0.85rem; color: #333; }
+    #album-picker-input { width: 100%; box-sizing: border-box; padding: 0.3rem 0.5rem; font-size: 0.85rem; border: 1px solid #bbb; border-radius: 4px; margin-bottom: 0.6rem; }
+    #album-picker-list { display: flex; flex-direction: column; gap: 0.3rem; max-height: 12rem; overflow-y: auto; margin-bottom: 0.8rem; }
+    #album-picker-list:empty::after { content: 'No albums yet — use "New Album" to create one.'; color: #999; font-size: 0.8rem; }
+    .album-picker-option { display: block; width: 100%; box-sizing: border-box; text-align: left; background: #f2f2f2; border: 1px solid #ddd; border-radius: 4px; padding: 0.35rem 0.6rem; font-size: 0.82rem; cursor: pointer; }
+    .album-picker-option:hover { background: #e0ebfa; border-color: #bcd6f2; }
+    .album-picker-option .album-picker-option-name { font-weight: 600; }
+    .album-picker-option .album-picker-option-description { display: block; color: #777; font-size: 0.75rem; margin-top: 0.1rem; }
+    #album-picker-actions { display: flex; justify-content: flex-end; }
+    #album-picker-cancel { padding: 0.3rem 0.8rem; font-size: 0.82rem; border-radius: 4px; cursor: pointer; background: none; border: 1px solid #bbb; }
+
     #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; }
     figure { position: relative; margin: 0; border: 1px solid #ddd; border-radius: 4px; padding: 0.5rem; cursor: pointer; }
     figure img { width: 100%; height: 120px; object-fit: cover; border-radius: 2px; background: #eee; }
@@ -174,12 +197,14 @@
       <div id="status">Loading…</div>
       <button id="select-all">Select All</button>
       <button id="recognize-faces-button">Recognize Faces</button>
+      <button id="new-album-button">New Album</button>
     </div>
     <div id="selection-bar">
       <span id="selection-count"></span>
       <button id="selection-add-keyword">Add keyword</button>
       <button id="selection-remove-keyword">Remove keyword</button>
       <button id="selection-set-rating">Set rating</button>
+      <button id="selection-add-to-album">Add to album</button>
       <button id="selection-delete" class="danger">Delete</button>
       <button id="selection-clear">Clear selection</button>
     </div>
@@ -243,6 +268,29 @@
       <div id="person-dialog-actions">
         <button type="button" id="person-dialog-cancel">Cancel</button>
         <button type="submit" id="person-dialog-submit" value="submit">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="new-album-dialog">
+    <form method="dialog">
+      <p>New album</p>
+      <input type="text" id="new-album-name" placeholder="Album name" autocomplete="off" />
+      <textarea id="new-album-description" placeholder="Description (optional)" rows="3"></textarea>
+      <div id="new-album-dialog-actions">
+        <button type="button" id="new-album-dialog-cancel">Cancel</button>
+        <button type="submit" id="new-album-dialog-submit" value="submit">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="album-picker-dialog">
+    <form method="dialog">
+      <p id="album-picker-description"></p>
+      <input type="text" id="album-picker-input" placeholder="Search albums" autocomplete="off" />
+      <div id="album-picker-list"></div>
+      <div id="album-picker-actions">
+        <button type="button" id="album-picker-cancel">Cancel</button>
       </div>
     </form>
   </dialog>

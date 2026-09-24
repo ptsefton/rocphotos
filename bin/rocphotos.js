@@ -497,6 +497,16 @@ async function serve(rootDir, { port = 8420 } = {}) {
 
   const fsAdapter = createNodeFsAdapter(rootDir);
   const store = openNodeSqlite(dbPath);
+  // Applies any schema additions made since this index was last built or
+  // served (new tables/columns — see ensureSchema) to an existing
+  // database file, the same way the faces store's own ensureFacesSchema
+  // call below already does for it. Without this, `serve` against an
+  // index built (or last served) before a schema change would fail the
+  // moment anything touched the missing table/column, even though `scan`
+  // itself already applies it — confirmed as a real bug: a fresh
+  // CREATE TABLE IF NOT EXISTS added for a new feature never actually ran
+  // against an already-scanned collection until its next full rescan.
+  ensureSchema(store);
   // Shared with the faces handler below (see its own crateCache param):
   // this is the AROCAPI handler's long-lived read cache for GET
   // /entity/{id}/metadata (the viewer's tags and "Show faces" overlay).

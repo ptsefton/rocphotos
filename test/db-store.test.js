@@ -25,8 +25,15 @@ import {
   getFileById,
   listFilesForEntity,
   deleteEntityById,
+  albumEntityId,
+  createOrUpdateAlbum,
+  getAlbumById,
+  listAlbums,
+  addAlbumMembers,
+  listAlbumMemberIds,
   ENTITY_TYPE_COLLECTION,
   ENTITY_TYPE_IMAGE,
+  ENTITY_TYPE_ALBUM,
   DEFAULT_LICENSE_ID,
 } from '../src/core/db/store.js';
 
@@ -490,5 +497,75 @@ describe('deleteEntityById', () => {
 
     expect(getEntityById(db, 'b.jpg')).toBeTruthy();
     expect(listFacetValuesForEntity(db, 'b.jpg', 'keyword')).toEqual(['Bird']);
+  });
+});
+
+describe('Albums', () => {
+  let db;
+  const rootId = crateEntityId('');
+
+  beforeEach(() => {
+    db = openNodeSqlite(':memory:');
+    ensureSchema(db);
+    upsertRoCrate(db, { id: rootId, path: '.', name: 'root' });
+    upsertEntity(db, { id: 'a.jpg', roCrateId: rootId, entityType: ENTITY_TYPE_IMAGE, name: 'a.jpg' });
+    upsertEntity(db, { id: 'b.jpg', roCrateId: rootId, entityType: ENTITY_TYPE_IMAGE, name: 'b.jpg' });
+    upsertEntity(db, { id: 'c.jpg', roCrateId: rootId, entityType: ENTITY_TYPE_IMAGE, name: 'c.jpg' });
+  });
+
+  it('creates an album as a real entity, keyed on its name like a Person/Pet', () => {
+    const album = createOrUpdateAlbum(db, { name: 'Road Trip 2025', description: 'Driving up the coast' });
+    expect(album.id).toEqual(albumEntityId('Road Trip 2025'));
+
+    const row = getEntityById(db, album.id);
+    expect(row.entity_type).toEqual(ENTITY_TYPE_ALBUM);
+    expect(row.name).toEqual('Road Trip 2025');
+    expect(row.description).toEqual('Driving up the coast');
+  });
+
+  it('updates name/description in place when called again for the same name, rather than creating a second album', () => {
+    const first = createOrUpdateAlbum(db, { name: 'Road Trip 2025', description: 'v1' });
+    const second = createOrUpdateAlbum(db, { name: 'Road Trip 2025', description: 'v2' });
+    expect(second.id).toEqual(first.id);
+    expect(getAlbumById(db, first.id).description).toEqual('v2');
+    expect(listAlbums(db).filter((a) => a.id === first.id)).toHaveLength(1);
+  });
+
+  it('adds images to an album in order, skipping ones already a member', () => {
+    const album = createOrUpdateAlbum(db, { name: 'Birds' });
+    const addedFirstBatch = addAlbumMembers(db, album.id, ['a.jpg', 'b.jpg']);
+    expect(addedFirstBatch).toEqual(2);
+    expect(listAlbumMemberIds(db, album.id)).toEqual(['a.jpg', 'b.jpg']);
+
+    // b.jpg is already a member: only c.jpg is genuinely new, and a.jpg/
+    // b.jpg keep their original positions rather than moving to the end.
+    const addedSecondBatch = addAlbumMembers(db, album.id, ['b.jpg', 'c.jpg']);
+    expect(addedSecondBatch).toEqual(1);
+    expect(listAlbumMemberIds(db, album.id)).toEqual(['a.jpg', 'b.jpg', 'c.jpg']);
+  });
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('lists albums most-recently-used first, bumped by both creation and adding members', async () => {
+    // date_created has only millisecond resolution, so a real (if tiny)
+    // delay between each touch is needed for a deterministic order here —
+    // real usage is never two touches within the same millisecond.
+    const older = createOrUpdateAlbum(db, { name: 'Older Album' });
+    await sleep(5);
+    const newer = createOrUpdateAlbum(db, { name: 'Newer Album' });
+    expect(listAlbums(db).map((a) => a.id)).toEqual([newer.id, older.id]);
+
+    // Touching the older album (adding a member) brings it back to the front.
+    await sleep(5);
+    addAlbumMembers(db, older.id, ['a.jpg']);
+    expect(listAlbums(db).map((a) => a.id)).toEqual([older.id, newer.id]);
+  });
+
+  it('filters the album list by a case-insensitive name search', () => {
+    createOrUpdateAlbum(db, { name: 'Road Trip 2025' });
+    createOrUpdateAlbum(db, { name: 'Family Reunion' });
+    expect(listAlbums(db, { query: 'road' }).map((a) => a.name)).toEqual(['Road Trip 2025']);
+    expect(listAlbums(db, { query: 'ROAD' }).map((a) => a.name)).toEqual(['Road Trip 2025']);
+    expect(listAlbums(db, { query: 'zzz' })).toEqual([]);
   });
 });

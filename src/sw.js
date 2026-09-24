@@ -12,7 +12,7 @@ import { openBrowserSqlite } from './adapters/browserSqlite.js';
 import { createHandler } from './core/arocapi/handler.js';
 import { createFacesHandler } from './core/faces/handler.js';
 import { ensureFacesSchema, FACES_INDEX_FILE_NAME } from './core/faces/store.js';
-import { INDEX_FILE_NAME } from './core/db/store.js';
+import { ensureSchema, INDEX_FILE_NAME } from './core/db/store.js';
 import sqlWasmUrl from 'sql.js/dist/sql-wasm-browser.wasm?url';
 
 const HANDLE_DB_NAME = 'rocphotos-sw';
@@ -100,6 +100,11 @@ async function buildContext() {
   // once explicitly exported and written back — createHandler's edit
   // routes call this after every write, via the optional store.persist().
   const store = { ...driver, persist: () => fsAdapter.writeFile(INDEX_FILE_NAME, exportIndex()) };
+  // Applies any schema additions made since this index was last built to
+  // an existing database's bytes, the same way ensureFacesSchema below
+  // already does for the faces store — see the equivalent fix and
+  // comment in bin/rocphotos.js's serve().
+  ensureSchema(store);
 
   // The faces companion index (see Spec.md's Face Recognition section)
   // is a second, separate SQLite file, created fresh here the first time

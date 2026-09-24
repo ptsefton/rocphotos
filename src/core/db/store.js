@@ -20,6 +20,15 @@ export const ENTITY_TYPE_IMAGE = 'http://pcdm.org/models#Object';
 export const ENTITY_TYPE_PERSON = 'http://schema.org/Person';
 export const ENTITY_TYPE_PET = 'urn:rocphotos:type:Pet';
 
+// A user-created "virtual collection" of images (Section 2.2/Section 3's
+// Albums) — a real schema.org type, since an ImageGallery is exactly
+// this: an ordered aggregation of images that isn't tied to any one
+// directory. Lives only in the root crate (see albumEntityId), unlike
+// Person/Pet, which get duplicated into every crate that depicts them —
+// an album is a collection-wide concept with no natural "home" crate of
+// its own to also live in.
+export const ENTITY_TYPE_ALBUM = 'http://schema.org/ImageGallery';
+
 // AROCAPI's Entity requires metadataLicenseId/contentLicenseId; this app has
 // no licensing or access-control model yet (single-user, local-only), so a
 // fixed placeholder stands in until a collection sets something else.
@@ -137,6 +146,20 @@ export function personEntityId(name) {
  */
 export function petEntityId(name) {
   return `arcp://name,rocphoto/pet/${nameSlug(name)}`;
+}
+
+/**
+ * The entity id for a user-created album, by name — same slug scheme and
+ * same caveat as personEntityId/petEntityId: two albums given the exact
+ * same name are the same album (name-based identity, no separate
+ * disambiguation), and its own id space (`.../album/`) keeps it from ever
+ * colliding with a person or pet of the same name.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+export function albumEntityId(name) {
+  return `arcp://name,rocphoto/album/${nameSlug(name)}`;
 }
 
 /**
@@ -556,4 +579,104 @@ export function facetCounts(driver, facetName, filters = {}) {
      GROUP BY ef.value ORDER BY count DESC, value ASC`,
     params,
   );
+}
+
+// --- Albums (Section 3's Albums) ---
+//
+// An album is just another entities row (ENTITY_TYPE_ALBUM), reusing its
+// existing name/description columns rather than a parallel table with
+// its own copies of them, and reusing date_created as "last used" rather
+// than adding a dedicated column for it — bumped both on creation and on
+// every addAlbumMembers call, so "recently used albums" (the picker's
+// quick-access list) is a plain ORDER BY on a column that already
+// exists. album_members (schema.js) is the only genuinely new storage:
+// which images are in an album, and in what order.
+
+/**
+ * Creates a new album, or updates the name/description of an existing
+ * one with the same id — the same name always means the same album, the
+ * same identity rule personEntityId/petEntityId already use for people
+ * and pets.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {{name: string, description?: string|null}} options
+ * @returns {{id: string, name: string, description: string|null}}
+ */
+export function createOrUpdateAlbum(driver, { name, description = null }) {
+  const id = albumEntityId(name);
+  upsertEntity(driver, {
+    id, roCrateId: crateEntityId(''), entityType: ENTITY_TYPE_ALBUM, name, description, dateCreated: new Date().toISOString(),
+  });
+  return { id, name, description };
+}
+
+/**
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} id
+ * @returns {{id: string, name: string, description: string|null}|null}
+ */
+export function getAlbumById(driver, id) {
+  return driver.get('SELECT id, name, description FROM entities WHERE id = ? AND entity_type = ?', [id, ENTITY_TYPE_ALBUM]) ?? null;
+}
+
+/**
+ * Every album, most recently used first (see createOrUpdateAlbum and
+ * addAlbumMembers) — optionally narrowed to those whose name contains
+ * `query` (case-insensitive), for the "Add to album" picker's search
+ * box. Without a query, the caller is expected to slice this down to
+ * "the last N used" itself, for the same picker's quick-access list.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {{query?: string}} [options]
+ * @returns {Array<{id: string, name: string, description: string|null}>}
+ */
+export function listAlbums(driver, { query = '' } = {}) {
+  if (!query) {
+    return driver.all('SELECT id, name, description FROM entities WHERE entity_type = ? ORDER BY date_created DESC', [ENTITY_TYPE_ALBUM]);
+  }
+  return driver.all(
+    'SELECT id, name, description FROM entities WHERE entity_type = ? AND lower(name) LIKE ? ORDER BY date_created DESC',
+    [ENTITY_TYPE_ALBUM, `%${query.toLowerCase()}%`],
+  );
+}
+
+/**
+ * Adds images to an album, appending after whatever is already there in
+ * the order given — an image already a member is left at its existing
+ * position, not moved to the end or duplicated, so re-adding the current
+ * selection to an album it partly already contains only extends it with
+ * the new ones. Also bumps the album's date_created (see listAlbums):
+ * choosing to add to this album is itself a "use" of it, even on a call
+ * where every image given was already a member.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} albumId
+ * @param {string[]} imageIds
+ * @returns {number} how many were actually new members
+ */
+export function addAlbumMembers(driver, albumId, imageIds) {
+  const { position: lastPosition } = driver.get('SELECT COALESCE(MAX(position), -1) as position FROM album_members WHERE album_id = ?', [albumId]);
+  let nextPosition = lastPosition + 1;
+  let added = 0;
+  for (const imageId of imageIds) {
+    const existing = driver.get('SELECT 1 FROM album_members WHERE album_id = ? AND image_id = ?', [albumId, imageId]);
+    if (existing) continue;
+    driver.run('INSERT INTO album_members (album_id, image_id, position) VALUES (?, ?, ?)', [albumId, imageId, nextPosition]);
+    nextPosition += 1;
+    added += 1;
+  }
+  driver.run('UPDATE entities SET date_created = ? WHERE id = ?', [new Date().toISOString(), albumId]);
+  return added;
+}
+
+/**
+ * The image ids in this album, in the order they were added (see
+ * album_members' own position column) — oldest addition first.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} albumId
+ * @returns {string[]}
+ */
+export function listAlbumMemberIds(driver, albumId) {
+  return driver.all('SELECT image_id FROM album_members WHERE album_id = ? ORDER BY position ASC', [albumId]).map((row) => row.image_id);
 }

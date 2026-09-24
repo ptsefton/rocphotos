@@ -52,6 +52,26 @@ export function addSubCrateReference(rootCrate, subCratePath) {
 }
 
 /**
+ * Creates or updates an album's own entity in the root crate (Section
+ * 2.2/Section 3's Albums) — unlike addSubCrateReference above, always
+ * replaces the existing entity outright (name, description, and member
+ * list can all change after creation), the same way a confirmed face's
+ * Person/Pet node is replaced on every write in addImageEntity. `hasPart`
+ * doubles as the album's own member list and its display order (JSON
+ * array order is preserved), so no separate ordering property is needed.
+ * Safe to call repeatedly.
+ *
+ * @param {ROCrate} rootCrate
+ * @param {{id: string, name: string, description: string|null, memberIds: string[]}} album
+ */
+export function setAlbumEntity(rootCrate, { id, name, description, memberIds }) {
+  const entity = { '@id': id, '@type': 'ImageGallery', name, hasPart: memberIds.map((memberId) => ({ '@id': memberId })) };
+  if (description) entity.description = description;
+  rootCrate.addEntity(entity, { replace: true });
+  rootCrate.addValues(rootCrate.rootId, 'hasPart', { '@id': id });
+}
+
+/**
  * Extracts an ISO 8601 date string from an EXIF DateTimeOriginal field, or
  * null if none is available. Shared by crate construction and by callers
  * that need the same date for HTML preview navigation, so the two never
