@@ -12,6 +12,8 @@ import {
   setImageTitle,
   setImageDescription,
   removeImageEntity,
+  setAlbumEntity,
+  albumMemberIds,
 } from '../src/core/crateBuilder.js';
 
 describe('setDatasetName', () => {
@@ -32,6 +34,43 @@ describe('addSubCrateReference', () => {
     const hasPart = crate.rootDataset.hasPart;
     const matches = hasPart.filter((ref) => ref['@id'] === '2024/');
     expect(matches).toHaveLength(1);
+  });
+});
+
+describe('setAlbumEntity / albumMemberIds', () => {
+  it('records each member as a prov:specializationOf proxy, not a direct reference to the real image', () => {
+    const crate = loadOrCreateCrate(null);
+    setAlbumEntity(crate, { id: 'album1', name: 'Road Trip', description: null, memberIds: ['a.jpg', 'b.jpg'] });
+
+    const album = crate.getEntity('album1');
+    expect(album.hasPart.map((ref) => ref['@id'])).toEqual(['album1#item-0', 'album1#item-1']);
+
+    const proxy0 = crate.getEntity('album1#item-0');
+    expect(proxy0['@type']).toEqual(['ImageObject']);
+    expect(albumMemberIds(crate, 'album1')).toEqual(['a.jpg', 'b.jpg']);
+  });
+
+  it('returns [] for an album with no entity yet, rather than throwing', () => {
+    const crate = loadOrCreateCrate(null);
+    expect(albumMemberIds(crate, 'nope')).toEqual([]);
+  });
+
+  it('never replaces an already-existing proxy, so a name/description set on it later would survive further calls', () => {
+    const crate = loadOrCreateCrate(null);
+    setAlbumEntity(crate, { id: 'album1', name: 'Road Trip', description: null, memberIds: ['a.jpg'] });
+
+    // Simulates a future per-item caption feature setting something on
+    // the proxy directly — setAlbumEntity itself never writes to name/
+    // description on a proxy, only prov:specializationOf.
+    crate.getEntity('album1#item-0').name = 'The best photo of the trip';
+
+    // Editing the album's own description and adding a second member —
+    // both real reasons setAlbumEntity gets called again — must not
+    // touch the first proxy's own caption.
+    setAlbumEntity(crate, { id: 'album1', name: 'Road Trip', description: 'Updated', memberIds: ['a.jpg', 'b.jpg'] });
+
+    expect(crate.getEntity('album1#item-0').name).toEqual(['The best photo of the trip']);
+    expect(albumMemberIds(crate, 'album1')).toEqual(['a.jpg', 'b.jpg']);
   });
 });
 

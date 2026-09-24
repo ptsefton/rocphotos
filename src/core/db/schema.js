@@ -64,22 +64,4 @@ CREATE INDEX IF NOT EXISTS idx_entities_date_created ON entities(date_created);
 CREATE INDEX IF NOT EXISTS idx_files_entity_id ON files(entity_id);
 CREATE INDEX IF NOT EXISTS idx_entity_facets_name_value ON entity_facets(facet_name, value);
 CREATE INDEX IF NOT EXISTS idx_entity_facets_entity_id ON entity_facets(entity_id);
-
--- An album itself is just another entities row (entity_type
--- ENTITY_TYPE_ALBUM — see db/store.js), the same way a Person/Pet is,
--- reusing its existing name/description columns rather than a parallel
--- table with its own copies of them; date_created doubles as "last used"
--- for an album (bumped on creation and on every add — see
--- addAlbumMembers), so "recently used albums" is a plain ORDER BY on a
--- column that already exists, no new one needed. This table only records
--- membership, in order: position is assigned once, when an image is
--- added, and never renumbered, so an album's order survives images being
--- added in more than one batch over time.
-CREATE TABLE IF NOT EXISTS album_members (
-  album_id TEXT NOT NULL REFERENCES entities(id),
-  image_id TEXT NOT NULL REFERENCES entities(id),
-  position INTEGER NOT NULL,
-  PRIMARY KEY (album_id, image_id)
-);
-CREATE INDEX IF NOT EXISTS idx_album_members_album_id ON album_members(album_id, position);
 `;

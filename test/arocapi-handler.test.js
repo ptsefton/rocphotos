@@ -626,10 +626,21 @@ describe('Albums', () => {
     const detail = JSON.parse(detailRes.body);
     expect(detail.members.map((m) => m.id)).toEqual(['2025/03/10/photo.jpg', '2025/03/10/undated.jpg']);
 
-    // Also reflected in the root crate's own hasPart list for the album.
+    // hasPart holds a proxy per member (`<albumId>#item-<n>`), not the
+    // real image directly — each one a prov:specializationOf the real
+    // image, so an image's appearance in this album could later carry
+    // its own name/description without touching the real image's own
+    // entity (not yet exposed through any route, but this is the data
+    // model it needs).
     const rootCrateJson = new TextDecoder().decode(await createNodeFsAdapter(currentRoot).readFile(CRATE_FILE_NAME));
-    const albumNode = JSON.parse(rootCrateJson)['@graph'].find((entity) => entity['@id'] === album.id);
-    expect(albumNode.hasPart.map((ref) => ref['@id'])).toEqual(['2025/03/10/photo.jpg', '2025/03/10/undated.jpg']);
+    const graph = JSON.parse(rootCrateJson)['@graph'];
+    const albumNode = graph.find((entity) => entity['@id'] === album.id);
+    expect(albumNode.hasPart.map((ref) => ref['@id'])).toEqual([`${album.id}#item-0`, `${album.id}#item-1`]);
+
+    const proxy0 = graph.find((entity) => entity['@id'] === `${album.id}#item-0`);
+    expect(proxy0).toMatchObject({ '@type': 'ImageObject', 'prov:specializationOf': { '@id': '2025/03/10/photo.jpg' } });
+    const proxy1 = graph.find((entity) => entity['@id'] === `${album.id}#item-1`);
+    expect(proxy1).toMatchObject({ '@type': 'ImageObject', 'prov:specializationOf': { '@id': '2025/03/10/undated.jpg' } });
   });
 
   it('reports an unknown image id as an error without failing the rest of the batch', async () => {

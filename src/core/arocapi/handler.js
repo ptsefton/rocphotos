@@ -16,10 +16,9 @@ import {
   upsertEntity,
   crateEntityId,
   createOrUpdateAlbum,
+  touchAlbum,
   getAlbumById,
   listAlbums,
-  addAlbumMembers,
-  listAlbumMemberIds,
 } from '../db/store.js';
 import {
   CRATE_FILE_NAME,
@@ -32,8 +31,9 @@ import {
   setImageDescription,
   removeImageEntity,
   setAlbumEntity,
+  albumMemberIds,
 } from '../crateBuilder.js';
-import { loadEntityFromCrate } from '../entityCrate.js';
+import { loadEntityFromCrate, loadRawCrate } from '../entityCrate.js';
 import { moveToTrash } from '../trash.js';
 import { joinPath } from '../pathUtils.js';
 import { serializeWrites } from '../writeQueue.js';
@@ -507,7 +507,10 @@ export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
     // entity lives only in the root crate (setAlbumEntity), unlike
     // Person/Pet, which get duplicated into every crate that depicts
     // them: an album is a collection-wide concept with no natural "home"
-    // crate of its own to also live in.
+    // crate of its own to also live in. Membership (an album's `hasPart`)
+    // is read and written straight from that root crate entity, not
+    // mirrored into a SQL table — see the comment above the Albums
+    // functions in db/store.js for why.
 
     if (method === 'POST' && path === '/albums') {
       const name = typeof body?.name === 'string' ? body.name.trim() : '';
@@ -518,7 +521,9 @@ export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
         const album = createOrUpdateAlbum(store, { name, description });
         const cache = new Map();
         const rootCrate = await loadCrateForEdit(cache, crateEntityId(''));
-        setAlbumEntity(rootCrate, { ...album, memberIds: listAlbumMemberIds(store, album.id) });
+        // Preserves whatever members an existing album already had — this
+        // route only ever changes name/description, never membership.
+        setAlbumEntity(rootCrate, { ...album, memberIds: albumMemberIds(rootCrate, album.id) });
         await saveEditedCrates(cache);
         await persistStore(store);
         return json(200, album);
@@ -531,10 +536,19 @@ export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
     }
 
     if (method === 'GET' && parts[0] === 'albums' && parts.length === 2) {
-      const album = getAlbumById(store, decodeURIComponent(parts[1]));
+      const id = decodeURIComponent(parts[1]);
+      const album = getAlbumById(store, id);
       if (!album) return notFound();
-      const memberIds = listAlbumMemberIds(store, album.id);
-      const members = memberIds.map((id) => getEntityById(store, id)).filter(Boolean).map((row) => entityToJson(store, row));
+      // Read-only: uses the same long-lived crateCache as every other GET
+      // (see loadRawCrate's own caveat), not the edit-only
+      // loadCrateForEdit above, which is for the write routes' own
+      // short-lived cache. albumMemberIds needs the raw crate object
+      // itself (to follow each hasPart proxy's own prov:specializationOf
+      // — see crateBuilder.js), not loadEntityFromCrate's single-entity,
+      // one-level-shallow resolution.
+      const rootCrate = await loadRawCrate(fsAdapter, crateCache, crateEntityId(''));
+      const memberIds = albumMemberIds(rootCrate, id);
+      const members = memberIds.map((memberId) => getEntityById(store, memberId)).filter(Boolean).map((row) => entityToJson(store, row));
       return json(200, { ...album, members });
     }
 
@@ -551,13 +565,24 @@ export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
           else errors.push({ id, message: 'Not found' });
         }
 
-        const added = addAlbumMembers(store, album.id, validIds);
         const cache = new Map();
         const rootCrate = await loadCrateForEdit(cache, crateEntityId(''));
-        setAlbumEntity(rootCrate, { ...album, memberIds: listAlbumMemberIds(store, album.id) });
+        const existingMemberIds = albumMemberIds(rootCrate, album.id);
+        const existing = new Set(existingMemberIds);
+        // Appends after whatever is already there, in the order given —
+        // an id already a member (or repeated within this same batch) is
+        // left at its existing position, not duplicated or moved to the
+        // end.
+        const newIds = validIds.filter((id) => {
+          if (existing.has(id)) return false;
+          existing.add(id);
+          return true;
+        });
+        setAlbumEntity(rootCrate, { ...album, memberIds: [...existingMemberIds, ...newIds] });
+        touchAlbum(store, album.id);
         await saveEditedCrates(cache);
         await persistStore(store);
-        return json(200, { added, errors });
+        return json(200, { added: newIds.length, errors });
       });
     }
 

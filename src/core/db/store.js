@@ -587,10 +587,17 @@ export function facetCounts(driver, facetName, filters = {}) {
 // existing name/description columns rather than a parallel table with
 // its own copies of them, and reusing date_created as "last used" rather
 // than adding a dedicated column for it — bumped both on creation and on
-// every addAlbumMembers call, so "recently used albums" (the picker's
+// every touchAlbum call, so "recently used albums" (the picker's
 // quick-access list) is a plain ORDER BY on a column that already
-// exists. album_members (schema.js) is the only genuinely new storage:
-// which images are in an album, and in what order.
+// exists. Membership itself is deliberately not stored here at all: an
+// album's own entity, in the root crate, already has an ordered
+// `hasPart` list of its member image ids (see setAlbumEntity in
+// crateBuilder.js) — the same crate-is-truth pattern used everywhere
+// else in this app — so a parallel SQL table recording the same
+// membership a second time would just be duplicated state to keep in
+// sync, for no querying need this app actually has yet (there is no
+// `albums` facet — see Spec.md's Albums section). The arocapi handler
+// reads/writes membership straight from the root crate.
 
 /**
  * Creates a new album, or updates the name/description of an existing
@@ -611,6 +618,20 @@ export function createOrUpdateAlbum(driver, { name, description = null }) {
 }
 
 /**
+ * Bumps an existing album's date_created to now, without touching its
+ * name/description — used when images are added to it (see the arocapi
+ * handler's POST /albums/{id}/add), since choosing to add to this album
+ * is itself a "use" of it for the purpose of listAlbums' recency order,
+ * even on a call where every image given was already a member.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} id
+ */
+export function touchAlbum(driver, id) {
+  driver.run('UPDATE entities SET date_created = ? WHERE id = ? AND entity_type = ?', [new Date().toISOString(), id, ENTITY_TYPE_ALBUM]);
+}
+
+/**
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
  * @param {string} id
  * @returns {{id: string, name: string, description: string|null}|null}
@@ -621,10 +642,10 @@ export function getAlbumById(driver, id) {
 
 /**
  * Every album, most recently used first (see createOrUpdateAlbum and
- * addAlbumMembers) — optionally narrowed to those whose name contains
- * `query` (case-insensitive), for the "Add to album" picker's search
- * box. Without a query, the caller is expected to slice this down to
- * "the last N used" itself, for the same picker's quick-access list.
+ * touchAlbum) — optionally narrowed to those whose name contains `query`
+ * (case-insensitive), for the "Add to album" picker's search box.
+ * Without a query, the caller is expected to slice this down to "the
+ * last N used" itself, for the same picker's quick-access list.
  *
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
  * @param {{query?: string}} [options]
@@ -638,45 +659,4 @@ export function listAlbums(driver, { query = '' } = {}) {
     'SELECT id, name, description FROM entities WHERE entity_type = ? AND lower(name) LIKE ? ORDER BY date_created DESC',
     [ENTITY_TYPE_ALBUM, `%${query.toLowerCase()}%`],
   );
-}
-
-/**
- * Adds images to an album, appending after whatever is already there in
- * the order given — an image already a member is left at its existing
- * position, not moved to the end or duplicated, so re-adding the current
- * selection to an album it partly already contains only extends it with
- * the new ones. Also bumps the album's date_created (see listAlbums):
- * choosing to add to this album is itself a "use" of it, even on a call
- * where every image given was already a member.
- *
- * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
- * @param {string} albumId
- * @param {string[]} imageIds
- * @returns {number} how many were actually new members
- */
-export function addAlbumMembers(driver, albumId, imageIds) {
-  const { position: lastPosition } = driver.get('SELECT COALESCE(MAX(position), -1) as position FROM album_members WHERE album_id = ?', [albumId]);
-  let nextPosition = lastPosition + 1;
-  let added = 0;
-  for (const imageId of imageIds) {
-    const existing = driver.get('SELECT 1 FROM album_members WHERE album_id = ? AND image_id = ?', [albumId, imageId]);
-    if (existing) continue;
-    driver.run('INSERT INTO album_members (album_id, image_id, position) VALUES (?, ?, ?)', [albumId, imageId, nextPosition]);
-    nextPosition += 1;
-    added += 1;
-  }
-  driver.run('UPDATE entities SET date_created = ? WHERE id = ?', [new Date().toISOString(), albumId]);
-  return added;
-}
-
-/**
- * The image ids in this album, in the order they were added (see
- * album_members' own position column) — oldest addition first.
- *
- * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
- * @param {string} albumId
- * @returns {string[]}
- */
-export function listAlbumMemberIds(driver, albumId) {
-  return driver.all('SELECT image_id FROM album_members WHERE album_id = ? ORDER BY position ASC', [albumId]).map((row) => row.image_id);
 }

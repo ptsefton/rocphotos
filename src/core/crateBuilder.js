@@ -52,23 +52,70 @@ export function addSubCrateReference(rootCrate, subCratePath) {
 }
 
 /**
+ * The member image ids currently recorded on an album's own entity, in
+ * order — read via its `hasPart` (see setAlbumEntity below), which is
+ * the one and only place membership is stored; there is no separate
+ * index table for it. Returns `[]` for a brand new album (no entity
+ * yet) rather than requiring every caller to guard for that.
+ *
+ * Each `hasPart` entry is not the real image itself but a small proxy
+ * entity (`<albumId>#item-<n>`, a `prov:specializationOf` the real image
+ * — see setAlbumEntity), so this follows that one extra hop. The
+ * indirection exists so an image's appearance *in this album* can later
+ * have its own name/description (a caption for how this photo is used
+ * here, distinct from its own real title) without touching the real
+ * image's own entity, which is shared by every other place that
+ * depicts it.
+ *
+ * @param {ROCrate} rootCrate
+ * @param {string} id
+ * @returns {string[]}
+ */
+export function albumMemberIds(rootCrate, id) {
+  const entity = rootCrate.getEntity(id);
+  return (entity?.hasPart ?? [])
+    .map((ref) => rootCrate.getEntity(ref['@id']))
+    .filter(Boolean)
+    .map((proxy) => unwrap(proxy['prov:specializationOf'])?.['@id'])
+    .filter(Boolean);
+}
+
+/**
  * Creates or updates an album's own entity in the root crate (Section
  * 2.2/Section 3's Albums) — unlike addSubCrateReference above, always
- * replaces the existing entity outright (name, description, and member
- * list can all change after creation), the same way a confirmed face's
- * Person/Pet node is replaced on every write in addImageEntity. `hasPart`
- * doubles as the album's own member list and its display order (JSON
- * array order is preserved), so no separate ordering property is needed.
- * Safe to call repeatedly.
+ * replaces the album entity itself outright (name, description, and the
+ * member list can all change after creation), the same way a confirmed
+ * face's Person/Pet node is replaced on every write in addImageEntity.
+ * `hasPart` doubles as the album's own member list and its display order
+ * (JSON array order is preserved), so no separate ordering property is
+ * needed. Safe to call repeatedly.
+ *
+ * Each member is recorded as a proxy entity, `<id>#item-<index>`
+ * (`prov:specializationOf` the real image — see albumMemberIds above),
+ * not a direct reference to the real image — created once, the first
+ * time an image reaches that position, and never replaced again by this
+ * function afterwards. This is deliberate: a proxy is where an
+ * album-specific name/description for that image would eventually live
+ * (not yet settable through any route/UI — this only lays the data model
+ * down), and replacing it unconditionally on every call here (e.g. every
+ * time more photos are added, or the album's own name is edited) would
+ * silently wipe that out.
  *
  * @param {ROCrate} rootCrate
  * @param {{id: string, name: string, description: string|null, memberIds: string[]}} album
  */
 export function setAlbumEntity(rootCrate, { id, name, description, memberIds }) {
-  const entity = { '@id': id, '@type': 'ImageGallery', name, hasPart: memberIds.map((memberId) => ({ '@id': memberId })) };
+  const entity = { '@id': id, '@type': 'ImageGallery', name, hasPart: memberIds.map((_, index) => ({ '@id': `${id}#item-${index}` })) };
   if (description) entity.description = description;
   rootCrate.addEntity(entity, { replace: true });
   rootCrate.addValues(rootCrate.rootId, 'hasPart', { '@id': id });
+
+  memberIds.forEach((imageId, index) => {
+    const proxyId = `${id}#item-${index}`;
+    if (!rootCrate.getEntity(proxyId)) {
+      rootCrate.addEntity({ '@id': proxyId, '@type': 'ImageObject', 'prov:specializationOf': { '@id': imageId } });
+    }
+  });
 }
 
 /**

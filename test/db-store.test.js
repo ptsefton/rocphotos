@@ -27,6 +27,7 @@ import {
   deleteEntityById,
   albumEntityId,
   createOrUpdateAlbum,
+  touchAlbum,
   getAlbumById,
   listAlbums,
   addAlbumMembers,
@@ -531,22 +532,9 @@ describe('Albums', () => {
     expect(listAlbums(db).filter((a) => a.id === first.id)).toHaveLength(1);
   });
 
-  it('adds images to an album in order, skipping ones already a member', () => {
-    const album = createOrUpdateAlbum(db, { name: 'Birds' });
-    const addedFirstBatch = addAlbumMembers(db, album.id, ['a.jpg', 'b.jpg']);
-    expect(addedFirstBatch).toEqual(2);
-    expect(listAlbumMemberIds(db, album.id)).toEqual(['a.jpg', 'b.jpg']);
-
-    // b.jpg is already a member: only c.jpg is genuinely new, and a.jpg/
-    // b.jpg keep their original positions rather than moving to the end.
-    const addedSecondBatch = addAlbumMembers(db, album.id, ['b.jpg', 'c.jpg']);
-    expect(addedSecondBatch).toEqual(1);
-    expect(listAlbumMemberIds(db, album.id)).toEqual(['a.jpg', 'b.jpg', 'c.jpg']);
-  });
-
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  it('lists albums most-recently-used first, bumped by both creation and adding members', async () => {
+  it('lists albums most-recently-used first, bumped by both creation and touchAlbum', async () => {
     // date_created has only millisecond resolution, so a real (if tiny)
     // delay between each touch is needed for a deterministic order here —
     // real usage is never two touches within the same millisecond.
@@ -555,9 +543,13 @@ describe('Albums', () => {
     const newer = createOrUpdateAlbum(db, { name: 'Newer Album' });
     expect(listAlbums(db).map((a) => a.id)).toEqual([newer.id, older.id]);
 
-    // Touching the older album (adding a member) brings it back to the front.
+    // touchAlbum is what the handler calls when images are added to an
+    // album (see arocapi/handler.js's POST /albums/{id}/add) — membership
+    // itself is stored only in the crate, not here (see the comment above
+    // the Albums functions in db/store.js), so this is the one thing
+    // still tested at this level.
     await sleep(5);
-    addAlbumMembers(db, older.id, ['a.jpg']);
+    touchAlbum(db, older.id);
     expect(listAlbums(db).map((a) => a.id)).toEqual([older.id, newer.id]);
   });
 
