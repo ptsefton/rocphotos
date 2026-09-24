@@ -93,12 +93,6 @@ let currentEntityIds = [];
 // per step. Same 200-result cap as currentEntityIds above.
 let currentEntities = [];
 
-// The album currently open in the grid (see openAlbum), or null when the
-// grid shows an ordinary search result instead — album membership is not
-// a facet (see Spec.md's Albums section), so viewing one is a completely
-// separate path from search(), which always clears this back to null.
-let currentAlbumId = null;
-
 // Every search implicitly scopes to images: this is a photo browser, not
 // a general entity browser, so sub-collection Dataset entities never show
 // up as tiles in the grid.
@@ -125,10 +119,6 @@ async function postEdit(path, body) {
 }
 
 async function search() {
-  // Any ordinary search supersedes viewing an album (see openAlbum) —
-  // there is no facet-based way to combine the two yet.
-  currentAlbumId = null;
-  syncAlbumsActiveState();
   statusEl.textContent = 'Loading…';
   try {
     const response = await fetch('/api/search', {
@@ -150,6 +140,7 @@ async function search() {
     renderGrid(result.entities);
     renderSelectionBar();
     syncCollectionsActiveState();
+    syncAlbumsActiveState();
     statusEl.textContent = `${result.total} image${result.total === 1 ? '' : 's'}`;
   } catch (err) {
     statusEl.textContent = `Error: ${err.message}`;
@@ -340,14 +331,18 @@ collectionsAllEl.addEventListener('click', () => {
   search();
 });
 
-// Toggles the .active class on whichever album row matches the one
-// currently open in the grid (see openAlbum) — same idea as
-// syncCollectionsActiveState above, kept a separate function since an
-// open album and an active memberOf/facet filter are mutually exclusive
-// states, not two facets of the same selection.
+// Toggles the .active class on whichever album row matches the active
+// 'albums' filter — same idea as syncCollectionsActiveState above. This
+// is the sidebar's quick-access list of every album (including a brand
+// new, still-empty one, which would never appear in the generic facets
+// panel below until it has at least one member); selecting one from
+// here is otherwise just toggleFilter('albums', name), the exact same
+// facet toggle a value in the generic Albums facet group already is —
+// the two are two ways to reach one filter, not two different features,
+// so both stay in sync with plain activeFilters.albums.
 function syncAlbumsActiveState() {
   albumsListEl.querySelectorAll('.album-row').forEach((row) => {
-    row.classList.toggle('active', row.dataset.albumId === currentAlbumId);
+    row.classList.toggle('active', row.dataset.albumName === activeFilters.albums);
   });
 }
 
@@ -363,39 +358,14 @@ async function loadAlbumsList() {
       row.className = 'album-row';
       row.textContent = album.name;
       row.title = album.description ?? '';
-      row.dataset.albumId = album.id;
-      row.addEventListener('click', () => openAlbum(album.id, album.name));
+      row.dataset.albumName = album.name;
+      row.addEventListener('click', () => toggleFilter('albums', album.name));
       albumsListEl.appendChild(row);
     }
     syncAlbumsActiveState();
   } catch {
     // Albums nav is a secondary aid; leave the list empty rather than
     // blocking the rest of the page on this fetch.
-  }
-}
-
-// Shows an album's own contents in the grid, in their album order —
-// bypassing search()/activeFilters entirely, since album membership is
-// not a facet (see Spec.md's Albums section): the grid just renders
-// whatever entity list it's given, the same way it already does for a
-// search result, so reusing renderGrid here for real ones means
-// selection, ratings, and the viewer's Prev/Next all keep working
-// unchanged.
-async function openAlbum(id, name) {
-  statusEl.textContent = 'Loading…';
-  try {
-    const response = await fetch(`/api/albums/${encodeURIComponent(id)}`);
-    if (!response.ok) throw new Error(`Could not load album: ${response.status}`);
-    const album = await response.json();
-    currentAlbumId = id;
-    syncAlbumsActiveState();
-    selectedIds = new Set();
-    renderGrid(album.members);
-    renderSelectionBar();
-    const count = album.members.length;
-    statusEl.textContent = `Album: ${name} (${count} image${count === 1 ? '' : 's'})`;
-  } catch (err) {
-    statusEl.textContent = `Error: ${err.message}`;
   }
 }
 
