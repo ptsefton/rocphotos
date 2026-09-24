@@ -6,6 +6,7 @@ import {
   upsertEntity,
   upsertFile,
   setEntityFacetValues,
+  addEntityFacetValue,
   listFacetValuesForEntity,
   getEntityRating,
   listRoCrates,
@@ -30,8 +31,6 @@ import {
   touchAlbum,
   getAlbumById,
   listAlbums,
-  addAlbumMembers,
-  listAlbumMemberIds,
   ENTITY_TYPE_COLLECTION,
   ENTITY_TYPE_IMAGE,
   ENTITY_TYPE_ALBUM,
@@ -464,6 +463,21 @@ describe('search and facetCounts', () => {
 
   it('rejects an unknown facet name rather than building unsafe SQL from it', () => {
     expect(() => facetCounts(db, 'not-a-real-facet', {})).toThrow();
+  });
+
+  it('filters by the albums facet, combined with another facet (AND) — a.jpg and b.jpg share a camera, only a.jpg is in the album', () => {
+    addEntityFacetValue(db, 'a.jpg', 'albums', 'Road Trip');
+
+    expect(searchEntities(db, { albums: 'Road Trip' }).map((r) => r.id)).toEqual(['a.jpg']);
+    expect(searchEntities(db, { albums: 'Road Trip', camera: 'Google Pixel 6a' }).map((r) => r.id)).toEqual(['a.jpg']);
+    // b.jpg shares a.jpg's camera but is not in the album.
+    expect(searchEntities(db, { albums: 'Road Trip', camera: 'Canon EOS R5' })).toHaveLength(0);
+  });
+
+  it('addEntityFacetValue adds without clearing an entity\'s existing values for the same facet', () => {
+    addEntityFacetValue(db, 'a.jpg', 'albums', 'Road Trip');
+    addEntityFacetValue(db, 'a.jpg', 'albums', 'Favourites');
+    expect(listFacetValuesForEntity(db, 'a.jpg', 'albums').sort()).toEqual(['Favourites', 'Road Trip']);
   });
 });
 

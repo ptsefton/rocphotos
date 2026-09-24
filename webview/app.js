@@ -1,7 +1,7 @@
 const IMAGE_ENTITY_TYPE = 'http://pcdm.org/models#Object';
-const FACET_NAMES = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'year'];
-const FACET_LABELS = { camera: 'Camera', lens: 'Lens', keyword: 'Keywords', rating: 'Rating', people: 'People', pets: 'Pets', year: 'Year', month: 'Month', day: 'Day', memberOf: 'Collection' };
-const FACET_ICONS = { people: '👤', pets: '🐕', keyword: '🏷️' };
+const FACET_NAMES = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'albums', 'year'];
+const FACET_LABELS = { camera: 'Camera', lens: 'Lens', keyword: 'Keywords', rating: 'Rating', people: 'People', pets: 'Pets', albums: 'Albums', year: 'Year', month: 'Month', day: 'Day', memberOf: 'Collection' };
+const FACET_ICONS = { people: '👤', pets: '🐕', keyword: '🏷️', albums: '📁' };
 
 // ro-crate-js wraps a scalar-assigned property (e.g. an image entity's
 // own dateCreated — see crateBuilder.js's own unwrap, which handles this

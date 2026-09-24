@@ -109,7 +109,7 @@ describe('GET /capabilities', () => {
   it('declares the supported facets', async () => {
     const res = await handleRequest({ method: 'GET', path: '/capabilities' });
     expect(res.status).toEqual(200);
-    expect(JSON.parse(res.body).search.facets).toEqual(['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'year']);
+    expect(JSON.parse(res.body).search.facets).toEqual(['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'albums', 'year']);
   });
 });
 
@@ -661,5 +661,39 @@ describe('Albums', () => {
   it('404s fetching an unknown album', async () => {
     const res = await handleRequest({ method: 'GET', path: '/albums/nope' });
     expect(res.status).toEqual(404);
+  });
+
+  it('makes album membership filterable and combinable with other facets, like people/pets already are', async () => {
+    const album = JSON.parse((await handleRequest({ method: 'POST', path: '/albums', body: { name: 'Road Trip' } })).body);
+    await handleRequest({
+      method: 'POST',
+      path: `/albums/${encodeURIComponent(album.id)}/add`,
+      body: { imageIds: ['2025/03/10/photo.jpg'] },
+    });
+
+    const res = await handleRequest({
+      method: 'POST',
+      path: '/search',
+      body: { filters: { albums: 'Road Trip' }, facets: ['albums'] },
+    });
+    const parsed = JSON.parse(res.body);
+    expect(parsed.entities.map((e) => e.id)).toEqual(['2025/03/10/photo.jpg']);
+    expect(parsed.facets.albums).toEqual([{ name: 'Road Trip', count: 1 }]);
+
+    // Combined with another active facet (camera) — photo.jpg has one,
+    // undated.jpg (never added to the album) does not.
+    const combined = await handleRequest({
+      method: 'POST',
+      path: '/search',
+      body: { filters: { albums: 'Road Trip', camera: 'Google Pixel 6a' } },
+    });
+    expect(JSON.parse(combined.body).entities.map((e) => e.id)).toEqual(['2025/03/10/photo.jpg']);
+
+    const mismatched = await handleRequest({
+      method: 'POST',
+      path: '/search',
+      body: { filters: { albums: 'Road Trip', camera: 'Canon EOS R5' } },
+    });
+    expect(JSON.parse(mismatched.body).entities).toEqual([]);
   });
 });

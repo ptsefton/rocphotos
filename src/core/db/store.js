@@ -380,6 +380,28 @@ export function setEntityFacetValues(driver, entityId, facetName, values) {
 }
 
 /**
+ * Adds one more value to an entity's existing set for a facet, without
+ * touching any other value already there — unlike setEntityFacetValues
+ * above, which always replaces the whole set (right for a facet whose
+ * complete membership is known at the point of writing it, like a
+ * rescan's own keywords/people/pets). Adding an image to one album must
+ * never erase its membership of any other album it is already in, which
+ * this call site has no way of knowing about (see the 'albums' facet in
+ * POST /albums/{id}/add).
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} entityId
+ * @param {string} facetName
+ * @param {string} value
+ */
+export function addEntityFacetValue(driver, entityId, facetName, value) {
+  driver.run(
+    'INSERT INTO entity_facets (entity_id, facet_name, value) VALUES (?, ?, ?) ON CONFLICT(entity_id, facet_name, value) DO NOTHING',
+    [entityId, facetName, value],
+  );
+}
+
+/**
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
  * @param {string} entityId
  * @param {string} facetName
@@ -436,7 +458,12 @@ export function listFilesForEntity(driver, entityId) {
 // interpolated directly into SQL as a quoted literal, never bound as a
 // parameter or taken from arbitrary caller input, so every name reaching
 // SQL must first be checked against this list.
-const STORED_FACETS = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets'];
+// 'albums' is populated by the album routes (POST /albums/{id}/add —
+// see addEntityFacetValue below), not at scan time like every other
+// facet here: album membership has no EXIF/XMP source on the file
+// itself, so a rescan never touches it, and it survives one exactly the
+// way an edited title/description/keyword already does.
+const STORED_FACETS = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'albums'];
 
 function assertKnownFacet(facetName) {
   if (facetName !== 'year' && !STORED_FACETS.includes(facetName)) {

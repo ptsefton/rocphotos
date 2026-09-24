@@ -11,6 +11,7 @@ import {
   crateDirPathFromEntityId,
   crateRelativeEntityId,
   setEntityFacetValues,
+  addEntityFacetValue,
   deleteEntityById,
   getEntityRating,
   upsertEntity,
@@ -41,9 +42,11 @@ import { serializeWrites } from '../writeQueue.js';
 // The facets this deployment supports: camera and lens (from EXIF),
 // keyword (from IPTC/XMP, possibly several per image), rating (an XMP
 // star rating, 1-5), people and pets (named MWG face/pet regions,
-// possibly several per image), and year (derived from the image's
+// possibly several per image), albums (Section 3's Albums — populated
+// by POST /albums/{id}/add, not derived from the file itself the way
+// every other facet here is), and year (derived from the image's
 // dateCreated).
-const SUPPORTED_FACETS = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'year'];
+const SUPPORTED_FACETS = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'albums', 'year'];
 
 const CAPABILITIES = {
   apiVersion: '0.1.0-partial',
@@ -104,7 +107,7 @@ function filtersFrom(source) {
   // 'month'/'day' are plain date-part filters, not facets of their own
   // (no sidebar breakdown of counts) — set by the viewer's clickable
   // date breadcrumb alongside 'year', see buildSearchQuery in db/store.js.
-  for (const key of ['entityType', 'memberOf', 'camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'year', 'month', 'day']) {
+  for (const key of ['entityType', 'memberOf', 'camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'albums', 'year', 'month', 'day']) {
     if (source[key]) filters[key] = source[key];
   }
   return filters;
@@ -580,6 +583,19 @@ export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
         });
         setAlbumEntity(rootCrate, { ...album, memberIds: [...existingMemberIds, ...newIds] });
         touchAlbum(store, album.id);
+        // Makes the album filterable as a facet, composable with every
+        // other one (camera, keyword, year, ...) — see the 'albums' entry
+        // in STORED_FACETS. Synced for every current member, not only the
+        // newly-added ones: addEntityFacetValue only ever adds (an image
+        // can be in several albums, so this must never replace its whole
+        // set), and is a no-op for a member that already has the row, so
+        // this is cheap — but it also means an album whose membership
+        // predates this facet existing (or a rescan gap, if one is ever
+        // introduced) self-heals the moment anything is next added to it,
+        // rather than staying permanently unfilterable.
+        for (const imageId of [...existingMemberIds, ...newIds]) {
+          addEntityFacetValue(store, imageId, 'albums', album.name);
+        }
         await saveEditedCrates(cache);
         await persistStore(store);
         return json(200, { added: newIds.length, errors });
