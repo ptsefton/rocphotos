@@ -24,6 +24,7 @@ import {
   addImageEntity,
   recordedModifiedTime,
   readImageRecord,
+  albumMemberIds,
 } from '../src/core/crateBuilder.js';
 import {
   PREVIEW_FILE_NAME,
@@ -58,8 +59,12 @@ import {
   listRoCrates,
   listEntities,
   listFiles,
+  getFileById,
+  getAlbumById,
+  albumEntityId,
 } from '../src/core/db/store.js';
 import { joinPath } from '../src/core/pathUtils.js';
+import { exportDirFor, exportFiles } from '../src/core/export.js';
 
 async function readExistingCrateJson(fsAdapter, dirPath) {
   const cratePath = joinPath(dirPath, CRATE_FILE_NAME);
@@ -443,6 +448,45 @@ async function exportExcel(rootDir, outputPath, { includeEntityCrates = false } 
   console.log(`Wrote ${roCrates.length} RO-Crate(s), ${entities.length} entities, ${files.length} files to ${outputPath}`);
 }
 
+// A first, deliberately minimal cut of Section 3's Albums export feature
+// (see the same route in arocapi/handler.js, which the CLI here mirrors
+// rather than calling over HTTP, since this needs no running server) —
+// copies each of an album's member files into `_exports/<album>/`,
+// preserving each one's own collection-relative path. No crate or other
+// metadata is written alongside them yet.
+async function exportAlbum(rootDir, albumName) {
+  const dbPath = path.join(rootDir, INDEX_FILE_NAME);
+  if (!fs.existsSync(dbPath)) {
+    throw new Error(`No index found at ${dbPath} — run 'rocphotos scan ${rootDir}' first.`);
+  }
+
+  const db = openNodeSqlite(dbPath);
+  ensureSchema(db);
+  const album = getAlbumById(db, albumEntityId(albumName));
+  if (!album) {
+    db.close();
+    throw new Error(`No album named "${albumName}" found in ${rootDir}.`);
+  }
+
+  const fsAdapter = createNodeFsAdapter(rootDir);
+  const rootCrateJson = await readExistingCrateJson(fsAdapter, '');
+  const rootCrate = loadOrCreateCrate(rootCrateJson);
+  const memberIds = albumMemberIds(rootCrate, album.id);
+  const relativePaths = memberIds.map((id) => getFileById(db, id)?.relative_path).filter(Boolean);
+  db.close();
+
+  const destDir = exportDirFor(album.name);
+  const { exported, errors } = await exportFiles(fsAdapter, destDir, relativePaths);
+
+  console.log(`Exported ${exported.length} file(s) from "${album.name}" to ${path.join(rootDir, destDir)}`);
+  if (errors.length > 0) {
+    console.error(`${errors.length} file(s) could not be exported:`);
+    for (const { relativePath, message } of errors) {
+      console.error(`  ${relativePath}: ${message}`);
+    }
+  }
+}
+
 const WEBVIEW_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'webview');
 const STATIC_MEDIA_TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
 
@@ -584,6 +628,7 @@ function fail(err) {
 function usage() {
   console.error('Usage: rocphotos scan <directory> [--fresh] [--reprocess] [--loose-root-images=move|ignore] [--loose-root-images-folder=<name>]');
   console.error('       rocphotos export-excel <directory> [output.xlsx] [--include-entity-crates]');
+  console.error('       rocphotos export-album <directory> <album name>');
   console.error('       rocphotos serve <directory> [--port=8420]');
   console.error('');
   console.error('serve requires the directory to already have been scanned (it reads the');
@@ -653,6 +698,16 @@ if (command === 'scan' && targetDir) {
   const resolvedDir = path.resolve(targetDir);
   const outputPath = path.resolve(extraArg || path.join(resolvedDir, 'rocphotos-index.xlsx'));
   exportExcel(resolvedDir, outputPath, { includeEntityCrates: Boolean(flags['include-entity-crates']) }).catch(fail);
+} else if (command === 'export-album' && targetDir) {
+  // Joined back together rather than using extraArg alone: an album name
+  // is free text a user picked, likely containing spaces, unlike every
+  // other command's single-word positional argument (a path, a filename).
+  const albumName = positional.slice(2).join(' ');
+  if (!albumName) {
+    fail(new Error('export-album requires an album name: rocphotos export-album <directory> <album name>'));
+  } else {
+    exportAlbum(path.resolve(targetDir), albumName).catch(fail);
+  }
 } else if (command === 'serve' && targetDir) {
   const port = flags.port ? Number(flags.port) : 8420;
   serve(path.resolve(targetDir), { port }).catch(fail);

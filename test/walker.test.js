@@ -78,6 +78,17 @@ describe('findCrateDirectories', () => {
     expect(crateDirs).toEqual([]);
   });
 
+  it('ignores its own _exports directory, so an exported album is never mistaken for a new sub-collection', async () => {
+    currentRoot = await createFixtureTree({
+      _exports: { 'road-trip': { '2024': { '01': { 'photo.jpg': '' } } } },
+    });
+
+    const fs = createNodeFsAdapter(currentRoot);
+    const crateDirs = await findCrateDirectories(fs);
+
+    expect(crateDirs).toEqual([]);
+  });
+
   it('honours a caller-supplied exclusion pattern, so a stray generated-gallery export is not mistaken for a crate', async () => {
     // Mirrors real-world junk: a day folder with no photos of its own,
     // whose only images live inside an old static-gallery export.

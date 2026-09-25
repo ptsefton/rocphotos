@@ -105,16 +105,18 @@ export function crateRelativeEntityId(roCrateId, collectionRelativeId) {
 }
 
 /**
- * A stable slug for a person/pet's name, used as the last path segment
- * of its entity id (see personEntityId/petEntityId): letters and digits
- * only, so the exact same name always produces the exact same id across
- * every crate and every rescan, regardless of which photo it was first
- * seen on.
+ * A stable slug for a person/pet/album's name, used as the last path
+ * segment of its entity id (see personEntityId/petEntityId/
+ * albumEntityId) and, for an album, as its export directory name too
+ * (see export.js): letters and digits only, so the exact same name
+ * always produces the exact same id/directory across every crate,
+ * every rescan, and every export, regardless of which photo it was
+ * first seen on.
  *
  * @param {string} name
  * @returns {string}
  */
-function nameSlug(name) {
+export function nameSlug(name) {
   return name.trim().replace(/[^\p{L}\p{N}]+/gu, '');
 }
 

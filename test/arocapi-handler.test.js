@@ -696,4 +696,28 @@ describe('Albums', () => {
     });
     expect(JSON.parse(mismatched.body).entities).toEqual([]);
   });
+
+  it('exports an album\'s member files into _exports/<album>, preserving each one\'s collection-relative path', async () => {
+    const album = JSON.parse((await handleRequest({ method: 'POST', path: '/albums', body: { name: 'Road Trip 2025' } })).body);
+    await handleRequest({
+      method: 'POST',
+      path: `/albums/${encodeURIComponent(album.id)}/add`,
+      body: { imageIds: ['2025/03/10/photo.jpg', '2025/03/10/undated.jpg'] },
+    });
+
+    const res = await handleRequest({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/export` });
+    expect(res.status).toEqual(200);
+    const result = JSON.parse(res.body);
+    expect(result).toEqual({ destDir: '_exports/RoadTrip2025', exported: 2, errors: [] });
+
+    const fsAdapter = createNodeFsAdapter(currentRoot);
+    expect(await fsAdapter.exists('_exports/RoadTrip2025/2025/03/10/photo.jpg')).toBe(true);
+    expect(await fsAdapter.exists('_exports/RoadTrip2025/2025/03/10/undated.jpg')).toBe(true);
+    expect(await fsAdapter.readFile('_exports/RoadTrip2025/2025/03/10/photo.jpg')).toEqual(await fsAdapter.readFile('2025/03/10/photo.jpg'));
+  });
+
+  it('404s exporting an unknown album', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/albums/nope/export' });
+    expect(res.status).toEqual(404);
+  });
 });

@@ -29,9 +29,13 @@
     #albums h2 { font-size: 0.85rem; text-transform: uppercase; color: #888; margin: 0 0 0.4rem; }
     #albums-list { max-height: 200px; overflow-y: auto; font-size: 0.85rem; }
     #albums-list:empty::after { content: 'No albums yet — use "New Album" to create one.'; color: #999; font-size: 0.78rem; }
-    .album-row { display: block; width: 100%; text-align: left; background: none; border: none; padding: 0.2rem 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+    .album-row { display: flex; align-items: center; border-radius: 4px; }
     .album-row:hover { background: #f0f0f0; }
     .album-row.active { background: #1a5fb4; color: #fff; }
+    .album-row-name { flex: 1; min-width: 0; text-align: left; background: none; border: none; padding: 0.2rem 0.4rem; cursor: pointer; font-size: 0.85rem; color: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .album-row-export { flex: none; background: none; border: none; cursor: pointer; padding: 0.2rem 0.4rem; font-size: 0.85rem; color: inherit; opacity: 0.65; }
+    .album-row-export:hover { opacity: 1; }
+    .album-row-export:disabled { opacity: 0.3; cursor: default; }
 
     .facet-group { margin-bottom: 1.5rem; }
     .facet-group h2 { font-size: 0.85rem; text-transform: uppercase; color: #888; margin: 0 0 0.4rem; }

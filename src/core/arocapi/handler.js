@@ -38,6 +38,7 @@ import { loadEntityFromCrate, loadRawCrate } from '../entityCrate.js';
 import { moveToTrash } from '../trash.js';
 import { joinPath } from '../pathUtils.js';
 import { serializeWrites } from '../writeQueue.js';
+import { exportDirFor, exportFiles } from '../export.js';
 
 // The facets this deployment supports: camera and lens (from EXIF),
 // keyword (from IPTC/XMP, possibly several per image), rating (an XMP
@@ -600,6 +601,31 @@ export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
         await persistStore(store);
         return json(200, { added: newIds.length, errors });
       });
+    }
+
+    // A first, deliberately minimal cut of Section 3's Albums export
+    // feature: copies each member's real file into `_exports/<album>/`
+    // (see export.js), preserving its own collection-relative path — a
+    // sparse mirror of just this album's files. No crate or other
+    // metadata is written alongside them yet (see Spec.md's Albums
+    // section for what's still to come). Uses this handler's own
+    // fsAdapter, the same one every other route here already writes
+    // through — in the browser Service-Worker run mode this is a
+    // subdirectory of the collection the user already granted access to,
+    // so exporting there needs no extra permission grant; exporting to a
+    // second, separate directory the user picks themselves is a possible
+    // future addition, not yet implemented.
+    if (method === 'POST' && parts[0] === 'albums' && parts.length === 3 && parts[2] === 'export') {
+      const album = getAlbumById(store, decodeURIComponent(parts[1]));
+      if (!album) return notFound();
+
+      const rootCrate = await loadRawCrate(fsAdapter, crateCache, crateEntityId(''));
+      const memberIds = albumMemberIds(rootCrate, album.id);
+      const relativePaths = memberIds.map((id) => getFileById(store, id)?.relative_path).filter(Boolean);
+
+      const destDir = exportDirFor(album.name);
+      const { exported, errors } = await exportFiles(fsAdapter, destDir, relativePaths);
+      return json(200, { destDir, exported: exported.length, errors });
     }
 
     return notFound(`No route for ${method} ${path}`);

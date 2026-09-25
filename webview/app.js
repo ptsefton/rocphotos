@@ -353,13 +353,44 @@ async function loadAlbumsList() {
     const result = await response.json();
     albumsListEl.innerHTML = '';
     for (const album of result.albums ?? []) {
-      const row = document.createElement('button');
-      row.type = 'button';
+      const row = document.createElement('div');
       row.className = 'album-row';
-      row.textContent = album.name;
-      row.title = album.description ?? '';
       row.dataset.albumName = album.name;
-      row.addEventListener('click', () => toggleFilter('albums', album.name));
+
+      const nameButton = document.createElement('button');
+      nameButton.type = 'button';
+      nameButton.className = 'album-row-name';
+      nameButton.textContent = album.name;
+      nameButton.title = album.description ?? '';
+      nameButton.addEventListener('click', () => toggleFilter('albums', album.name));
+      row.appendChild(nameButton);
+
+      // A first, deliberately minimal cut of Section 3's Albums export
+      // feature (see POST /albums/{id}/export in arocapi/handler.js):
+      // copies the album's files into _exports/<album>/ at the
+      // collection root, preserving each one's own relative path. No
+      // crate/metadata alongside them yet, and no second-directory
+      // picker for exporting outside the collection (relevant only in
+      // the browser-only run mode) — both possible future additions.
+      const exportButton = document.createElement('button');
+      exportButton.type = 'button';
+      exportButton.className = 'album-row-export';
+      exportButton.textContent = '⇩';
+      exportButton.title = `Export "${album.name}" into _exports/`;
+      exportButton.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        exportButton.disabled = true;
+        try {
+          const result = await postEdit(`/albums/${encodeURIComponent(album.id)}/export`, {});
+          statusEl.textContent = `Exported ${result.exported} file(s) from "${album.name}" into ${result.destDir}/`;
+        } catch (err) {
+          window.alert(`Could not export "${album.name}": ${err.message}`);
+        } finally {
+          exportButton.disabled = false;
+        }
+      });
+      row.appendChild(exportButton);
+
       albumsListEl.appendChild(row);
     }
     syncAlbumsActiveState();
