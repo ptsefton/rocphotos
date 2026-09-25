@@ -23,6 +23,14 @@ const activeFiltersEl = document.querySelector('#active-filters');
 const collectionsAllEl = document.querySelector('#collections-all');
 const collectionsTreeEl = document.querySelector('#collections-tree');
 const albumsListEl = document.querySelector('#albums-list');
+const exportAlbumButtonEl = document.querySelector('#export-album-button');
+
+// Every album, by id, from the same fetch that fills the sidebar's
+// Albums panel (see loadAlbumsList) — kept around so the top-bar Export
+// Album button (see updateExportAlbumButton) can look up the id it
+// needs from just the name held in activeFilters.albums, without a
+// separate request.
+let albumsById = new Map();
 const statusEl = document.querySelector('#status');
 const selectAllButtonEl = document.querySelector('#select-all');
 const gridEl = document.querySelector('#grid');
@@ -141,6 +149,7 @@ async function search() {
     renderSelectionBar();
     syncCollectionsActiveState();
     syncAlbumsActiveState();
+    updateExportAlbumButton();
     statusEl.textContent = `${result.total} image${result.total === 1 ? '' : 's'}`;
   } catch (err) {
     statusEl.textContent = `Error: ${err.message}`;
@@ -346,54 +355,63 @@ function syncAlbumsActiveState() {
   });
 }
 
+// The album the top-bar Export Album button currently targets, or null
+// when it is hidden — kept as its own variable (rather than re-deriving
+// it inside the click handler) since activeFilters.albums, the id it
+// resolves to, and what the button is currently wired to send must all
+// agree with each other at the moment it is actually clicked.
+let exportAlbumTarget = null;
+
+// Shows/hides and relabels the top-bar Export Album button to match
+// whichever album is currently selected via the 'albums' filter (see
+// syncAlbumsActiveState above — both the sidebar panel and the generic
+// Albums facet group set the same activeFilters.albums, so either one
+// makes this button appear). Explicit and easy to see on purpose,
+// unlike an earlier version of this feature (a small icon button on
+// every album row in the sidebar) that turned out to be both too easy
+// to click by accident and too small to notice.
+function updateExportAlbumButton() {
+  const name = activeFilters.albums;
+  exportAlbumTarget = name ? [...albumsById.values()].find((album) => album.name === name) ?? null : null;
+  exportAlbumButtonEl.classList.toggle('hidden', !exportAlbumTarget);
+  if (exportAlbumTarget) {
+    exportAlbumButtonEl.textContent = `Export ${exportAlbumTarget.name} Album`;
+  }
+}
+
+exportAlbumButtonEl.addEventListener('click', async () => {
+  if (!exportAlbumTarget) return;
+  const { id, name } = exportAlbumTarget;
+  exportAlbumButtonEl.disabled = true;
+  try {
+    const result = await postEdit(`/albums/${encodeURIComponent(id)}/export`, {});
+    statusEl.textContent = `Exported ${result.exported} file(s) from "${name}" into ${result.destDir}/`;
+  } catch (err) {
+    window.alert(`Could not export "${name}": ${err.message}`);
+  } finally {
+    exportAlbumButtonEl.disabled = false;
+  }
+});
+
 async function loadAlbumsList() {
   try {
     const response = await fetch('/api/albums');
     if (!response.ok) return;
     const result = await response.json();
+    albumsById = new Map((result.albums ?? []).map((album) => [album.id, album]));
     albumsListEl.innerHTML = '';
     for (const album of result.albums ?? []) {
-      const row = document.createElement('div');
+      const row = document.createElement('button');
+      row.type = 'button';
       row.className = 'album-row';
+      row.textContent = album.name;
+      row.title = album.description ?? '';
       row.dataset.albumName = album.name;
-
-      const nameButton = document.createElement('button');
-      nameButton.type = 'button';
-      nameButton.className = 'album-row-name';
-      nameButton.textContent = album.name;
-      nameButton.title = album.description ?? '';
-      nameButton.addEventListener('click', () => toggleFilter('albums', album.name));
-      row.appendChild(nameButton);
-
-      // A first, deliberately minimal cut of Section 3's Albums export
-      // feature (see POST /albums/{id}/export in arocapi/handler.js):
-      // copies the album's files into _exports/<album>/ at the
-      // collection root, preserving each one's own relative path. No
-      // crate/metadata alongside them yet, and no second-directory
-      // picker for exporting outside the collection (relevant only in
-      // the browser-only run mode) — both possible future additions.
-      const exportButton = document.createElement('button');
-      exportButton.type = 'button';
-      exportButton.className = 'album-row-export';
-      exportButton.textContent = '⇩';
-      exportButton.title = `Export "${album.name}" into _exports/`;
-      exportButton.addEventListener('click', async (event) => {
-        event.stopPropagation();
-        exportButton.disabled = true;
-        try {
-          const result = await postEdit(`/albums/${encodeURIComponent(album.id)}/export`, {});
-          statusEl.textContent = `Exported ${result.exported} file(s) from "${album.name}" into ${result.destDir}/`;
-        } catch (err) {
-          window.alert(`Could not export "${album.name}": ${err.message}`);
-        } finally {
-          exportButton.disabled = false;
-        }
-      });
-      row.appendChild(exportButton);
-
+      row.addEventListener('click', () => toggleFilter('albums', album.name));
       albumsListEl.appendChild(row);
     }
     syncAlbumsActiveState();
+    updateExportAlbumButton();
   } catch {
     // Albums nav is a secondary aid; leave the list empty rather than
     // blocking the rest of the page on this fetch.
