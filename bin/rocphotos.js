@@ -39,6 +39,7 @@ import {
   loadExcludedFilePatterns,
   compileNamePatternMatcher,
   addExcludedFiles,
+  loadWriteMetadataToFilesSetting,
 } from '../src/core/config.js';
 import {
   INDEX_FILE_NAME,
@@ -570,6 +571,17 @@ async function serve(rootDir, { port = 8420 } = {}) {
   if (!exiftoolAvailable) {
     console.warn('Warning: the `exiftool` binary was not found — confirming a recognized face will not be able to write it back into the photo file.');
   }
+  // Read once at startup, the same way exiftoolAvailable is — a change
+  // made via the Settings screen while this server is already running
+  // takes effect on its next restart, not immediately. Off by default,
+  // for a collection with no config file at all (see
+  // loadWriteMetadataToFilesSetting in config.js): a --fresh install or
+  // one scanned before this setting existed never writes to original
+  // files until someone explicitly turns it on.
+  const writeBackEnabled = await loadWriteMetadataToFilesSetting(fsAdapter);
+  if (exiftoolAvailable && !writeBackEnabled) {
+    console.warn('Note: writing recognized faces back into photo files is turned off for this collection (see Settings) — confirming a face will be refused until it is turned on.');
+  }
   const handleFacesRequest = createFacesHandler({
     mainStore: store,
     facesStore,
@@ -582,6 +594,7 @@ async function serve(rootDir, { port = 8420 } = {}) {
     writeFaceRegion: exiftoolAvailable
       ? (relativePath, options) => writeFaceRegion(path.join(rootDir, relativePath), options)
       : null,
+    writeBackEnabled,
   });
 
   const server = http.createServer(async (req, res) => {

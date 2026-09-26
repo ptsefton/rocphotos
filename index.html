@@ -33,29 +33,46 @@
     .status-badge.not-scanned { background: #eee; color: #555; }
     .status-badge.out-of-date { background: #fff1cc; color: #8a6100; }
     .status-badge.up-to-date { background: #e0f3e0; color: #1e6b1e; }
+
+    #settings { margin-bottom: 1.5rem; border-bottom: 1px solid #ddd; padding-bottom: 1.2rem; }
+    #settings h2, #find-photos h2 { font-size: 1rem; margin: 0 0 0.6rem; }
+    #settings label { display: block; margin-bottom: 0.4rem; }
+    #write-metadata-warning { background: #fff1cc; color: #8a6100; border: 1px solid #f0d68a; border-radius: 4px; padding: 0.5rem 0.7rem; font-size: 0.85rem; max-width: 40rem; margin: 0.4rem 0 0; }
+    #write-metadata-hint { color: #888; font-size: 0.8rem; margin: 0.3rem 0 0; }
   </style>
 </head>
 <body>
   <h1>RO-Crate Photo Manager</h1>
-  <header>
-    <button id="open-directory">Open Directory</button>
-    <label><input type="checkbox" id="always-rescan" /> Always process everything on open</label>
-  </header>
-  <div id="status">Choose a directory to begin.</div>
-  <p id="browse-link-wrap" hidden><a id="browse-link" href="/webview/index.html">Browse this collection &rarr;</a> (facets, keywords, ratings, people, pets — the same view as <code>rocphotos serve</code>)</p>
 
-  <section id="overview-section" hidden>
-    <h2>Sub-collections</h2>
-    <div id="overview-controls">
-      <button id="select-all">Select All</button>
-      <button id="select-none">Select None</button>
-      <button id="refresh-overview">Refresh Status</button>
-      <button id="process-selected">Process Selected</button>
-    </div>
-    <div id="overview-tree"></div>
+  <section id="settings">
+    <h2>Settings</h2>
+    <label><input type="checkbox" id="always-rescan" /> Always process everything on open</label>
+    <label><input type="checkbox" id="write-metadata-to-files" disabled /> Write recognized faces back into photo files</label>
+    <p id="write-metadata-warning">⚠️ This directly modifies your original photo files (via <code>exiftool</code>), with no backup of their previous bytes beyond whatever you already keep yourself. Off by default — only turn on if you understand the risk. This setting is saved per collection, in that collection's own <code>rocphotos.config.json</code>.</p>
+    <p id="write-metadata-hint">Open a directory below to change this setting for that collection.</p>
   </section>
 
-  <div id="results"></div>
+  <section id="find-photos">
+    <h2>Find Photos</h2>
+    <header>
+      <button id="open-directory">Open Directory</button>
+    </header>
+    <div id="status">Choose a directory to begin.</div>
+    <p id="browse-link-wrap" hidden><a id="browse-link" href="/webview/index.html">Browse this collection &rarr;</a> (facets, keywords, ratings, people, pets — the same view as <code>rocphotos serve</code>)</p>
+
+    <section id="overview-section" hidden>
+      <h2>Sub-collections</h2>
+      <div id="overview-controls">
+        <button id="select-all">Select All</button>
+        <button id="select-none">Select None</button>
+        <button id="refresh-overview">Refresh Status</button>
+        <button id="process-selected">Process Selected</button>
+      </div>
+      <div id="overview-tree"></div>
+    </section>
+
+    <div id="results"></div>
+  </section>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

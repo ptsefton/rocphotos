@@ -1,4 +1,4 @@
-# RO-Crate Image Manager irocrate — Specification
+# RO-Crate  Photos Specification
 
 ## 1. Purpose and Scope
 
@@ -8,7 +8,11 @@ The point of having the RO-Crates, with HTML views, is to provide a standards-ba
 
 The application adds RO-Crate HTML sites  crate hierarchy to provide static navigation through the collection, including basic configurable finding aids by time, subject, and image properties such as camera used (including people in the pictures and as photographers).
 
-T
+Key feratures:
+- Stand-off annotation of images with keywords, face regions etc
+- Optional writing-back metadata to images for interop with other tools in the future
+  - In place
+  - On export 
 
 ## 2. Data Model
 
@@ -23,16 +27,16 @@ The data structure is as follows:
 
 There's a _rocphotos directory with config/ and trash/ and backup/ directories (backup to be implemented later)
 
-### 2.2 RO-Crate models
+### 2.2 RO-Crate data
 
-Three kinds of RO-Crate exist in a scanned collection, each its own standalone `ro-crate-metadata.json` — a crate never depends on another crate's file to be a complete description of what it directly contains:
+Multiple kinds of RO-Crate exist in a scanned collection, each its own standalone `ro-crate-metadata.json` — a crate never depends on another crate's file to be a complete description of what it directly contains:
 
 - **The root crate**, one per collection, at the collection's own root directory: a `Collection` entity (PCDM's `http://pcdm.org/models#Collection`) that mainly exists to anchor the collection and list its sub-collections. In the case where the root directory holds images directly rather than sub-directories (Section 3.1's "Loose Images in the Collection Root"), it also holds `Object` entities the same way a sub-collection crate does, and is treated as the collection's only crate.
   - May also contain ImageGallery (from schema.org, needs no prefix in a crate) entities which are virtual collections of images
 - **Sub-collection crates**, one per sub-collection directory (Section 2.1) — also a `Collection` entity, `memberOf` the root — holding the actual `Object` entity per photo/scan in that directory: its EXIF-derived metadata (camera, lens, dates, keywords, rating), and an `ImageRegion` entity for every named face/pet box tagged on it, each pointing to a shared `Person`/`Pet` entity (Section 3.2). A `Person`/`Pet` depicted across several sub-collections is duplicated into each one that depicts them, rather than defined once and referenced from the rest — "the RO-Crate way."
-- **The faces crate** (`_rocphotos/faces/ro-crate-metadata.json`), a single crate outside the root/sub-collection hierarchy, holding one `FaceEmbedding` entity per confirmed face-recognition reference example (Section 3's Face Recognition). Each points back to the real `ImageRegion`/Person it came from rather than duplicating any image data, so it stays just a mirror, for inspectability — matching and review actually query its own companion SQLite file, `_rocphotos/faces/faces-index.sqlite`, not this crate.
+- **The faces crate** (`_rocphotos/faces/ro-crate-metadata.json`), a single crate outside the root/sub-collection hierarchy, holding one `FaceEmbedding` entity per confirmed face-recognition reference example (Section 3's Face Recognition). Each points back to the real `ImageRegion`/Person it came from rather than duplicating any image data, so it stays just a mirror, for inspectability — matching and review actually query its companion SQLite file, `_rocphotos/faces/faces-index.sqlite`, not this crate. There may be other similar data in the future for other kinds of objects.
 
-The main SQLite index (`rocphotos-index.sqlite`, Section 3.2) is a queryable, read-only materialisation of the root crate and every sub-collection crate combined — the faces crate and its own SQLite file are a separate, parallel pair, not folded into this index.
+The main SQLite index (`rocphotos-index.sqlite`, Section 3.2) is a queryable, read-only collection of the root crate and every sub-collection crate combined — the faces crate and its own SQLite file are a separate, parallel pair, not folded into this index.
 
 
 ## 3. Application Behaviour
@@ -64,6 +68,8 @@ Beyond these, a collection may contain directories, or individual files, that ar
 ```
 
 `excludeDirectories` and `excludeFiles` are each a list of regular expressions, tested against a directory's or file's own name (not its full path), at any depth in the walk; a file matching `excludeFiles` is treated as though it were not there at all, both as a possible crate-triggering image and as a member of whichever crate it would otherwise belong to. When present, `excludeDirectories` is used in place of the built-in dotfile default, so a configuration that still wants dotfiles excluded restates that pattern explicitly, keeping the effective stop-list fully visible in one place; `excludeFiles` has no built-in default; there is no filename pattern that is universally junk. This file is read through the same filesystem interface as everything else, so it is honoured identically by the command-line tool and by the browser SPA, which can only read files inside the directory the user has granted it access to.
+
+The same file also holds `writeMetadataToFiles` (boolean, default `false` when absent or the file itself does not exist), the one setting controlling whether confirming a recognized face is allowed to write into the original photo file at all (see the Face Recognition section's "Writing to the original file is off by default" — `loadWriteMetadataToFilesSetting`/`setWriteMetadataToFilesSetting` in `config.js`). Set via a checkbox on the Settings section of the initial screen (Section 4.1), not by hand-editing the file, though nothing stops a config author from doing so alongside `excludeDirectories`/`excludeFiles`.
 
 #### Loose Images in the Collection Root
 
@@ -125,6 +131,8 @@ The browser SPA does not yet offer either the interactive prompt or the command-
  Extends the existing Person and `ImageRegion` model (Section 3.2): a confirmed face becomes an ordinary `ImageRegion`, written into the photo file's own XMP metadata (via the system `exiftool` binary) exactly as a human-tagged face already is, then re-extracted through the same EXIF pipeline scanning itself uses — no separate code path for a machine-confirmed region's shape.
 
  **Library and runtime.** [face-api.js](https://github.com/justadudewhohacks/face-api.js) (TensorFlow.js-based, runs client-side) does face detection and produces a 128-d embedding vector per detected face, loaded from `webview/vendor/` (the UMD bundle and its model weight files, bundled as static assets — see vite.config.js). Because detection and embedding run entirely in the browser, this works the same way in both places the web view runs; only writing a confirmed region back into the photo file itself needs a real OS process (`exiftool`), so that one step — `POST /api/faces/confirm` — is only available from `rocphotos serve` (Section 4.1's desktop mode), not the browser-only Service-Worker mode. Every other route (submitting detections, listing them for review, rejecting a suggestion, Ignore, Ignore as stranger) works the same in both.
+
+ **Writing to the original file is off by default, per collection.** `writeFaceRegion` (`src/adapters/exiftoolWriteback.js`) uses exiftool's `-overwrite_original`, so there is no backup of a file's previous bytes beyond whatever the user's own backups already cover — confirming a face is otherwise the only thing in this whole app that modifies an original photo file at all (everything else — keywords, rating, title, description — writes only to the crate; see the Editing section above). `/confirm` therefore checks two independent things before it will touch a file, refusing with a distinct error for each: no `writeFaceRegion` implementation at all (`501` — the browser-only run mode, or exiftool not installed) versus one being available but this collection not having opted in (`403` — `writeBackEnabled`, read once at `rocphotos serve` startup from `loadWriteMetadataToFilesSetting`, Section 3.1). `createFacesHandler`'s own default for `writeBackEnabled` is `false`, not `true`, so a caller that forgets to pass it (a test, some future integration) fails safe rather than silently writing. The Settings section of the initial screen (Section 4.1) is where this is turned on, per collection, with an explicit warning. Getting `writeFaceRegion` itself fully tested and reliable — and, longer term, factoring its handling of other tools' MWG/XMP quirks (Section 3.2's Person/Pet section already lists a few) out into its own reusable library, rather than growing them ad hoc inside this app — remains ongoing work independent of this default.
 
  **Where reference data lives.** A dedicated crate, `_rocphotos/faces/ro-crate-metadata.json`, holds reference examples — one `FaceEmbedding` entity per confirmed face embedding, for inspectability. Each one records: the Person it is for (or no Person at all — see Ignoring as a stranger, below), the id of the real `ImageRegion` it came from (so it can always be re-cropped from the original photo on demand; no image data is duplicated), the embedding vector itself, and the name and version of the model that produced it, supplied by the browser (the actual source of truth for which model ran) and never assumed by the server. A companion SQLite file, `_rocphotos/faces/faces-index.sqlite`, is what matching and review actually query — the crate above is a mirror, not consulted at request time. It tracks: `scanned_images` (which images have been face-scanned already, keyed on the same modification-time skip already used for EXIF and thumbnails, so re-scanning a directory does not reprocess unchanged files, and a changed model name/version forces a re-scan), `reference_faces`, and `detections` (each with its status: `pending`, `confirmed`, `ignored`, or `auto_ignored`). Matching a new detection against the reference set is done in memory by comparing embeddings directly (Euclidean distance, face-api.js's own recommended 0.6 threshold), not as a SQL query — a personal collection's reference set is small enough that this needs no vector-search infrastructure.
 
@@ -233,9 +241,9 @@ A future release will have:
 
 The application is a single-page application (SPA) that executes in three modes:
 
-1. Entirely within the Google Chrome browser: no server-side component, with file access via the File System Access API. All processing, including file access, metadata extraction, RO-Crate manifest generation, and building the SQLite index (via `sql.js`, SQLite compiled to WASM — the exact same physical file format `node:sqlite` writes, so a collection indexed by either can be opened by the other), is performed client-side. After scanning, a link opens the same `webview/` view the CLI's `serve` command hosts (Section 3.2), backed here by a Service Worker rather than a real server.
+1. Entirely within the Google Chrome browser: no server-side component, with file access via the File System Access API. All processing, including file access, metadata extraction, RO-Crate manifest generation, and building the SQLite index (via `sql.js`, SQLite compiled to WASM — the exact same physical file format `node:sqlite` writes, so a collection indexed by either can be opened by the other), is performed client-side. After scanning, a link opens the same `webview/` view the CLI's `serve` command hosts (Section 3.2), backed here by a Service Worker rather than a real server. This mode's own initial screen (`index.html`/`src/main.js`, before any directory is opened) is called **Settings / Find Photos**: a Settings section (currently: "Always process everything on open", a per-machine `localStorage` preference; and "Write recognized faces back into photo files", a per-collection setting — Section 3.1 — disabled until a directory is open, since only then is there a `rocphotos.config.json` to read/save it against) above a Find Photos section (the "Open Directory" button and, once a directory is chosen, the sub-collection overview tree used to pick what to scan). It is the only settings surface in the whole app; `rocphotos serve`'s own web view (modes 2/3) has none, since every setting so far lives in the collection's own config file rather than needing a per-session control.
 2. As a long-running local process, started from the command line and left running, that serves the AROCAPI web view (Section 3.2) plus its HTTP endpoints, over `127.0.0.1` only, opened in a normal Chrome tab. This is a second, separate frontend from mode 1's scanning SPA, sharing the same underlying index and crates. This mode shares its implementation with the command-line tools (mode 3) rather than being a separately packaged native application.
-3. As a set of command-line tools (`rocphotos scan`, `rocphotos export-excel`, `rocphotos serve`) for scanning directories, building the SQLite index, exporting it for review, and serving it (mode 2), with full, unrestricted filesystem access via Node.js.
+3. As a set of command-line tools (`rocphotos scan`, `rocphotos export-excel`, `rocphotos export-album`, `rocphotos serve`) for scanning directories, building the SQLite index, exporting it for review, and serving it (mode 2), with full, unrestricted filesystem access via Node.js.
 
 ### 4.2 File System Access
 

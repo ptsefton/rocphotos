@@ -125,21 +125,28 @@ async function loadExistingFaceRegions(fsAdapter, mainStore, requestCrateCache, 
  * Spec.md's Face Recognition section). Detection and embedding both run
  * client-side (face-api.js, in the browser, in every run mode); this
  * handler only matches embeddings the browser already computed against
- * the reference set, stores pending detections for review, and — when a
- * `writeFaceRegion` implementation is supplied — writes a confirmed
- * match back into the photo file itself via the system `exiftool`
- * binary. Without one (the browser-only Service-Worker run mode, which
- * cannot shell out to an external process), every route still works
- * except /faces/confirm, which returns a clear error instead.
+ * the reference set, stores pending detections for review, and — only
+ * when a `writeFaceRegion` implementation is supplied AND
+ * `writeBackEnabled` is true — writes a confirmed match back into the
+ * photo file itself via the system `exiftool` binary. /faces/confirm
+ * refuses (with a distinct error for each reason) if either is missing:
+ * no `writeFaceRegion` means this run mode or machine cannot do it at
+ * all (the browser-only Service-Worker run mode, which cannot shell out
+ * to an external process; or exiftool not being installed); `writeBackEnabled`
+ * false means it could, but this collection has not opted in (see
+ * config.js's loadWriteMetadataToFilesSetting — off by default, since
+ * exiftool's own writeback has no backup of a file's previous bytes
+ * beyond whatever the user's own backups already cover).
  *
  * @param {object} deps
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver & {persist?: () => Promise<void>}} deps.mainStore - the main photo index
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver & {persist?: () => Promise<void>}} deps.facesStore - the faces companion index (_rocphotos/faces/faces-index.sqlite)
  * @param {import('../fsAdapter.js').FsAdapter} deps.fsAdapter
  * @param {(relativePath: string, options: {name: string, area: object, imageWidth: number, imageHeight: number}) => Promise<void>} [deps.writeFaceRegion]
+ * @param {boolean} [deps.writeBackEnabled] - this collection's own opt-in (see loadWriteMetadataToFilesSetting in config.js) — defaults to false (refuse) rather than true, so a caller that forgets to pass it fails safe instead of silently writing to original files
  * @param {Map<string, import('ro-crate').ROCrate>} [deps.crateCache] - the AROCAPI handler's own long-lived read cache (see arocapi/handler.js), shared here so /confirm's crate write is reflected immediately in GET /entity/{id}/metadata (the viewer's tags and its "Show faces" overlay) rather than only after the crate is next evicted/reloaded. Optional — a caller that never shares one (tests; the browser SW, which mints a fresh handler and cache per request anyway) just does not get this cross-handler sync, which is harmless in those cases.
  */
-export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion = null, crateCache = null }) {
+export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion = null, writeBackEnabled = false, crateCache = null }) {
   async function handleRequest({ method, path, query = {}, body = null }) {
     if (method === 'POST' && path === '/scan-status') {
       const imageIds = Array.isArray(body?.imageIds) ? body.imageIds : [];
@@ -454,7 +461,10 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
         // separate code path for a machine-confirmed region's shape.
     if (method === 'POST' && path === '/confirm') {
       if (!writeFaceRegion) {
-        return json(501, { error: 'Writing face regions back into photo files requires the desktop server (rocphotos serve), not the browser-only mode.' });
+        return json(501, { error: 'Writing face regions back into photo files requires the desktop server (rocphotos serve) with exiftool installed, not the browser-only mode.' });
+      }
+      if (!writeBackEnabled) {
+        return json(403, { error: 'Writing recognized faces back into photo files is turned off for this collection. Turn on "Write recognized faces back into photo files" in Settings to confirm faces.' });
       }
       const personName = typeof body?.personName === 'string' ? body.personName.trim() : '';
       if (!personName) return badRequest('personName is required');

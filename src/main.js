@@ -19,7 +19,13 @@ import {
   earliestDate,
 } from './core/htmlPreview.js';
 import { thumbnailPathFor } from './core/thumbnails.js';
-import { loadExcludedDirectoryPatterns, loadExcludedFilePatterns, compileNamePatternMatcher } from './core/config.js';
+import {
+  loadExcludedDirectoryPatterns,
+  loadExcludedFilePatterns,
+  compileNamePatternMatcher,
+  loadWriteMetadataToFilesSetting,
+  setWriteMetadataToFilesSetting,
+} from './core/config.js';
 import { buildOverview, buildOverviewTree, saveOverview, loadOverview } from './core/overview.js';
 import { joinPath } from './core/pathUtils.js';
 import { mediaTypeFor } from './core/imageTypes.js';
@@ -51,6 +57,8 @@ const ALWAYS_RESCAN_KEY = 'rocphotos.alwaysRescan';
 
 const openButton = document.querySelector('#open-directory');
 const alwaysRescanCheckbox = document.querySelector('#always-rescan');
+const writeMetadataCheckbox = document.querySelector('#write-metadata-to-files');
+const writeMetadataHintEl = document.querySelector('#write-metadata-hint');
 const statusEl = document.querySelector('#status');
 const resultsEl = document.querySelector('#results');
 const overviewSectionEl = document.querySelector('#overview-section');
@@ -104,6 +112,18 @@ registerServiceWorker();
 alwaysRescanCheckbox.checked = localStorage.getItem(ALWAYS_RESCAN_KEY) === 'true';
 alwaysRescanCheckbox.addEventListener('change', () => {
   localStorage.setItem(ALWAYS_RESCAN_KEY, String(alwaysRescanCheckbox.checked));
+});
+
+// Unlike always-rescan (a per-machine localStorage preference), this is
+// a per-collection setting stored in that collection's own
+// rocphotos.config.json (see loadWriteMetadataToFilesSetting/
+// setWriteMetadataToFilesSetting in config.js), since it is a safety
+// decision about that collection's own files, not this browser's own
+// convenience — disabled here until a directory is open and there is
+// somewhere to read/save it (see openDirectory below).
+writeMetadataCheckbox.addEventListener('change', async () => {
+  if (!fsAdapter) return;
+  await setWriteMetadataToFilesSetting(fsAdapter, writeMetadataCheckbox.checked);
 });
 
 async function readExistingCrateJson(dirPath) {
@@ -533,6 +553,10 @@ async function openDirectory() {
   // safe, including across postMessage to a Service Worker.
   await notifyServiceWorker({ type: 'set-root', handle });
   browseLinkWrapEl.hidden = false;
+
+  writeMetadataCheckbox.disabled = false;
+  writeMetadataCheckbox.checked = await loadWriteMetadataToFilesSetting(fsAdapter);
+  writeMetadataHintEl.hidden = true;
 
   if (alwaysRescanCheckbox.checked) {
     statusEl.textContent = 'Processing everything...';

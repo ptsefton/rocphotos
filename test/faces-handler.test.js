@@ -99,7 +99,7 @@ beforeEach(async () => {
   upsertFile(mainStore, { id: orientedId, entityId: orientedId, filename: 'oriented.jpg', mediaType: 'image/jpeg', size: 16, relativePath: orientedId });
 
   writeFaceRegion = vi.fn().mockResolvedValue(undefined);
-  handleRequest = createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion });
+  handleRequest = createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion, writeBackEnabled: true });
 });
 
 describe('POST /scan-status', () => {
@@ -552,6 +552,13 @@ describe('POST /confirm', () => {
     expect(res.status).toEqual(501);
   });
 
+  it('refuses when writeFaceRegion is available but writeBackEnabled is not passed (defaults to false), so a caller that forgets it fails safe rather than writing', async () => {
+    const handler = createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion });
+    const res = await handler({ method: 'POST', path: '/confirm', body: { detectionId: 'x', personName: 'Bob' } });
+    expect(res.status).toEqual(403);
+    expect(writeFaceRegion).not.toHaveBeenCalled();
+  });
+
   it('rejects a blank person name', async () => {
     const res = await handleRequest({ method: 'POST', path: '/confirm', body: { detectionId: 'x', personName: '  ' } });
     expect(res.status).toEqual(400);
@@ -689,7 +696,7 @@ describe('POST /confirm', () => {
     // even though the crate file and the index were both already correct.
     const crateCache = new Map();
     const arocapiHandler = createHandler({ store: mainStore, fsAdapter, crateCache });
-    const facesHandlerWithSharedCache = createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion, crateCache });
+    const facesHandlerWithSharedCache = createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion, writeBackEnabled: true, crateCache });
 
     // Populates the AROCAPI handler's cache with the pre-confirm crate —
     // the same thing opening the viewer on this photo beforehand would do.

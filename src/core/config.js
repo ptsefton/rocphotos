@@ -80,6 +80,54 @@ function escapeRegExp(name) {
   return name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Off unless a config file explicitly turns it on: writing a recognized
+// face back into the photo file itself (see faces/handler.js's /confirm
+// route and adapters/exiftoolWriteback.js) uses exiftool's
+// -overwrite_original, so there is no backup of the file's previous
+// bytes beyond whatever the user's own backups already cover. Safer to
+// require an explicit, per-collection opt-in than to risk modifying
+// original files by default.
+const DEFAULT_WRITE_METADATA_TO_FILES = false;
+
+/**
+ * Whether this collection has opted in to writing recognized faces back
+ * into the original photo files (see DEFAULT_WRITE_METADATA_TO_FILES
+ * above) — read from the same rocphotos.config.json as the exclusion
+ * lists, so the setting travels with the collection rather than being a
+ * per-machine preference, and is honoured the same way whether the
+ * collection is opened via the browser SPA or `rocphotos serve`.
+ *
+ * @param {import('./fsAdapter.js').FsAdapter} fsAdapter
+ * @returns {Promise<boolean>}
+ */
+export async function loadWriteMetadataToFilesSetting(fsAdapter) {
+  if (!(await fsAdapter.exists(CONFIG_FILE_NAME))) {
+    return DEFAULT_WRITE_METADATA_TO_FILES;
+  }
+
+  const bytes = await fsAdapter.readFile(CONFIG_FILE_NAME);
+  const config = JSON.parse(new TextDecoder().decode(bytes));
+  return config.writeMetadataToFiles === true;
+}
+
+/**
+ * Sets this collection's write-back opt-in (see
+ * loadWriteMetadataToFilesSetting above), merging with whatever else is
+ * already in the config file rather than overwriting it — same
+ * read-merge-write shape as addExcludedFiles.
+ *
+ * @param {import('./fsAdapter.js').FsAdapter} fsAdapter
+ * @param {boolean} enabled
+ */
+export async function setWriteMetadataToFilesSetting(fsAdapter, enabled) {
+  const existing = (await fsAdapter.exists(CONFIG_FILE_NAME))
+    ? JSON.parse(new TextDecoder().decode(await fsAdapter.readFile(CONFIG_FILE_NAME)))
+    : {};
+
+  const updated = { ...existing, writeMetadataToFiles: enabled === true };
+  await fsAdapter.writeFile(CONFIG_FILE_NAME, JSON.stringify(updated, null, 2));
+}
+
 /**
  * Adds one or more exact filenames to the config's excludeFiles list,
  * merging with (rather than overwriting) whatever is already there —
