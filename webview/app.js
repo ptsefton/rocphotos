@@ -1098,12 +1098,24 @@ function promptKeywords(description) {
 // one person.
 let knownPeople = [];
 
+// Same trick fetchKnownKeywords uses, and for the same reason: GET
+// /entities is AROCAPI's own paged listing (100 rows by default), so a
+// collection with more than one page of Person entities silently lost
+// everyone past it here — confirmed as a real bug (the datalist and
+// suggestion list both looked incomplete, with no error to explain
+// why). facets: ['people'] with limit: 0 asks for the facet's whole
+// value/count breakdown instead of a page of entities, which is never
+// paginated, the same way the Keywords sidebar list already isn't.
 async function fetchKnownPeople() {
   try {
-    const response = await fetch(`/api/entities?entityType=${encodeURIComponent('http://schema.org/Person')}`);
+    const response = await fetch('/api/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filters: {}, facets: ['people'], limit: 0 }),
+    });
     if (!response.ok) return [];
     const result = await response.json();
-    return result.entities.map((entity) => entity.name).sort((a, b) => a.localeCompare(b));
+    return (result.facets?.people ?? []).map((entry) => entry.name).sort((a, b) => a.localeCompare(b));
   } catch {
     return [];
   }
