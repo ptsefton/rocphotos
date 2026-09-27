@@ -84,6 +84,30 @@
     .face-match-thumb-actions button { flex: 1; background: #333; color: #eee; border: none; border-radius: 4px; padding: 0.2rem 0.3rem; font-size: 0.68rem; cursor: pointer; }
     .face-match-thumb-actions button:hover { background: #1a5fb4; }
 
+    #admin-panel { display: none; position: fixed; inset: 0; background: #fff; z-index: 100; flex-direction: column; padding: 1.5rem; box-sizing: border-box; overflow-y: auto; }
+    #admin-panel.open { display: flex; }
+    #admin-panel h2 { font-size: 1rem; margin: 0 0 0.6rem; }
+    #admin-panel-close { position: fixed; top: 1rem; right: 1.5rem; color: #333; font-size: 2rem; line-height: 1; cursor: pointer; background: none; border: none; }
+    #admin-status { color: #555; font-size: 0.9rem; margin-bottom: 1rem; }
+    #overview-controls { display: flex; gap: 0.6rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
+    #overview-controls button { background: none; border: 1px solid #bbb; border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.8rem; cursor: pointer; color: #333; }
+    #overview-controls button:hover { background: #f0f0f0; }
+    #overview-tree { max-width: 60rem; font-size: 0.88rem; }
+    #overview-tree ul { list-style: none; margin: 0; padding-left: 1.3rem; }
+    #overview-tree > ul { padding-left: 0; }
+    #overview-tree li { padding: 0.15rem 0; }
+    #overview-tree summary { cursor: pointer; }
+    #overview-tree summary::marker { color: #999; }
+    .tree-row { display: inline-flex; align-items: center; gap: 0.5rem; }
+    .tree-row .node-name { min-width: 3em; }
+    .tree-row .image-count { color: #888; font-size: 0.85em; }
+    .summary-badges { display: inline-flex; gap: 0.3rem; }
+    .status-badge { font-size: 0.7rem; padding: 0.08rem 0.5rem; border-radius: 9px; white-space: nowrap; }
+    .status-badge.not-scanned { background: #eee; color: #555; }
+    .status-badge.out-of-date { background: #fff1cc; color: #8a6100; }
+    .status-badge.up-to-date { background: #e0f3e0; color: #1e6b1e; }
+    .status-badge.invalid { background: #fbdcdc; color: #8a1c1c; }
+
     #selection-bar { display: none; align-items: center; gap: 0.6rem; background: #eef4fc; border: 1px solid #bcd6f2; border-radius: 4px; padding: 0.5rem 0.7rem; margin-bottom: 1rem; font-size: 0.85rem; flex-wrap: wrap; }
     #selection-bar.visible { display: flex; }
     #selection-bar button { background: #1a5fb4; color: #fff; border: none; border-radius: 4px; padding: 0.3rem 0.7rem; font-size: 0.82rem; cursor: pointer; }
@@ -211,6 +235,7 @@
     <div id="status-bar">
       <div id="status">Loading…</div>
       <button id="select-all">Select All</button>
+      <button id="admin-button">Scan Collection</button>
       <button id="recognize-faces-button">Recognize Faces</button>
       <button id="new-album-button">New Album</button>
       <button id="export-album-button" class="hidden">Export Album</button>
@@ -254,6 +279,21 @@
     <button id="faces-review-close" aria-label="Close">&times;</button>
     <h2 id="faces-review-heading">Review faces</h2>
     <div id="faces-review-list"></div>
+  </div>
+
+  <div id="admin-panel">
+    <button id="admin-panel-close" aria-label="Close">&times;</button>
+    <h2>Sub-collections</h2>
+    <div id="admin-status"></div>
+    <section id="overview-section" hidden>
+      <div id="overview-controls">
+        <button id="overview-select-all">Select All</button>
+        <button id="overview-select-none">Select None</button>
+        <button id="overview-refresh">Refresh Status</button>
+        <button id="overview-process">Process Selected</button>
+      </div>
+      <div id="overview-tree"></div>
+    </section>
   </div>
 
   <dialog id="keyword-dialog">

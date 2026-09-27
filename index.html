@@ -33,6 +33,7 @@
     .status-badge.not-scanned { background: #eee; color: #555; }
     .status-badge.out-of-date { background: #fff1cc; color: #8a6100; }
     .status-badge.up-to-date { background: #e0f3e0; color: #1e6b1e; }
+    .status-badge.invalid { background: #fbdcdc; color: #8a1c1c; }
 
     #settings { margin-bottom: 1.5rem; border-bottom: 1px solid #ddd; padding-bottom: 1.2rem; }
     #settings h2, #find-photos h2 { font-size: 1rem; margin: 0 0 0.6rem; }
@@ -63,10 +64,10 @@
     <section id="overview-section" hidden>
       <h2>Sub-collections</h2>
       <div id="overview-controls">
-        <button id="select-all">Select All</button>
-        <button id="select-none">Select None</button>
-        <button id="refresh-overview">Refresh Status</button>
-        <button id="process-selected">Process Selected</button>
+        <button id="overview-select-all">Select All</button>
+        <button id="overview-select-none">Select None</button>
+        <button id="overview-refresh">Refresh Status</button>
+        <button id="overview-process">Process Selected</button>
       </div>
       <div id="overview-tree"></div>
     </section>

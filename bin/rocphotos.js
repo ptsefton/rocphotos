@@ -8,30 +8,14 @@ import ExcelJS from 'exceljs';
 import { createNodeFsAdapter } from '../src/adapters/nodeFs.js';
 import { generateThumbnail } from '../src/adapters/nodeThumbnail.js';
 import { openNodeSqlite } from '../src/adapters/nodeSqlite.js';
-import { walkCollection, detectLooseRootImages } from '../src/core/walker.js';
-import { extractExif } from '../src/core/exif.js';
-import { mediaTypeFor } from '../src/core/imageTypes.js';
+import { detectLooseRootImages } from '../src/core/walker.js';
 import { createHandler } from '../src/core/arocapi/handler.js';
+import { createAdminHandler } from '../src/core/admin/handler.js';
 import { createFacesHandler } from '../src/core/faces/handler.js';
 import { ensureFacesSchema, FACES_INDEX_FILE_NAME } from '../src/core/faces/store.js';
 import { writeFaceRegion, isExiftoolAvailable } from '../src/adapters/exiftoolWriteback.js';
-import {
-  CRATE_FILE_NAME,
-  loadOrCreateCrate,
-  serializeCrate,
-  setDatasetName,
-  addSubCrateReference,
-  addImageEntity,
-  recordedModifiedTime,
-  readImageRecord,
-  albumMemberIds,
-} from '../src/core/crateBuilder.js';
-import {
-  PREVIEW_FILE_NAME,
-  renderSubCratePreview,
-  renderRootCratePreview,
-  earliestDate,
-} from '../src/core/htmlPreview.js';
+import { CRATE_FILE_NAME, loadOrCreateCrate, albumMemberIds } from '../src/core/crateBuilder.js';
+import { PREVIEW_FILE_NAME } from '../src/core/htmlPreview.js';
 import { thumbnailPathFor } from '../src/core/thumbnails.js';
 import { loadEntityFromCrate } from '../src/core/entityCrate.js';
 import {
@@ -43,24 +27,9 @@ import {
 } from '../src/core/config.js';
 import {
   INDEX_FILE_NAME,
-  ENTITY_TYPE_COLLECTION,
-  ENTITY_TYPE_IMAGE,
-  ENTITY_TYPE_PERSON,
-  ENTITY_TYPE_PET,
-  crateEntityId,
-  imageEntityId,
-  personEntityId,
-  petEntityId,
-  facetValuesFromRecord,
   ensureSchema,
-  upsertRoCrate,
-  upsertEntity,
-  setEntityFacetValues,
-  upsertFile,
   listRoCrates,
   listEntities,
-  listEntitiesForRoCrate,
-  getRoCrateById,
   listFiles,
   getFileById,
   getAlbumById,
@@ -68,15 +37,7 @@ import {
 } from '../src/core/db/store.js';
 import { joinPath } from '../src/core/pathUtils.js';
 import { exportDirFor, exportFiles } from '../src/core/export.js';
-
-async function readExistingCrateJson(fsAdapter, dirPath) {
-  const cratePath = joinPath(dirPath, CRATE_FILE_NAME);
-  if (await fsAdapter.exists(cratePath)) {
-    const bytes = await fsAdapter.readFile(cratePath);
-    return Buffer.from(bytes).toString('utf8');
-  }
-  return null;
-}
+import { scanCollection, bootstrapCollection, readExistingCrateJson } from '../src/core/scanCollection.js';
 
 // Attempts to generate a thumbnail from freshly-read image bytes. Only
 // called when the source file is already known to need (re)processing
@@ -224,205 +185,28 @@ async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false, repro
   }
 
   const fsAdapter = createNodeFsAdapter(rootDir);
-  let isExcludedDir = compileNamePatternMatcher(await loadExcludedDirectoryPatterns(fsAdapter));
-  let isExcludedFile = compileNamePatternMatcher(await loadExcludedFilePatterns(fsAdapter));
-
+  const isExcludedDir = compileNamePatternMatcher(await loadExcludedDirectoryPatterns(fsAdapter));
+  const isExcludedFile = compileNamePatternMatcher(await loadExcludedFilePatterns(fsAdapter));
+  // scanCollection below reloads exclude patterns itself, fresh, so
+  // resolving here (which can rewrite excludeFiles) does not need its own
+  // extra reload step before the walk that follows.
   await resolveLooseRootImages(fsAdapter, rootDir, isExcludedDir, isExcludedFile, looseRootImagesOptions);
-  // Reload in case resolving just wrote a new excludeFiles entry.
-  isExcludedDir = compileNamePatternMatcher(await loadExcludedDirectoryPatterns(fsAdapter));
-  isExcludedFile = compileNamePatternMatcher(await loadExcludedFilePatterns(fsAdapter));
-
-  const { crateDirs } = await walkCollection(fsAdapter, isExcludedDir, isExcludedFile);
-
-  // --subdir restricts the (potentially expensive) per-directory work below
-  // to just these sub-collections, so a huge collection can be indexed
-  // incrementally instead of in one single, all-or-nothing pass. A path
-  // matches if it *is* one of the requested subdirs, or is nested under
-  // one — "2006" also selects "2006/01/03". Root's own directly-contained
-  // images (a collection that keeps loose images rather than moving them
-  // into dated subfolders — see --loose-root-images) are cheap and always
-  // processed regardless, since --subdir's purpose is limiting the
-  // expensive recursive work, not root's own bookkeeping.
-  const isSelected = (crateDirPath) =>
-    subdirs.length === 0 || subdirs.some((s) => crateDirPath === s || crateDirPath.startsWith(`${s}/`));
-
-  const rootCrateJson = await readExistingCrateJson(fsAdapter, '');
-  let rootCrate;
-  try {
-    rootCrate = loadOrCreateCrate(rootCrateJson);
-  } catch (err) {
-    throw new Error(`${path.join(rootDir, CRATE_FILE_NAME)} is not a valid RO-Crate (${err.message}) — move or remove it before scanning this collection.`);
-  }
-  const rootName = path.basename(rootDir);
-  setDatasetName(rootCrate, rootName);
 
   const db = openNodeSqlite(path.join(rootDir, INDEX_FILE_NAME));
   ensureSchema(db);
-  // ro_crates.id and entities.ro_crate_id both use the crate entity id
-  // convention (crateEntityId: './' for root, '<path>/' for a sub-crate)
-  // rather than the raw directory path, so every crate-identifying column
-  // — ro_crates.id, entities.ro_crate_id, a crate's own entities.id, and
-  // entities.member_of — shares the one value for the same crate, and the
-  // root crate never shows as a blank cell. ro_crates.path keeps the real
-  // directory path for filesystem purposes, using '.' rather than an
-  // empty string for the root, for the same reason.
-  upsertRoCrate(db, { id: crateEntityId(''), path: '.', name: rootName });
-  upsertEntity(db, { id: crateEntityId(''), roCrateId: crateEntityId(''), entityType: ENTITY_TYPE_COLLECTION, name: rootName, memberOf: null });
+  const rootName = path.basename(rootDir);
 
-  const subCrateSummaries = [];
-  let rootImageRecords = null;
-  const skippedForSubdir = [];
-  const failedToLoad = [];
-
-  for (const { path: crateDirPath, images } of crateDirs) {
-    const isRoot = crateDirPath === '';
-
-    if (!isRoot && !isSelected(crateDirPath)) {
-      // Not part of this run — left entirely untouched (not even read),
-      // so an incompatible or corrupt crate file elsewhere in the tree
-      // (see failedToLoad below) never blocks indexing the subdirs the
-      // caller actually asked for. Still contributes to the root preview
-      // if an earlier run already indexed it; otherwise there is nothing
-      // yet to show for it.
-      skippedForSubdir.push(crateDirPath);
-      const existingRoCrate = getRoCrateById(db, crateEntityId(crateDirPath));
-      if (existingRoCrate) {
-        const existingImages = listEntitiesForRoCrate(db, crateEntityId(crateDirPath))
-          .filter((entity) => entity.entity_type === ENTITY_TYPE_IMAGE);
-        subCrateSummaries.push({
-          path: crateDirPath,
-          imageCount: existingImages.length,
-          representativeDate: earliestDate(existingImages.map((entity) => ({ dateCreated: entity.date_created }))),
-        });
-      }
-      continue;
-    }
-
-    const subCrateJson = isRoot ? rootCrateJson : await readExistingCrateJson(fsAdapter, crateDirPath);
-    let subCrate;
-    try {
-      subCrate = isRoot ? rootCrate : loadOrCreateCrate(subCrateJson);
-    } catch (err) {
-      // One incompatible or corrupt existing crate file should not abort
-      // indexing everything else — left untouched, exactly like a
-      // not-selected directory above, so a later scan (once the file is
-      // fixed, moved, or removed) can pick it up normally.
-      failedToLoad.push({ path: crateDirPath, message: err.message });
-      console.error(`Skipping ${crateDirPath}: ${joinPath(crateDirPath, CRATE_FILE_NAME)} is not a valid RO-Crate (${err.message}) — move or remove it, then re-scan this directory.`);
-      continue;
-    }
-
-    if (!isRoot) {
-      addSubCrateReference(rootCrate, crateDirPath);
-    }
-    const crateName = crateDirPath || rootName;
-    setDatasetName(subCrate, crateName);
-
-    if (!isRoot) {
-      upsertRoCrate(db, { id: crateEntityId(crateDirPath), path: crateDirPath, name: crateName });
-      upsertEntity(db, {
-        id: crateEntityId(crateDirPath),
-        roCrateId: crateEntityId(crateDirPath),
-        entityType: ENTITY_TYPE_COLLECTION,
-        name: crateName,
-        memberOf: crateEntityId(''),
-      });
-    }
-
-    const imageRecords = [];
-    for (const imagePath of images) {
-      const fullImagePath = joinPath(crateDirPath, imagePath);
-      const { modifiedTime, size } = await fsAdapter.stat(fullImagePath);
-      const recordedTime = recordedModifiedTime(subCrate, imagePath);
-
-      let record;
-      if (!reprocess && recordedTime !== null && modifiedTime <= recordedTime) {
-        // Unchanged since it was last processed (successfully or not):
-        // reuse the existing entity rather than re-reading and
-        // re-parsing the file and re-attempting a thumbnail. --reprocess
-        // bypasses this, for picking up a change to what scanning itself
-        // extracts (a newly-added EXIF field, say) from files that are
-        // otherwise unchanged, without needing --fresh to also throw away
-        // the root crate and index.
-        record = readImageRecord(subCrate, imagePath);
-      } else {
-        const bytes = await fsAdapter.readFile(fullImagePath);
-        const { exif, error: exifError } = await extractExif(bytes);
-        const { thumbnailPath, error: thumbnailError } = await generateThumbnailFor(fsAdapter, crateDirPath, imagePath, bytes);
-        record = addImageEntity(subCrate, {
-          path: imagePath,
-          exif,
-          exifError,
-          thumbnailPath,
-          thumbnailError,
-          sourceModifiedAt: modifiedTime,
-        });
-      }
-      imageRecords.push(record);
-
-      const entityId = imageEntityId(crateDirPath, imagePath);
-      upsertEntity(db, {
-        id: entityId,
-        roCrateId: crateEntityId(crateDirPath),
-        entityType: ENTITY_TYPE_IMAGE,
-        name: record.name,
-        title: record.title,
-        description: record.description,
-        processingError: record.processingError,
-        memberOf: crateEntityId(crateDirPath),
-        dateCreated: record.dateCreated,
-      });
-      const { camera, lens } = facetValuesFromRecord(record);
-      setEntityFacetValues(db, entityId, 'camera', camera ? [camera] : []);
-      setEntityFacetValues(db, entityId, 'lens', lens ? [lens] : []);
-      setEntityFacetValues(db, entityId, 'keyword', record.keywords);
-      setEntityFacetValues(db, entityId, 'rating', record.rating !== null ? [String(record.rating)] : []);
-      setEntityFacetValues(db, entityId, 'people', record.people);
-      setEntityFacetValues(db, entityId, 'pets', record.pets);
-      // A person/pet entity is recorded in the index the first time it is
-      // found; upserting on every later sighting (here, and in every other
-      // crate that also depicts them) is a no-op beyond that first time,
-      // since name is all there currently is to record about them.
-      for (const name of record.people) {
-        upsertEntity(db, { id: personEntityId(name), roCrateId: crateEntityId(crateDirPath), entityType: ENTITY_TYPE_PERSON, name });
-      }
-      for (const name of record.pets) {
-        upsertEntity(db, { id: petEntityId(name), roCrateId: crateEntityId(crateDirPath), entityType: ENTITY_TYPE_PET, name });
-      }
-      upsertFile(db, {
-        id: entityId,
-        entityId,
-        filename: record.name,
-        mediaType: mediaTypeFor(record.name),
-        size,
-        relativePath: entityId,
-      });
-    }
-
-    if (isRoot) {
-      // The root directory itself directly contains images: it is both the
-      // root crate and the only crate, so its preview is a thumbnail
-      // gallery rather than date-based navigation into sub-collections.
-      rootImageRecords = imageRecords;
-    } else {
-      await fsAdapter.writeFile(joinPath(crateDirPath, CRATE_FILE_NAME), serializeCrate(subCrate));
-
-      const depth = crateDirPath.split('/').length;
-      const backLink = '../'.repeat(depth) + PREVIEW_FILE_NAME;
-      const html = renderSubCratePreview({ name: crateName, images: imageRecords, backLink });
-      await fsAdapter.writeFile(joinPath(crateDirPath, PREVIEW_FILE_NAME), html);
-
-      subCrateSummaries.push({ path: crateDirPath, imageCount: images.length, representativeDate: earliestDate(imageRecords) });
-    }
+  let result;
+  try {
+    result = await scanCollection({ fsAdapter, db, rootName, subdirs, reprocess, generateThumbnailFor });
+  } finally {
+    db.close();
   }
 
-  db.close();
-
-  await fsAdapter.writeFile(CRATE_FILE_NAME, serializeCrate(rootCrate));
-  const rootHtml = rootImageRecords
-    ? renderSubCratePreview({ name: rootName, images: rootImageRecords })
-    : renderRootCratePreview({ name: rootName, subCrates: subCrateSummaries });
-  await fsAdapter.writeFile(PREVIEW_FILE_NAME, rootHtml);
+  const { crateDirs, skippedForSubdir, failedToLoad } = result;
+  for (const { path: crateDirPath, message } of failedToLoad) {
+    console.error(`Skipping ${crateDirPath}: ${joinPath(crateDirPath, CRATE_FILE_NAME)} is not a valid RO-Crate (${message}) — move or remove it, then re-scan this directory.`);
+  }
 
   const processedCount = crateDirs.length - skippedForSubdir.length - failedToLoad.length;
   console.log(`Scanned ${processedCount} crate(s) under ${rootDir}`);
@@ -598,9 +382,6 @@ async function serveStaticFile(res, pathname) {
 // a one-off dev-server session, opened in a normal Chrome tab.
 async function serve(rootDir, { port = 8420 } = {}) {
   const dbPath = path.join(rootDir, INDEX_FILE_NAME);
-  if (!fs.existsSync(dbPath)) {
-    throw new Error(`No index found at ${dbPath} — run 'rocphotos scan ${rootDir}' first.`);
-  }
 
   const fsAdapter = createNodeFsAdapter(rootDir);
   const store = openNodeSqlite(dbPath);
@@ -614,6 +395,15 @@ async function serve(rootDir, { port = 8420 } = {}) {
   // CREATE TABLE IF NOT EXISTS added for a new feature never actually ran
   // against an already-scanned collection until its next full rescan.
   ensureSchema(store);
+  // A brand new directory, never scanned at all (no rocphotos scan CLI
+  // run, and openNodeSqlite above just auto-created an empty index file)
+  // gets an empty root crate and config here — idempotent, so this is
+  // just as harmless to run again against an already-scanned collection.
+  // This is what lets `serve` be the very first thing run against a
+  // fresh collection: the admin screen (below) can then show every
+  // sub-collection as not-scanned yet and let the user pick what to
+  // process, rather than requiring a CLI scan first.
+  await bootstrapCollection({ fsAdapter, db: store, rootName: path.basename(rootDir) });
   // Shared with the faces handler below (see its own crateCache param):
   // this is the AROCAPI handler's long-lived read cache for GET
   // /entity/{id}/metadata (the viewer's tags and "Show faces" overlay).
@@ -623,6 +413,13 @@ async function serve(rootDir, { port = 8420 } = {}) {
   // until restarted.
   const crateCache = new Map();
   const handleRequest = createHandler({ store, fsAdapter, crateCache });
+  const handleAdminRequest = createAdminHandler({
+    db: store,
+    fsAdapter,
+    rootName: path.basename(rootDir),
+    crateCache,
+    generateThumbnailFor,
+  });
 
   const facesDbPath = path.join(rootDir, FACES_INDEX_FILE_NAME);
   fs.mkdirSync(path.dirname(facesDbPath), { recursive: true });
@@ -669,6 +466,13 @@ async function serve(rootDir, { port = 8420 } = {}) {
         const result = await handleFacesRequest({ method: req.method, path: apiPath, query, body });
         res.writeHead(result.status, result.headers);
         res.end(result.body instanceof Uint8Array ? Buffer.from(result.body) : result.body);
+      } else if (url.pathname.startsWith('/api/admin/')) {
+        const query = Object.fromEntries(url.searchParams);
+        const body = req.method === 'POST' ? await readJsonBody(req) : null;
+        const apiPath = url.pathname.slice('/api/admin'.length) || '/';
+        const result = await handleAdminRequest({ method: req.method, path: apiPath, query, body });
+        res.writeHead(result.status, result.headers);
+        res.end(result.body instanceof Uint8Array ? Buffer.from(result.body) : result.body);
       } else if (url.pathname.startsWith('/api/') || url.pathname === '/api') {
         const query = Object.fromEntries(url.searchParams);
         const body = req.method === 'POST' ? await readJsonBody(req) : null;
@@ -706,8 +510,10 @@ function usage() {
   console.error('       rocphotos export-album <directory> <album name>');
   console.error('       rocphotos serve <directory> [--port=8420]');
   console.error('');
-  console.error('serve requires the directory to already have been scanned (it reads the');
-  console.error('SQLite index, it does not build it) and binds to 127.0.0.1 only.');
+  console.error('serve binds to 127.0.0.1 only. A directory never scanned at all gets an empty');
+  console.error('root crate and config bootstrapped automatically, and the web view opens');
+  console.error('straight into its own "Scan Collection" admin screen to pick what to scan —');
+  console.error('running rocphotos scan first is no longer required, only ever a shortcut.');
   console.error('');
   console.error('--fresh deletes the SQLite index and the root crate\'s own metadata/preview');
   console.error('before scanning, so stale references to a sub-collection that has since been');

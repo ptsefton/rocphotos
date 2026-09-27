@@ -1,3 +1,5 @@
+import { renderOverviewTree, selectedOverviewPaths, setAllCrateCheckboxes } from './overviewUI.js';
+
 const IMAGE_ENTITY_TYPE = 'http://pcdm.org/models#Object';
 const FACET_NAMES = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'albums', 'year'];
 const FACET_LABELS = { camera: 'Camera', lens: 'Lens', keyword: 'Keywords', rating: 'Rating', people: 'People', pets: 'Pets', albums: 'Albums', year: 'Year', month: 'Month', day: 'Day', memberOf: 'Collection' };
@@ -24,6 +26,16 @@ const collectionsAllEl = document.querySelector('#collections-all');
 const collectionsTreeEl = document.querySelector('#collections-tree');
 const albumsListEl = document.querySelector('#albums-list');
 const exportAlbumButtonEl = document.querySelector('#export-album-button');
+const adminButtonEl = document.querySelector('#admin-button');
+const adminPanelEl = document.querySelector('#admin-panel');
+const adminPanelCloseEl = document.querySelector('#admin-panel-close');
+const adminStatusEl = document.querySelector('#admin-status');
+const overviewSectionEl = document.querySelector('#overview-section');
+const overviewTreeEl = document.querySelector('#overview-tree');
+const overviewSelectAllButtonEl = document.querySelector('#overview-select-all');
+const overviewSelectNoneButtonEl = document.querySelector('#overview-select-none');
+const overviewRefreshButtonEl = document.querySelector('#overview-refresh');
+const overviewProcessButtonEl = document.querySelector('#overview-process');
 
 // Every album, by id, from the same fetch that fills the sidebar's
 // Albums panel (see loadAlbumsList) — kept around so the top-bar Export
@@ -1831,6 +1843,90 @@ document.querySelector('#faces-review-close').addEventListener('click', () => {
   facesReviewEl.classList.remove('open');
 });
 
+// The "Sub-collections" admin screen — letting a large, decades-spanning
+// collection be scanned a few sub-collections at a time from here, the
+// same way the browser-tab SPA's own identical screen (index.html/
+// src/main.js) already lets it be done client-side. The tree-building/
+// rendering/checkbox logic itself (renderOverviewTree, selectedOverviewPaths,
+// setAllCrateCheckboxes) is shared, byte-for-byte, with that other page
+// — see overviewUI.js; only how an overview is fetched and how a
+// selection is actually processed differs here: both are a round trip to
+// this running server (src/core/admin/handler.js) rather than an
+// in-browser File System Access API walk.
+async function fetchOverview({ refresh = false } = {}) {
+  const response = await fetch(`/api/admin/overview${refresh ? '?refresh=true' : ''}`);
+  if (!response.ok) throw new Error(`Failed to load scan status: ${response.status}`);
+  return response.json();
+}
+
+async function showAdminOverview({ refresh = false } = {}) {
+  adminStatusEl.textContent = 'Checking collection status…';
+  const overview = await fetchOverview({ refresh });
+  renderOverviewTree({ sectionEl: overviewSectionEl, treeEl: overviewTreeEl, overview });
+  adminStatusEl.textContent = overview.subCollections.length === 0
+    ? 'Nothing found to scan.'
+    : 'Select which sub-collections to scan below, then click Process Selected.';
+  return overview;
+}
+
+function openAdminPanel() {
+  adminPanelEl.classList.add('open');
+  showAdminOverview().catch((err) => { adminStatusEl.textContent = `Error: ${err.message}`; });
+}
+
+adminButtonEl.addEventListener('click', openAdminPanel);
+adminPanelCloseEl.addEventListener('click', () => adminPanelEl.classList.remove('open'));
+overviewSelectAllButtonEl.addEventListener('click', () => setAllCrateCheckboxes(overviewTreeEl, true));
+overviewSelectNoneButtonEl.addEventListener('click', () => setAllCrateCheckboxes(overviewTreeEl, false));
+overviewRefreshButtonEl.addEventListener('click', () => {
+  showAdminOverview({ refresh: true }).catch((err) => { adminStatusEl.textContent = `Error: ${err.message}`; });
+});
+
+overviewProcessButtonEl.addEventListener('click', async () => {
+  const subdirs = [...selectedOverviewPaths(overviewTreeEl)];
+  if (subdirs.length === 0) {
+    adminStatusEl.textContent = 'Nothing selected.';
+    return;
+  }
+
+  adminStatusEl.textContent = 'Scanning selected sub-collections…';
+  try {
+    const response = await fetch('/api/admin/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subdirs }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? `Scan failed: ${response.status}`);
+
+    renderOverviewTree({ sectionEl: overviewSectionEl, treeEl: overviewTreeEl, overview: result.overview });
+    const failedNote = result.failedToLoad.length > 0
+      ? ` — ${result.failedToLoad.length} skipped (an existing crate file could not be read; see the server's own console)`
+      : '';
+    adminStatusEl.textContent = `Scanned ${result.scanned} sub-collection(s).${failedNote}`;
+    // The grid/facets/Collections panel need to pick up whatever this
+    // scan just added, immediately, the same way they already do after
+    // any other edit (see search's own callers elsewhere in this file).
+    await loadCollections();
+    await search();
+  } catch (err) {
+    adminStatusEl.textContent = `Error: ${err.message}`;
+  }
+});
+
 loadCollections();
 loadAlbumsList();
 search();
+
+// A brand new (or not-yet-touched) collection has nothing in the grid to
+// show yet — opened automatically here so there is always an obvious
+// next step, rather than a silently empty grid. Never opens itself again
+// once anything has been scanned, even partially, so it does not become
+// a nag on every server restart.
+fetchOverview()
+  .then((overview) => {
+    if (overview.subCollections.length > 0 && overview.subCollections.every((s) => s.status === 'not-scanned')) {
+      openAdminPanel();
+    }
+  })
+  .catch(() => {});

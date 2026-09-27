@@ -12,9 +12,14 @@ export const OVERVIEW_FILE_NAME = 'rocphotos-overview.json';
  * bytes (only a directory walk and a per-image modification-time check —
  * see buildOverview): 'not-scanned' (no ro-crate-metadata.json here yet),
  * 'out-of-date' (a crate exists, but at least one image's file has
- * changed since it was last recorded), or 'up-to-date'.
+ * changed since it was last recorded), 'up-to-date', or 'invalid' (a
+ * crate file exists but is not a loadable RO-Crate at all — see
+ * scanCollection.js's own identical tolerance of this for the actual
+ * scan itself; surfaced here rather than thrown, for the same reason: an
+ * incompatible or corrupt crate file anywhere in the tree must never
+ * crash the overview screen used to spot and work around exactly this).
  *
- * @typedef {'not-scanned'|'out-of-date'|'up-to-date'} ScanStatus
+ * @typedef {'not-scanned'|'out-of-date'|'up-to-date'|'invalid'} ScanStatus
  */
 
 /**
@@ -42,14 +47,21 @@ export async function buildOverview(fsAdapter, isExcludedDir, isExcludedFile) {
 
     if (await fsAdapter.exists(cratePath)) {
       const json = new TextDecoder().decode(await fsAdapter.readFile(cratePath));
-      const crate = loadOrCreateCrate(json);
-      status = 'up-to-date';
-      for (const imagePath of images) {
-        const { modifiedTime } = await fsAdapter.stat(joinPath(crateDirPath, imagePath));
-        const recordedTime = recordedModifiedTime(crate, imagePath);
-        if (recordedTime === null || modifiedTime > recordedTime) {
-          status = 'out-of-date';
-          break;
+      let crate = null;
+      try {
+        crate = loadOrCreateCrate(json);
+      } catch {
+        status = 'invalid';
+      }
+      if (crate) {
+        status = 'up-to-date';
+        for (const imagePath of images) {
+          const { modifiedTime } = await fsAdapter.stat(joinPath(crateDirPath, imagePath));
+          const recordedTime = recordedModifiedTime(crate, imagePath);
+          if (recordedTime === null || modifiedTime > recordedTime) {
+            status = 'out-of-date';
+            break;
+          }
         }
       }
     }
@@ -58,98 +70,6 @@ export async function buildOverview(fsAdapter, isExcludedDir, isExcludedFile) {
   }
 
   return { generatedAt: new Date().toISOString(), subCollections };
-}
-
-/**
- * A folder or crate node in the tree buildOverviewTree returns. A crate
- * (`isCrate: true`) is always a leaf — a crate boundary absorbs
- * everything beneath it, so nothing can be nested inside one — and
- * carries its own status and image count. A plain folder (an
- * intermediate directory above one or more crate boundaries, e.g. a year
- * or month directory that is not itself a crate) has no status of its
- * own; `summary` is the count of its descendant crates in each status,
- * for showing a folder's overall progress without listing every crate
- * beneath it.
- *
- * @typedef {object} OverviewNode
- * @property {string} name - this node's own path segment (e.g. "2024"), or '' for the collection root
- * @property {string} path - full path from the collection root (e.g. "2024/03")
- * @property {boolean} isCrate
- * @property {ScanStatus} [status] - only set when isCrate is true
- * @property {number} [imageCount] - only set when isCrate is true
- * @property {OverviewNode[]} children - empty for a crate
- * @property {{notScanned: number, outOfDate: number, upToDate: number, imageCount: number}} summary - totals over this node and every descendant crate
- */
-
-/**
- * Arranges a flat sub-collection list (as buildOverview/loadOverview
- * produce, and as rocphotos-overview.json persists) into the actual
- * directory tree above each crate boundary — a year, then a month, then
- * a day-crate, say, though the real shape depends entirely on the
- * collection's own layout. The flat list is what gets persisted (simple
- * or diffable); this tree is only ever computed from it in memory, for
- * rendering a collapsible overview that scales to a collection with many
- * hundreds of sub-collections, rather than one unbroken list of all of
- * them at once.
- *
- * @param {Array<{path: string, imageCount: number, status: ScanStatus}>} subCollections
- * @returns {OverviewNode}
- */
-export function buildOverviewTree(subCollections) {
-  const root = { name: '', path: '', isCrate: false, children: [] };
-
-  for (const sub of [...subCollections].sort((a, b) => a.path.localeCompare(b.path))) {
-    if (sub.path === '') {
-      // The root directory itself directly contains images: it is both
-      // the root crate and the only crate (see the data model), so it
-      // has no separate parent folder to nest under.
-      root.isCrate = true;
-      root.status = sub.status;
-      root.imageCount = sub.imageCount;
-      continue;
-    }
-
-    let node = root;
-    let accPath = '';
-    for (const part of sub.path.split('/')) {
-      accPath = accPath ? `${accPath}/${part}` : part;
-      let child = node.children.find((c) => c.name === part);
-      if (!child) {
-        child = { name: part, path: accPath, isCrate: false, children: [] };
-        node.children.push(child);
-      }
-      node = child;
-    }
-    node.isCrate = true;
-    node.status = sub.status;
-    node.imageCount = sub.imageCount;
-  }
-
-  computeOverviewSummaries(root);
-  return root;
-}
-
-function computeOverviewSummaries(node) {
-  if (node.isCrate) {
-    node.summary = {
-      notScanned: node.status === 'not-scanned' ? 1 : 0,
-      outOfDate: node.status === 'out-of-date' ? 1 : 0,
-      upToDate: node.status === 'up-to-date' ? 1 : 0,
-      imageCount: node.imageCount,
-    };
-    return node.summary;
-  }
-
-  const summary = { notScanned: 0, outOfDate: 0, upToDate: 0, imageCount: 0 };
-  for (const child of node.children) {
-    const childSummary = computeOverviewSummaries(child);
-    summary.notScanned += childSummary.notScanned;
-    summary.outOfDate += childSummary.outOfDate;
-    summary.upToDate += childSummary.upToDate;
-    summary.imageCount += childSummary.imageCount;
-  }
-  node.summary = summary;
-  return summary;
 }
 
 /**
