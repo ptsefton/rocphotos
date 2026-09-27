@@ -113,6 +113,43 @@ describe('GET /capabilities', () => {
   });
 });
 
+describe('GET /date-facet', () => {
+  // photo.jpg (from the shared fixture above) has today's date, not a
+  // fixed one (no EXIF date given, so addImageEntity falls back to its
+  // sourceModifiedAt) — these two extra, directly-inserted rows give
+  // fixed, known dates to assert against instead.
+  beforeEach(() => {
+    upsertEntity(db, { id: 'extra-a.jpg', roCrateId: crateEntityId('2025/03/10'), entityType: ENTITY_TYPE_IMAGE, name: 'extra-a.jpg', dateCreated: '2024-06-01T00:00:00.000Z' });
+    upsertEntity(db, { id: 'extra-b.jpg', roCrateId: crateEntityId('2025/03/10'), entityType: ENTITY_TYPE_IMAGE, name: 'extra-b.jpg', dateCreated: '2024-06-15T00:00:00.000Z' });
+  });
+
+  it('requires a valid granularity', async () => {
+    const res = await handleRequest({ method: 'GET', path: '/date-facet', query: { granularity: 'week' } });
+    expect(res.status).toEqual(400);
+  });
+
+  it('requires year for granularity=month, and year+month for granularity=day', async () => {
+    expect((await handleRequest({ method: 'GET', path: '/date-facet', query: { granularity: 'month' } })).status).toEqual(400);
+    expect((await handleRequest({ method: 'GET', path: '/date-facet', query: { granularity: 'day', year: '2024' } })).status).toEqual(400);
+  });
+
+  it('lists years across the whole collection', async () => {
+    const res = await handleRequest({ method: 'GET', path: '/date-facet', query: { granularity: 'year' } });
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body)).toEqual(expect.arrayContaining([{ value: '2024', count: 2 }]));
+  });
+
+  it('lists months within a year', async () => {
+    const res = await handleRequest({ method: 'GET', path: '/date-facet', query: { granularity: 'month', year: '2024' } });
+    expect(JSON.parse(res.body)).toEqual([{ value: '06', count: 2 }]);
+  });
+
+  it('lists days within a year and month', async () => {
+    const res = await handleRequest({ method: 'GET', path: '/date-facet', query: { granularity: 'day', year: '2024', month: '06' } });
+    expect(JSON.parse(res.body)).toEqual(expect.arrayContaining([{ value: '01', count: 1 }, { value: '15', count: 1 }]));
+  });
+});
+
 describe('GET /entities', () => {
   it('lists entities and applies a facet filter from the query string', async () => {
     const all = await handleRequest({ method: 'GET', path: '/entities', query: { entityType: ENTITY_TYPE_IMAGE } });

@@ -406,6 +406,21 @@ describe('search and facetCounts', () => {
     ]));
   });
 
+  it('computes month facet counts, scoped to a year the same way the Dates nav drills into one', () => {
+    const counts = facetCounts(db, 'month', { year: '2025' });
+    expect(counts).toEqual(expect.arrayContaining([
+      { value: '03', count: 1 },
+      { value: '06', count: 1 },
+    ]));
+    // 2024 has only c.jpg, in December.
+    expect(facetCounts(db, 'month', { year: '2024' })).toEqual([{ value: '12', count: 1 }]);
+  });
+
+  it('computes day facet counts, scoped to a year and month', () => {
+    expect(facetCounts(db, 'day', { year: '2025', month: '03' })).toEqual([{ value: '10', count: 1 }]);
+    expect(facetCounts(db, 'day', { year: '2024', month: '12' })).toEqual([{ value: '25', count: 1 }]);
+  });
+
   it('computes keyword facet counts', () => {
     const counts = facetCounts(db, 'keyword', {});
     expect(counts).toEqual(expect.arrayContaining([

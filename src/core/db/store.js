@@ -467,8 +467,17 @@ export function listFilesForEntity(driver, entityId) {
 // way an edited title/description/keyword already does.
 const STORED_FACETS = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'albums'];
 
+// Not stored rows in entity_facets, like STORED_FACETS — derived from
+// entities.date_created directly (see facetCounts) — but, unlike year,
+// only ever requested by the sidebar's own Dates nav (arocapi/handler.js's
+// /date-facet route), not general AROCAPI /search facets: a month or day
+// count spanning every year (or every month) is a much odder thing for a
+// generic client to ask for than the always-meaningful year, so this is
+// kept out of SUPPORTED_FACETS there rather than offered generally.
+const DATE_PART_FACETS = ['year', 'month', 'day'];
+
 function assertKnownFacet(facetName) {
-  if (facetName !== 'year' && !STORED_FACETS.includes(facetName)) {
+  if (!DATE_PART_FACETS.includes(facetName) && !STORED_FACETS.includes(facetName)) {
     throw new Error(`Unknown facet "${facetName}"`);
   }
 }
@@ -577,14 +586,22 @@ export function countSearchResults(driver, filters = {}) {
 
 /**
  * Value/count pairs for one facet dimension ('camera', 'lens', 'year',
- * or 'keyword'), most common first, computed against every *other*
- * active filter but not the facet's own (see buildSearchQuery), so
- * selecting a value for a different facet narrows these counts, but a
- * facet never narrows its own counts down to just its currently selected
- * value.
+ * 'month', 'day', or 'keyword'), most common first, computed against
+ * every *other* active filter but not the facet's own (see
+ * buildSearchQuery), so selecting a value for a different facet narrows
+ * these counts, but a facet never narrows its own counts down to just
+ * its currently selected value.
+ *
+ * 'month' and 'day' are only ever meaningfully scoped — a caller wants
+ * "which months exist within 2024" (`filters.year` set) or "which days
+ * within 2024-03" (`filters.year`+`filters.month` set), the same
+ * hierarchy the sidebar's Dates nav drills through one level at a time
+ * (arocapi/handler.js's /date-facet); an unscoped call still runs (no
+ * validation here forbids it) but aggregates that month/day number
+ * across every year/month, which is rarely what anyone actually wants.
  *
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
- * @param {'camera'|'lens'|'year'|'keyword'} facetName
+ * @param {'camera'|'lens'|'year'|'month'|'day'|'keyword'} facetName
  * @param {object} [filters] - see buildSearchQuery
  * @returns {Array<{value: string, count: number}>}
  */
@@ -592,8 +609,10 @@ export function facetCounts(driver, facetName, filters = {}) {
   assertKnownFacet(facetName);
   const { join, where, params } = buildSearchQuery(filters, facetName);
 
-  if (facetName === 'year') {
-    const column = 'substr(e.date_created, 1, 4)';
+  if (DATE_PART_FACETS.includes(facetName)) {
+    const column = facetName === 'year' ? 'substr(e.date_created, 1, 4)'
+      : facetName === 'month' ? 'substr(e.date_created, 6, 2)'
+        : 'substr(e.date_created, 9, 2)';
     const fullWhere = where ? `${where} AND ${column} IS NOT NULL` : `WHERE ${column} IS NOT NULL`;
     return driver.all(
       `SELECT ${column} as value, COUNT(DISTINCT e.id) as count FROM entities e${join} ${fullWhere} GROUP BY ${column} ORDER BY count DESC, value ASC`,

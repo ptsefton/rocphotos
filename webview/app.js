@@ -24,6 +24,8 @@ const facetsEl = document.querySelector('#facets');
 const activeFiltersEl = document.querySelector('#active-filters');
 const collectionsAllEl = document.querySelector('#collections-all');
 const collectionsTreeEl = document.querySelector('#collections-tree');
+const datesAllEl = document.querySelector('#dates-all');
+const datesTreeEl = document.querySelector('#dates-tree');
 const albumsListEl = document.querySelector('#albums-list');
 const exportAlbumButtonEl = document.querySelector('#export-album-button');
 const modeButtonEls = { explore: document.querySelector('#mode-explore'), scan: document.querySelector('#mode-scan'), settings: document.querySelector('#mode-settings') };
@@ -164,6 +166,7 @@ async function search() {
     renderGrid(result.entities);
     renderSelectionBar();
     syncCollectionsActiveState();
+    syncDatesActiveState();
     syncAlbumsActiveState();
     updateExportAlbumButton();
     statusEl.textContent = `${result.total} image${result.total === 1 ? '' : 's'}`;
@@ -191,19 +194,24 @@ function applyFilterAndCloseViewer(facetName, value) {
   search();
 }
 
-// Used by the viewer's date breadcrumb (see renderViewerBreadcrumb):
-// narrows to a year, a year+month, or a full year+month+day — always
-// replacing whichever of month/day was previously active rather than
-// layering on top of it, since clicking "2024" after "2024 › 09 › 03"
-// means "show me the whole year", not "the whole year, but only
-// September the 3rd". month/day are otherwise meaningless without the
-// year they belong to (see buildSearchQuery in db/store.js).
-function applyDateFilterAndCloseViewer(year, month, day) {
+// Shared by the viewer's date breadcrumb and the sidebar's own Dates nav
+// (see renderDateNode): narrows to a year, a year+month, or a full
+// year+month+day — always replacing whichever of month/day was
+// previously active rather than layering on top of it, since clicking
+// "2024" after "2024 › 09 › 03" means "show me the whole year", not "the
+// whole year, but only September the 3rd". month/day are otherwise
+// meaningless without the year they belong to (see buildSearchQuery in
+// db/store.js).
+function applyDateFilter(year, month, day) {
   activeFilters.year = year;
   if (month) activeFilters.month = month; else delete activeFilters.month;
   if (day) activeFilters.day = day; else delete activeFilters.day;
-  closeViewer();
   search();
+}
+
+function applyDateFilterAndCloseViewer(year, month, day) {
+  closeViewer();
+  applyDateFilter(year, month, day);
 }
 
 function renderFacets(facets = {}) {
@@ -287,7 +295,7 @@ function buildCollectionsTree(roCrates) {
 function collectionLabelEl(node) {
   if (node.id) {
     const row = document.createElement('button');
-    row.className = 'collection-row';
+    row.className = 'tree-node-button';
     row.textContent = node.label;
     row.dataset.collectionId = node.id;
     row.addEventListener('click', (event) => {
@@ -300,7 +308,7 @@ function collectionLabelEl(node) {
     return row;
   }
   const span = document.createElement('span');
-  span.className = 'collection-folder-name';
+  span.className = 'tree-group-label';
   span.textContent = node.name;
   return span;
 }
@@ -331,7 +339,7 @@ function renderCollectionsNode(node) {
 function syncCollectionsActiveState() {
   const activeId = activeFilters.memberOf;
   collectionsAllEl.classList.toggle('active', !activeId);
-  collectionsTreeEl.querySelectorAll('.collection-row').forEach((row) => {
+  collectionsTreeEl.querySelectorAll('.tree-node-button').forEach((row) => {
     row.classList.toggle('active', row.dataset.collectionId === activeId);
   });
 }
@@ -351,8 +359,135 @@ async function loadCollections() {
   }
 }
 
+// The Dates nav — a Year > Month > Day drill-down, each level fetched
+// lazily (only once a node is actually expanded) from GET /api/date-facet
+// (arocapi/handler.js — kept separate from AROCAPI's own /search facets;
+// see facetCounts in db/store.js for why), rather than one request for
+// the whole tree: a decades-spanning collection could mean many years
+// each with up to 12 months each with up to 31 days, and most of that is
+// never actually opened in a given session. A month's own count is a
+// natural batch size for "Recognize Faces" (Section 3's Face Recognition
+// — batch just means whatever the grid currently shows), which is why
+// this goes one level deeper than Collection Folders' own directory
+// tree bothers to.
+async function fetchDateFacet(granularity, params = {}) {
+  const query = new URLSearchParams({ granularity, ...params });
+  const response = await fetch(`/api/date-facet?${query}`);
+  if (!response.ok) return [];
+  return response.json();
+}
+
+// Builds one level's <li> row: a clickable button (sets year/year+month/
+// year+month+day, replacing whichever of month/day was previously active
+// — see applyDateFilter) plus, for year and month nodes, a nested
+// <details> that fetches and renders its own children the first time it
+// is opened.
+function renderDateNode({ value, count, granularity, year, month }) {
+  const li = document.createElement('li');
+  const isLeaf = granularity === 'day';
+
+  const labelText = `${value} (${count})`;
+  const filterValue = () => {
+    if (granularity === 'year') applyDateFilter(value, null, null);
+    else if (granularity === 'month') applyDateFilter(year, value, null);
+    else applyDateFilter(year, month, value);
+  };
+
+  if (isLeaf) {
+    const button = document.createElement('button');
+    button.className = 'tree-node-button';
+    button.textContent = labelText;
+    button.dataset.dateValue = `${year}-${month}-${value}`;
+    button.addEventListener('click', filterValue);
+    li.appendChild(button);
+    return li;
+  }
+
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  const button = document.createElement('button');
+  button.className = 'tree-node-button';
+  button.textContent = labelText;
+  button.dataset.dateValue = granularity === 'year' ? value : `${year}-${value}`;
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    filterValue();
+  });
+  summary.appendChild(button);
+  details.appendChild(summary);
+
+  const childList = document.createElement('ul');
+  details.appendChild(childList);
+
+  let loaded = false;
+  details.addEventListener('toggle', async () => {
+    if (!details.open || loaded) return;
+    loaded = true;
+    const childGranularity = granularity === 'year' ? 'month' : 'day';
+    const childParams = granularity === 'year' ? { year: value } : { year, month: value };
+    const children = await fetchDateFacet(childGranularity, childParams);
+    for (const child of children) {
+      childList.appendChild(renderDateNode({
+        value: child.value, count: child.count, granularity: childGranularity,
+        year: granularity === 'year' ? value : year,
+        month: granularity === 'year' ? undefined : value,
+      }));
+    }
+    syncDatesActiveState();
+  });
+
+  li.appendChild(details);
+  return li;
+}
+
+// Highlights whichever date node exactly matches the current year/month/
+// day filter, and re-opens (without re-fetching, since already-loaded
+// children stay in the DOM) every ancestor <details> above it, so a
+// selection made elsewhere (the viewer's own breadcrumb, "All Dates")
+// stays visible in the tree rather than only in the active-filters chip.
+function syncDatesActiveState() {
+  const { year, month, day } = activeFilters;
+  datesAllEl.classList.toggle('active', !year);
+  const targetValue = year ? (day ? `${year}-${month}-${day}` : month ? `${year}-${month}` : year) : null;
+  datesTreeEl.querySelectorAll('.tree-node-button').forEach((button) => {
+    const isActive = targetValue !== null && button.dataset.dateValue === targetValue;
+    button.classList.toggle('active', isActive);
+    if (isActive) {
+      let details = button.closest('li')?.parentElement?.closest('details');
+      while (details) {
+        details.open = true;
+        details = details.parentElement?.closest('details');
+      }
+    }
+  });
+}
+
+async function loadDates() {
+  try {
+    const years = await fetchDateFacet('year');
+    datesTreeEl.innerHTML = '';
+    const ul = document.createElement('ul');
+    for (const { value, count } of years) {
+      ul.appendChild(renderDateNode({ value, count, granularity: 'year' }));
+    }
+    datesTreeEl.appendChild(ul);
+    syncDatesActiveState();
+  } catch {
+    // Dates nav is a secondary aid; leave the tree empty rather than
+    // blocking the rest of the page on this fetch.
+  }
+}
+
 collectionsAllEl.addEventListener('click', () => {
   delete activeFilters.memberOf;
+  search();
+});
+
+datesAllEl.addEventListener('click', () => {
+  delete activeFilters.year;
+  delete activeFilters.month;
+  delete activeFilters.day;
   search();
 });
 
@@ -2004,6 +2139,7 @@ settingsFormEl.addEventListener('submit', async (event) => {
 });
 
 loadCollections();
+loadDates();
 loadAlbumsList();
 search();
 

@@ -16,21 +16,28 @@
     #sidebar { width: 260px; flex-shrink: 0; padding: 1rem; overflow-y: auto; border-right: 1px solid #ddd; box-sizing: border-box; }
     #main { flex: 1; overflow-y: auto; padding: 1rem; box-sizing: border-box; }
     h1 { font-size: 1.1rem; margin: 0 0 1rem; }
-    #collections { margin-bottom: 1.5rem; }
-    #collections h2 { font-size: 0.85rem; text-transform: uppercase; color: #888; margin: 0 0 0.4rem; }
-    #collections-all { display: block; width: 100%; text-align: left; background: none; border: none; padding: 0.25rem 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; margin-bottom: 0.3rem; }
-    #collections-all:hover { background: #f0f0f0; }
-    #collections-all.active { background: #1a5fb4; color: #fff; }
-    #collections-tree { max-height: 260px; overflow-y: auto; font-size: 0.85rem; }
-    #collections-tree ul { list-style: none; margin: 0; padding-left: 1.1rem; }
-    #collections-tree > ul { padding-left: 0; }
-    #collections-tree li { padding: 0.1rem 0; }
-    #collections-tree summary { cursor: pointer; }
-    #collections-tree summary::marker { color: #999; }
-    .collection-row { display: block; width: 100%; text-align: left; background: none; border: none; padding: 0.2rem 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
-    .collection-row:hover { background: #f0f0f0; }
-    .collection-row.active { background: #1a5fb4; color: #fff; }
-    .collection-folder-name { padding: 0.1rem 0.4rem; font-size: 0.85rem; }
+    /* A whole sidebar nav section (Collection Folders, Dates) rolls up
+       entirely behind its own <summary>, collapsed by default (no `open`
+       attribute), rather than only its individual tree nodes being
+       independently collapsible. */
+    .sidebar-section { margin-bottom: 1.5rem; }
+    .sidebar-section > summary { cursor: pointer; font-size: 0.85rem; text-transform: uppercase; color: #888; margin: 0 0 0.4rem; }
+    .sidebar-section > summary::marker { color: #999; }
+    .nav-all-button { display: block; width: 100%; text-align: left; background: none; border: none; padding: 0.25rem 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; margin-bottom: 0.3rem; }
+    .nav-all-button:hover { background: #f0f0f0; }
+    .nav-all-button.active { background: #1a5fb4; color: #fff; }
+    .tree-list { max-height: 260px; overflow-y: auto; font-size: 0.85rem; }
+    .tree-list ul { list-style: none; margin: 0; padding-left: 1.1rem; }
+    .tree-list > ul { padding-left: 0; }
+    .tree-list li { padding: 0.1rem 0; }
+    .tree-list summary { cursor: pointer; }
+    .tree-list summary::marker { color: #999; }
+    .tree-node-button { display: block; width: 100%; text-align: left; background: none; border: none; padding: 0.2rem 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+    .tree-node-button:hover { background: #f0f0f0; }
+    .tree-node-button.active { background: #1a5fb4; color: #fff; }
+    .tree-group-label { padding: 0.1rem 0.4rem; font-size: 0.85rem; }
+    .tree-node-count { color: #888; }
+    .tree-node-button.active .tree-node-count { color: #cfe0f5; }
 
     #albums { margin-bottom: 1.5rem; }
     #albums h2 { font-size: 0.85rem; text-transform: uppercase; color: #888; margin: 0 0 0.4rem; }
@@ -239,11 +246,16 @@
     <div id="sidebar">
       <h1>RO-Crate Photo Browser</h1>
       <div id="active-filters"></div>
-      <div id="collections">
-        <h2>Collections</h2>
-        <button id="collections-all">All collections</button>
-        <div id="collections-tree"></div>
-      </div>
+      <details id="collections-section" class="sidebar-section">
+        <summary>Collection Folders</summary>
+        <button id="collections-all" class="nav-all-button">All Folders</button>
+        <div id="collections-tree" class="tree-list"></div>
+      </details>
+      <details id="dates-section" class="sidebar-section">
+        <summary>Dates</summary>
+        <button id="dates-all" class="nav-all-button">All Dates</button>
+        <div id="dates-tree" class="tree-list"></div>
+      </details>
       <div id="albums">
         <h2>Albums</h2>
         <div id="albums-list"></div>

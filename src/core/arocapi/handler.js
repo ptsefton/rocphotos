@@ -20,6 +20,7 @@ import {
   touchAlbum,
   getAlbumById,
   listAlbums,
+  ENTITY_TYPE_IMAGE,
 } from '../db/store.js';
 import {
   CRATE_FILE_NAME,
@@ -239,6 +240,35 @@ export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
       }
 
       return json(200, { total: countSearchResults(store, filters), entities: rows.map((row) => entityToJson(store, row)), facets });
+    }
+
+    // Not part of AROCAPI proper (see facetCounts in db/store.js for why
+    // month/day are kept out of SUPPORTED_FACETS above): backs the
+    // sidebar's Dates nav (webview/), which drills through year, then
+    // month within that year, then day within that month, one level at a
+    // time — always scoped, never the "every year" or "every month"
+    // aggregate a bare month/day facet count would otherwise be. Ignores
+    // every other active filter (memberOf, keyword, ...), the same way
+    // GET /ro-crates for the Collection Folders nav does: a navigation
+    // aid over the whole collection, not a live facet count of whatever
+    // the grid currently shows.
+    if (method === 'GET' && path === '/date-facet') {
+      const granularity = query.granularity;
+      if (!['year', 'month', 'day'].includes(granularity)) {
+        return badRequest('granularity must be "year", "month", or "day"');
+      }
+      if (granularity === 'month' && !query.year) {
+        return badRequest('granularity "month" requires year');
+      }
+      if (granularity === 'day' && !(query.year && query.month)) {
+        return badRequest('granularity "day" requires year and month');
+      }
+
+      const filters = { entityType: ENTITY_TYPE_IMAGE };
+      if (query.year) filters.year = query.year;
+      if (query.month) filters.month = query.month;
+      const counts = facetCounts(store, granularity, filters).map((row) => ({ value: row.value, count: row.count }));
+      return json(200, counts);
     }
 
     if (method === 'GET' && parts[0] === 'entity' && parts.length === 2) {
