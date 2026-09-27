@@ -7,6 +7,8 @@ import {
   addExcludedFiles,
   loadWriteMetadataToFilesSetting,
   setWriteMetadataToFilesSetting,
+  loadConfig,
+  saveConfig,
   CONFIG_FILE_NAME,
 } from '../src/core/config.js';
 import { createFixtureTree, removeFixtureTree } from './helpers/tempDir.js';
@@ -168,5 +170,36 @@ describe('loadWriteMetadataToFilesSetting / setWriteMetadataToFilesSetting', () 
     await setWriteMetadataToFilesSetting(fs, false);
 
     expect(await loadWriteMetadataToFilesSetting(fs)).toBe(false);
+  });
+});
+
+describe('loadConfig / saveConfig', () => {
+  it('returns an empty object when no config file exists yet', async () => {
+    currentRoot = await createFixtureTree({});
+    const fs = createNodeFsAdapter(currentRoot);
+
+    expect(await loadConfig(fs)).toEqual({});
+  });
+
+  it('saves several fields at once and merges with what is already there', async () => {
+    currentRoot = await createFixtureTree({
+      [CONFIG_FILE_NAME]: JSON.stringify({ excludeDirectories: ['^\\.'] }),
+    });
+    const fs = createNodeFsAdapter(currentRoot);
+
+    const saved = await saveConfig(fs, { excludeFiles: ['^Thumbs\\.db$'], writeMetadataToFiles: true });
+
+    expect(saved).toEqual({ excludeDirectories: ['^\\.'], excludeFiles: ['^Thumbs\\.db$'], writeMetadataToFiles: true });
+    expect(await loadConfig(fs)).toEqual(saved);
+  });
+
+  it('a later save only overwrites the fields it names', async () => {
+    currentRoot = await createFixtureTree({});
+    const fs = createNodeFsAdapter(currentRoot);
+
+    await saveConfig(fs, { excludeDirectories: ['^\\.', '^HTML'] });
+    await saveConfig(fs, { writeMetadataToFiles: true });
+
+    expect(await loadConfig(fs)).toEqual({ excludeDirectories: ['^\\.', '^HTML'], writeMetadataToFiles: true });
   });
 });

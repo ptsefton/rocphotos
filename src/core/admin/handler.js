@@ -1,6 +1,12 @@
 import { buildOverview, saveOverview, loadOverview } from '../overview.js';
 import { scanCollection } from '../scanCollection.js';
-import { loadExcludedDirectoryPatterns, loadExcludedFilePatterns, compileNamePatternMatcher } from '../config.js';
+import {
+  loadExcludedDirectoryPatterns,
+  loadExcludedFilePatterns,
+  compileNamePatternMatcher,
+  loadWriteMetadataToFilesSetting,
+  saveConfig,
+} from '../config.js';
 import { serializeWrites } from '../writeQueue.js';
 
 function json(status, body) {
@@ -27,13 +33,27 @@ async function refreshedOverview(fsAdapter) {
 
 /**
  * Creates a pure, transport-agnostic handler for the small set of
- * `/admin/*` routes the "Sub-collections" admin screen (webview/, and
- * shared — see webview/overviewUI.js — with the browser SPA's own
- * identical screen in index.html/src/main.js) uses to let a collection
- * be indexed incrementally from a running `rocphotos serve`, the same
- * way the browser SPA already lets a huge, decades-spanning tree be
- * processed a few sub-collections at a time instead of all at once (see
- * Spec.md's collection-overview screen).
+ * `/admin/*` routes the web view's Scan and Settings screens use.
+ *
+ * GET/POST /overview and /scan back the "Sub-collections" Scan screen
+ * (webview/, and shared — see webview/overviewUI.js — with the browser
+ * SPA's own identical screen in index.html/src/main.js), letting a
+ * collection be indexed incrementally from a running `rocphotos serve`,
+ * the same way the browser SPA already lets a huge, decades-spanning
+ * tree be processed a few sub-collections at a time instead of all at
+ * once (see Spec.md's collection-overview screen).
+ *
+ * GET/POST /config back the Settings screen's config.json editor — the
+ * only way to change these settings from `rocphotos serve` at all before
+ * this (the browser SPA's own Settings section, index.html, has always
+ * had a `writeMetadataToFiles` checkbox, but never the exclude-pattern
+ * lists either, and none of it ever reached `rocphotos serve`'s own web
+ * view). Saved via config.js's own saveConfig, a read-merge-write, so
+ * saving one field here never clobbers another the caller did not send.
+ * `writeMetadataToFiles` is read once at `rocphotos serve` startup (see
+ * bin/rocphotos.js), so a save here needs a server restart to actually
+ * take effect — the Settings screen's own UI text says so; this handler
+ * does not attempt to hot-reload it.
  *
  * Unlike the browser SPA — where scanning runs client-side, directly
  * against the File System Access API handle the user granted — a
@@ -88,6 +108,27 @@ export function createAdminHandler({ db, fsAdapter, rootName, crateCache = new M
           failedToLoad: result.failedToLoad,
           overview,
         });
+      });
+    }
+
+    if (method === 'GET' && path === '/config') {
+      return json(200, {
+        excludeDirectories: await loadExcludedDirectoryPatterns(fsAdapter),
+        excludeFiles: await loadExcludedFilePatterns(fsAdapter),
+        writeMetadataToFiles: await loadWriteMetadataToFilesSetting(fsAdapter),
+      });
+    }
+
+    if (method === 'POST' && path === '/config') {
+      const updates = {};
+      if (Array.isArray(body?.excludeDirectories)) updates.excludeDirectories = body.excludeDirectories;
+      if (Array.isArray(body?.excludeFiles)) updates.excludeFiles = body.excludeFiles;
+      if (typeof body?.writeMetadataToFiles === 'boolean') updates.writeMetadataToFiles = body.writeMetadataToFiles;
+      const updated = await saveConfig(fsAdapter, updates);
+      return json(200, {
+        excludeDirectories: Array.isArray(updated.excludeDirectories) ? updated.excludeDirectories : await loadExcludedDirectoryPatterns(fsAdapter),
+        excludeFiles: Array.isArray(updated.excludeFiles) ? updated.excludeFiles : await loadExcludedFilePatterns(fsAdapter),
+        writeMetadataToFiles: updated.writeMetadataToFiles === true,
       });
     }
 

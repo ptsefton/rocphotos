@@ -5,7 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RO-Crate Photo Browser</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 0; color: #222; display: flex; height: 100vh; }
+    body { font-family: system-ui, sans-serif; margin: 0; color: #222; display: flex; flex-direction: column; height: 100vh; }
+    #mode-bar { display: flex; gap: 0.5rem; padding: 0.6rem 1rem; border-bottom: 1px solid #ddd; flex-shrink: 0; }
+    .mode-button { background: none; border: 1px solid #bbb; border-radius: 4px; padding: 0.3rem 1rem; font-size: 0.85rem; cursor: pointer; color: #333; }
+    .mode-button:hover { background: #f0f0f0; }
+    .mode-button.active { background: #1a5fb4; color: #fff; border-color: #1a5fb4; }
+    .screen { display: none; flex: 1; min-height: 0; }
+    .screen.active { display: block; overflow-y: auto; padding: 1.5rem; box-sizing: border-box; }
+    #explore-screen.active { display: flex; padding: 0; overflow: visible; }
     #sidebar { width: 260px; flex-shrink: 0; padding: 1rem; overflow-y: auto; border-right: 1px solid #ddd; box-sizing: border-box; }
     #main { flex: 1; overflow-y: auto; padding: 1rem; box-sizing: border-box; }
     h1 { font-size: 1.1rem; margin: 0 0 1rem; }
@@ -84,14 +91,12 @@
     .face-match-thumb-actions button { flex: 1; background: #333; color: #eee; border: none; border-radius: 4px; padding: 0.2rem 0.3rem; font-size: 0.68rem; cursor: pointer; }
     .face-match-thumb-actions button:hover { background: #1a5fb4; }
 
-    #admin-panel { display: none; position: fixed; inset: 0; background: #fff; z-index: 100; flex-direction: column; padding: 1.5rem; box-sizing: border-box; overflow-y: auto; }
-    #admin-panel.open { display: flex; }
-    #admin-panel h2 { font-size: 1rem; margin: 0 0 0.6rem; }
-    #admin-panel-close { position: fixed; top: 1rem; right: 1.5rem; color: #333; font-size: 2rem; line-height: 1; cursor: pointer; background: none; border: none; }
-    #admin-status { color: #555; font-size: 0.9rem; margin-bottom: 1rem; }
+    #scan-screen h2, #settings-screen h2 { font-size: 1rem; margin: 0 0 0.6rem; }
+    #admin-status, #settings-status { color: #555; font-size: 0.9rem; margin-bottom: 1rem; }
     #overview-controls { display: flex; gap: 0.6rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
     #overview-controls button { background: none; border: 1px solid #bbb; border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.8rem; cursor: pointer; color: #333; }
     #overview-controls button:hover { background: #f0f0f0; }
+    #overview-controls button:disabled { opacity: 0.5; cursor: default; }
     #overview-tree { max-width: 60rem; font-size: 0.88rem; }
     #overview-tree ul { list-style: none; margin: 0; padding-left: 1.3rem; }
     #overview-tree > ul { padding-left: 0; }
@@ -107,6 +112,13 @@
     .status-badge.out-of-date { background: #fff1cc; color: #8a6100; }
     .status-badge.up-to-date { background: #e0f3e0; color: #1e6b1e; }
     .status-badge.invalid { background: #fbdcdc; color: #8a1c1c; }
+
+    #settings-form { max-width: 40rem; }
+    #settings-form label.checkbox-label { display: block; margin-bottom: 0.4rem; font-size: 0.9rem; }
+    #settings-write-metadata-warning { background: #fff1cc; color: #8a6100; border: 1px solid #f0d68a; border-radius: 4px; padding: 0.5rem 0.7rem; font-size: 0.85rem; margin: 0.4rem 0 1.2rem; }
+    #settings-form label.field-label { display: block; font-size: 0.85rem; color: #555; margin: 0 0 0.3rem; }
+    #settings-form textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 0.82rem; padding: 0.4rem 0.5rem; border: 1px solid #bbb; border-radius: 4px; margin-bottom: 1rem; resize: vertical; }
+    #settings-save { background: #1a5fb4; color: #fff; border: none; border-radius: 4px; padding: 0.4rem 1rem; font-size: 0.85rem; cursor: pointer; }
 
     #selection-bar { display: none; align-items: center; gap: 0.6rem; background: #eef4fc; border: 1px solid #bcd6f2; border-radius: 4px; padding: 0.5rem 0.7rem; margin-bottom: 1rem; font-size: 0.85rem; flex-wrap: wrap; }
     #selection-bar.visible { display: flex; }
@@ -217,39 +229,74 @@
   </style>
 </head>
 <body>
-  <div id="sidebar">
-    <h1>RO-Crate Photo Browser</h1>
-    <div id="active-filters"></div>
-    <div id="collections">
-      <h2>Collections</h2>
-      <button id="collections-all">All collections</button>
-      <div id="collections-tree"></div>
-    </div>
-    <div id="albums">
-      <h2>Albums</h2>
-      <div id="albums-list"></div>
-    </div>
-    <div id="facets"></div>
+  <div id="mode-bar">
+    <button id="mode-explore" class="mode-button active">Explore</button>
+    <button id="mode-scan" class="mode-button">Scan</button>
+    <button id="mode-settings" class="mode-button">Settings</button>
   </div>
-  <div id="main">
-    <div id="status-bar">
-      <div id="status">Loading…</div>
-      <button id="select-all">Select All</button>
-      <button id="admin-button">Scan Collection</button>
-      <button id="recognize-faces-button">Recognize Faces</button>
-      <button id="new-album-button">New Album</button>
-      <button id="export-album-button" class="hidden">Export Album</button>
+
+  <div id="explore-screen" class="screen active">
+    <div id="sidebar">
+      <h1>RO-Crate Photo Browser</h1>
+      <div id="active-filters"></div>
+      <div id="collections">
+        <h2>Collections</h2>
+        <button id="collections-all">All collections</button>
+        <div id="collections-tree"></div>
+      </div>
+      <div id="albums">
+        <h2>Albums</h2>
+        <div id="albums-list"></div>
+      </div>
+      <div id="facets"></div>
     </div>
-    <div id="selection-bar">
-      <span id="selection-count"></span>
-      <button id="selection-add-keyword">Add keyword</button>
-      <button id="selection-remove-keyword">Remove keyword</button>
-      <button id="selection-set-rating">Set rating</button>
-      <button id="selection-add-to-album">Add to album</button>
-      <button id="selection-delete" class="danger">Delete</button>
-      <button id="selection-clear">Clear selection</button>
+    <div id="main">
+      <div id="status-bar">
+        <div id="status">Loading…</div>
+        <button id="select-all">Select All</button>
+        <button id="recognize-faces-button">Recognize Faces</button>
+        <button id="new-album-button">New Album</button>
+        <button id="export-album-button" class="hidden">Export Album</button>
+      </div>
+      <div id="selection-bar">
+        <span id="selection-count"></span>
+        <button id="selection-add-keyword">Add keyword</button>
+        <button id="selection-remove-keyword">Remove keyword</button>
+        <button id="selection-set-rating">Set rating</button>
+        <button id="selection-add-to-album">Add to album</button>
+        <button id="selection-delete" class="danger">Delete</button>
+        <button id="selection-clear">Clear selection</button>
+      </div>
+      <div id="grid"></div>
     </div>
-    <div id="grid"></div>
+  </div>
+
+  <div id="scan-screen" class="screen">
+    <h2>Sub-collections</h2>
+    <div id="admin-status"></div>
+    <section id="overview-section" hidden>
+      <div id="overview-controls">
+        <button id="overview-select-all">Select All</button>
+        <button id="overview-select-none">Select None</button>
+        <button id="overview-refresh">Refresh Status</button>
+        <button id="overview-process">Scan Selected</button>
+      </div>
+      <div id="overview-tree"></div>
+    </section>
+  </div>
+
+  <div id="settings-screen" class="screen">
+    <h2>Settings</h2>
+    <div id="settings-status"></div>
+    <form id="settings-form">
+      <label class="checkbox-label"><input type="checkbox" id="settings-write-metadata" /> Write recognized faces back into photo files</label>
+      <p id="settings-write-metadata-warning">⚠️ This directly modifies your original photo files (via <code>exiftool</code>), with no backup of their previous bytes beyond whatever you already keep yourself. Off by default — only turn on if you understand the risk. Takes effect the next time <code>rocphotos serve</code> is restarted, not immediately.</p>
+      <label class="field-label" for="settings-exclude-dirs">Excluded directory patterns (one regular expression per line — matched against a directory's own name, not its full path)</label>
+      <textarea id="settings-exclude-dirs" rows="4"></textarea>
+      <label class="field-label" for="settings-exclude-files">Excluded file patterns (one regular expression per line)</label>
+      <textarea id="settings-exclude-files" rows="4"></textarea>
+      <button type="submit" id="settings-save">Save</button>
+    </form>
   </div>
 
   <div id="viewer">
@@ -279,21 +326,6 @@
     <button id="faces-review-close" aria-label="Close">&times;</button>
     <h2 id="faces-review-heading">Review faces</h2>
     <div id="faces-review-list"></div>
-  </div>
-
-  <div id="admin-panel">
-    <button id="admin-panel-close" aria-label="Close">&times;</button>
-    <h2>Sub-collections</h2>
-    <div id="admin-status"></div>
-    <section id="overview-section" hidden>
-      <div id="overview-controls">
-        <button id="overview-select-all">Select All</button>
-        <button id="overview-select-none">Select None</button>
-        <button id="overview-refresh">Refresh Status</button>
-        <button id="overview-process">Process Selected</button>
-      </div>
-      <div id="overview-tree"></div>
-    </section>
   </div>
 
   <dialog id="keyword-dialog">

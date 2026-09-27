@@ -97,3 +97,47 @@ describe('POST /scan', () => {
     expect(body.failedToLoad).toEqual([{ path: '2025/02', message: expect.stringContaining('root dataset') }]);
   });
 });
+
+describe('GET/POST /config', () => {
+  it('reports the default config for a fresh, un-configured collection', async () => {
+    const res = await handleRequest({ method: 'GET', path: '/config' });
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body)).toEqual({
+      excludeDirectories: ['^\\.'],
+      excludeFiles: [],
+      writeMetadataToFiles: false,
+    });
+  });
+
+  it('saves and reflects every field back immediately', async () => {
+    const saveRes = await handleRequest({
+      method: 'POST',
+      path: '/config',
+      body: { excludeDirectories: ['^\\.', '^HTML'], excludeFiles: ['^Thumbs\\.db$'], writeMetadataToFiles: true },
+    });
+    expect(JSON.parse(saveRes.body)).toEqual({
+      excludeDirectories: ['^\\.', '^HTML'],
+      excludeFiles: ['^Thumbs\\.db$'],
+      writeMetadataToFiles: true,
+    });
+
+    const getRes = await handleRequest({ method: 'GET', path: '/config' });
+    expect(JSON.parse(getRes.body)).toEqual({
+      excludeDirectories: ['^\\.', '^HTML'],
+      excludeFiles: ['^Thumbs\\.db$'],
+      writeMetadataToFiles: true,
+    });
+  });
+
+  it('saving one field leaves the others already saved untouched', async () => {
+    await handleRequest({ method: 'POST', path: '/config', body: { excludeDirectories: ['^\\.', '^HTML'] } });
+    await handleRequest({ method: 'POST', path: '/config', body: { writeMetadataToFiles: true } });
+
+    const res = await handleRequest({ method: 'GET', path: '/config' });
+    expect(JSON.parse(res.body)).toEqual({
+      excludeDirectories: ['^\\.', '^HTML'],
+      excludeFiles: [],
+      writeMetadataToFiles: true,
+    });
+  });
+});

@@ -26,9 +26,8 @@ const collectionsAllEl = document.querySelector('#collections-all');
 const collectionsTreeEl = document.querySelector('#collections-tree');
 const albumsListEl = document.querySelector('#albums-list');
 const exportAlbumButtonEl = document.querySelector('#export-album-button');
-const adminButtonEl = document.querySelector('#admin-button');
-const adminPanelEl = document.querySelector('#admin-panel');
-const adminPanelCloseEl = document.querySelector('#admin-panel-close');
+const modeButtonEls = { explore: document.querySelector('#mode-explore'), scan: document.querySelector('#mode-scan'), settings: document.querySelector('#mode-settings') };
+const screenEls = { explore: document.querySelector('#explore-screen'), scan: document.querySelector('#scan-screen'), settings: document.querySelector('#settings-screen') };
 const adminStatusEl = document.querySelector('#admin-status');
 const overviewSectionEl = document.querySelector('#overview-section');
 const overviewTreeEl = document.querySelector('#overview-tree');
@@ -36,6 +35,11 @@ const overviewSelectAllButtonEl = document.querySelector('#overview-select-all')
 const overviewSelectNoneButtonEl = document.querySelector('#overview-select-none');
 const overviewRefreshButtonEl = document.querySelector('#overview-refresh');
 const overviewProcessButtonEl = document.querySelector('#overview-process');
+const settingsStatusEl = document.querySelector('#settings-status');
+const settingsFormEl = document.querySelector('#settings-form');
+const settingsWriteMetadataCheckbox = document.querySelector('#settings-write-metadata');
+const settingsExcludeDirsEl = document.querySelector('#settings-exclude-dirs');
+const settingsExcludeFilesEl = document.querySelector('#settings-exclude-files');
 
 // Every album, by id, from the same fetch that fills the sidebar's
 // Albums panel (see loadAlbumsList) — kept around so the top-bar Export
@@ -1843,7 +1847,34 @@ document.querySelector('#faces-review-close').addEventListener('click', () => {
   facesReviewEl.classList.remove('open');
 });
 
-// The "Sub-collections" admin screen — letting a large, decades-spanning
+// Three top-level modes, switched via #mode-bar, never more than one
+// screen visible at a time: Explore (the facets/grid/viewer, everything
+// above), Scan (the sub-collection admin tree below), and Settings
+// (below that). Each of Scan/Settings loads its own data lazily, once,
+// the first time it is switched into — not on every switch back to it —
+// so glancing at a tab does not repeat a directory walk (Scan) or a
+// config re-read (Settings) it already has.
+let overviewLoadedOnce = false;
+let settingsLoadedOnce = false;
+
+function switchMode(mode) {
+  for (const key of Object.keys(screenEls)) {
+    screenEls[key].classList.toggle('active', key === mode);
+    modeButtonEls[key].classList.toggle('active', key === mode);
+  }
+  if (mode === 'scan' && !overviewLoadedOnce) {
+    showAdminOverview().catch((err) => { adminStatusEl.textContent = `Error: ${err.message}`; });
+  }
+  if (mode === 'settings' && !settingsLoadedOnce) {
+    loadSettings().catch((err) => { settingsStatusEl.textContent = `Error: ${err.message}`; });
+  }
+}
+
+modeButtonEls.explore.addEventListener('click', () => switchMode('explore'));
+modeButtonEls.scan.addEventListener('click', () => switchMode('scan'));
+modeButtonEls.settings.addEventListener('click', () => switchMode('settings'));
+
+// The "Sub-collections" scan screen — letting a large, decades-spanning
 // collection be scanned a few sub-collections at a time from here, the
 // same way the browser-tab SPA's own identical screen (index.html/
 // src/main.js) already lets it be done client-side. The tree-building/
@@ -1865,23 +1896,25 @@ async function showAdminOverview({ refresh = false } = {}) {
   renderOverviewTree({ sectionEl: overviewSectionEl, treeEl: overviewTreeEl, overview });
   adminStatusEl.textContent = overview.subCollections.length === 0
     ? 'Nothing found to scan.'
-    : 'Select which sub-collections to scan below, then click Process Selected.';
+    : 'Select which sub-collections to scan below, then click Scan Selected.';
+  overviewLoadedOnce = true;
   return overview;
 }
 
-function openAdminPanel() {
-  adminPanelEl.classList.add('open');
-  showAdminOverview().catch((err) => { adminStatusEl.textContent = `Error: ${err.message}`; });
-}
-
-adminButtonEl.addEventListener('click', openAdminPanel);
-adminPanelCloseEl.addEventListener('click', () => adminPanelEl.classList.remove('open'));
 overviewSelectAllButtonEl.addEventListener('click', () => setAllCrateCheckboxes(overviewTreeEl, true));
 overviewSelectNoneButtonEl.addEventListener('click', () => setAllCrateCheckboxes(overviewTreeEl, false));
 overviewRefreshButtonEl.addEventListener('click', () => {
   showAdminOverview({ refresh: true }).catch((err) => { adminStatusEl.textContent = `Error: ${err.message}`; });
 });
 
+// Scanned one sub-collection per request rather than the whole selection
+// in one call — each is independent server-side (src/core/admin/handler.js
+// takes a `subdirs` array either way), but going one at a time here is
+// what lets the status line report real, incremental progress ("3 of 7")
+// instead of a single, silent wait for however long the whole batch takes.
+// The overview tree itself is also re-rendered after every one, so a
+// large batch's status badges update live rather than all at once at
+// the end.
 overviewProcessButtonEl.addEventListener('click', async () => {
   const subdirs = [...selectedOverviewPaths(overviewTreeEl)];
   if (subdirs.length === 0) {
@@ -1889,21 +1922,31 @@ overviewProcessButtonEl.addEventListener('click', async () => {
     return;
   }
 
-  adminStatusEl.textContent = 'Scanning selected sub-collections…';
-  try {
-    const response = await fetch('/api/admin/scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subdirs }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error ?? `Scan failed: ${response.status}`);
+  const controlButtons = [overviewSelectAllButtonEl, overviewSelectNoneButtonEl, overviewRefreshButtonEl, overviewProcessButtonEl];
+  controlButtons.forEach((button) => { button.disabled = true; });
 
-    renderOverviewTree({ sectionEl: overviewSectionEl, treeEl: overviewTreeEl, overview: result.overview });
-    const failedNote = result.failedToLoad.length > 0
-      ? ` — ${result.failedToLoad.length} skipped (an existing crate file could not be read; see the server's own console)`
+  let scannedCount = 0;
+  const allFailedToLoad = [];
+  try {
+    for (let i = 0; i < subdirs.length; i++) {
+      adminStatusEl.textContent = `Scanning ${subdirs[i]}… (${i + 1} of ${subdirs.length})`;
+      const response = await fetch('/api/admin/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subdirs: [subdirs[i]] }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? `Scan failed: ${response.status}`);
+
+      scannedCount += result.scanned;
+      allFailedToLoad.push(...result.failedToLoad);
+      renderOverviewTree({ sectionEl: overviewSectionEl, treeEl: overviewTreeEl, overview: result.overview });
+    }
+
+    const failedNote = allFailedToLoad.length > 0
+      ? ` — ${allFailedToLoad.length} skipped (an existing crate file could not be read; see the server's own console)`
       : '';
-    adminStatusEl.textContent = `Scanned ${result.scanned} sub-collection(s).${failedNote}`;
+    adminStatusEl.textContent = `Scanned ${scannedCount} sub-collection(s).${failedNote}`;
     // The grid/facets/Collections panel need to pick up whatever this
     // scan just added, immediately, the same way they already do after
     // any other edit (see search's own callers elsewhere in this file).
@@ -1911,6 +1954,52 @@ overviewProcessButtonEl.addEventListener('click', async () => {
     await search();
   } catch (err) {
     adminStatusEl.textContent = `Error: ${err.message}`;
+  } finally {
+    controlButtons.forEach((button) => { button.disabled = false; });
+  }
+});
+
+// The Settings screen — a config.json editor equivalent to the
+// browser-tab SPA's own Settings section (index.html), extended here
+// with the exclude-pattern lists that page has never exposed either
+// (previously hand-edit-the-file only, in every mode). writeMetadataToFiles
+// is read once at `rocphotos serve` startup (see bin/rocphotos.js), so a
+// change saved here needs a server restart to actually take effect —
+// stated plainly in the warning text below rather than implying it is
+// immediate.
+async function loadSettings() {
+  settingsStatusEl.textContent = 'Loading…';
+  try {
+    const response = await fetch('/api/admin/config');
+    if (!response.ok) throw new Error(`Failed to load settings: ${response.status}`);
+    const config = await response.json();
+    settingsWriteMetadataCheckbox.checked = config.writeMetadataToFiles;
+    settingsExcludeDirsEl.value = config.excludeDirectories.join('\n');
+    settingsExcludeFilesEl.value = config.excludeFiles.join('\n');
+    settingsStatusEl.textContent = '';
+    settingsLoadedOnce = true;
+  } catch (err) {
+    settingsStatusEl.textContent = `Error: ${err.message}`;
+  }
+}
+
+settingsFormEl.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  settingsStatusEl.textContent = 'Saving…';
+  try {
+    const response = await fetch('/api/admin/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        writeMetadataToFiles: settingsWriteMetadataCheckbox.checked,
+        excludeDirectories: settingsExcludeDirsEl.value.split('\n').map((line) => line.trim()).filter(Boolean),
+        excludeFiles: settingsExcludeFilesEl.value.split('\n').map((line) => line.trim()).filter(Boolean),
+      }),
+    });
+    if (!response.ok) throw new Error(`Save failed: ${response.status}`);
+    settingsStatusEl.textContent = 'Saved. Restart rocphotos serve for the write-back setting to take effect; exclude patterns apply from the next scan.';
+  } catch (err) {
+    settingsStatusEl.textContent = `Error: ${err.message}`;
   }
 });
 
@@ -1919,14 +2008,16 @@ loadAlbumsList();
 search();
 
 // A brand new (or not-yet-touched) collection has nothing in the grid to
-// show yet — opened automatically here so there is always an obvious
-// next step, rather than a silently empty grid. Never opens itself again
-// once anything has been scanned, even partially, so it does not become
-// a nag on every server restart.
+// show yet — switched to the Scan screen automatically here so there is
+// always an obvious next step, rather than a silently empty grid. Never
+// switches itself again once anything has been scanned, even partially,
+// so it does not become a nag on every server restart.
 fetchOverview()
   .then((overview) => {
     if (overview.subCollections.length > 0 && overview.subCollections.every((s) => s.status === 'not-scanned')) {
-      openAdminPanel();
+      renderOverviewTree({ sectionEl: overviewSectionEl, treeEl: overviewTreeEl, overview });
+      overviewLoadedOnce = true;
+      switchMode('scan');
     }
   })
   .catch(() => {});

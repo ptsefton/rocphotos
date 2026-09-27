@@ -14,15 +14,43 @@ const DEFAULT_EXCLUDED_DIRECTORY_PATTERNS = ['^\\.'];
 // collection needs ignored.
 const DEFAULT_EXCLUDED_FILE_PATTERNS = [];
 
-async function loadPatternList(fsAdapter, configKey, defaultPatterns) {
+/**
+ * The whole config file, parsed, or {} if it does not exist yet — the
+ * read half of the read-merge-write pattern every setter in this file
+ * (and the admin settings screen's own config editor — src/core/admin/
+ * handler.js) uses to change one part of it without disturbing the rest.
+ *
+ * @param {import('./fsAdapter.js').FsAdapter} fsAdapter
+ * @returns {Promise<object>}
+ */
+export async function loadConfig(fsAdapter) {
   if (!(await fsAdapter.exists(CONFIG_FILE_NAME))) {
-    return defaultPatterns;
+    return {};
   }
-
   const bytes = await fsAdapter.readFile(CONFIG_FILE_NAME);
-  const text = new TextDecoder().decode(bytes);
-  const config = JSON.parse(text);
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
 
+/**
+ * Merges `updates` into whatever is already in the config file (creating
+ * it if it does not exist yet) and writes the result back — the write
+ * half of the read-merge-write pattern, so a caller changing one setting
+ * (or, for the admin settings screen, several at once) never clobbers
+ * fields it does not itself know about.
+ *
+ * @param {import('./fsAdapter.js').FsAdapter} fsAdapter
+ * @param {object} updates
+ * @returns {Promise<object>} the full config as saved
+ */
+export async function saveConfig(fsAdapter, updates) {
+  const existing = await loadConfig(fsAdapter);
+  const updated = { ...existing, ...updates };
+  await fsAdapter.writeFile(CONFIG_FILE_NAME, JSON.stringify(updated, null, 2));
+  return updated;
+}
+
+async function loadPatternList(fsAdapter, configKey, defaultPatterns) {
+  const config = await loadConfig(fsAdapter);
   return Array.isArray(config[configKey]) ? config[configKey] : defaultPatterns;
 }
 
@@ -101,12 +129,7 @@ const DEFAULT_WRITE_METADATA_TO_FILES = false;
  * @returns {Promise<boolean>}
  */
 export async function loadWriteMetadataToFilesSetting(fsAdapter) {
-  if (!(await fsAdapter.exists(CONFIG_FILE_NAME))) {
-    return DEFAULT_WRITE_METADATA_TO_FILES;
-  }
-
-  const bytes = await fsAdapter.readFile(CONFIG_FILE_NAME);
-  const config = JSON.parse(new TextDecoder().decode(bytes));
+  const config = await loadConfig(fsAdapter);
   return config.writeMetadataToFiles === true;
 }
 
@@ -114,18 +137,14 @@ export async function loadWriteMetadataToFilesSetting(fsAdapter) {
  * Sets this collection's write-back opt-in (see
  * loadWriteMetadataToFilesSetting above), merging with whatever else is
  * already in the config file rather than overwriting it — same
- * read-merge-write shape as addExcludedFiles.
+ * read-merge-write shape as addExcludedFiles, both really just saveConfig
+ * with one field.
  *
  * @param {import('./fsAdapter.js').FsAdapter} fsAdapter
  * @param {boolean} enabled
  */
 export async function setWriteMetadataToFilesSetting(fsAdapter, enabled) {
-  const existing = (await fsAdapter.exists(CONFIG_FILE_NAME))
-    ? JSON.parse(new TextDecoder().decode(await fsAdapter.readFile(CONFIG_FILE_NAME)))
-    : {};
-
-  const updated = { ...existing, writeMetadataToFiles: enabled === true };
-  await fsAdapter.writeFile(CONFIG_FILE_NAME, JSON.stringify(updated, null, 2));
+  await saveConfig(fsAdapter, { writeMetadataToFiles: enabled === true });
 }
 
 /**
@@ -140,14 +159,8 @@ export async function setWriteMetadataToFilesSetting(fsAdapter, enabled) {
  * @param {string[]} filenames
  */
 export async function addExcludedFiles(fsAdapter, filenames) {
-  const existing = (await fsAdapter.exists(CONFIG_FILE_NAME))
-    ? JSON.parse(new TextDecoder().decode(await fsAdapter.readFile(CONFIG_FILE_NAME)))
-    : {};
-
+  const existing = await loadConfig(fsAdapter);
   const existingPatterns = Array.isArray(existing.excludeFiles) ? existing.excludeFiles : [];
   const newPatterns = filenames.map((name) => `^${escapeRegExp(name)}$`);
-  const excludeFiles = [...new Set([...existingPatterns, ...newPatterns])];
-
-  const updated = { ...existing, excludeFiles };
-  await fsAdapter.writeFile(CONFIG_FILE_NAME, JSON.stringify(updated, null, 2));
+  await saveConfig(fsAdapter, { excludeFiles: [...new Set([...existingPatterns, ...newPatterns])] });
 }
