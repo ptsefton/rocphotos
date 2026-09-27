@@ -35,6 +35,11 @@
     .tree-node-button { display: block; width: 100%; text-align: left; background: none; border: none; padding: 0.2rem 0.4rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
     .tree-node-button:hover { background: #f0f0f0; }
     .tree-node-button.active { background: #1a5fb4; color: #fff; }
+    /* A node that is both expandable and itself clickable (every Dates
+       node) puts this button inside its own <summary>, alongside the
+       native disclosure triangle — block/full-width here would push it
+       onto its own line below the triangle instead of beside it. */
+    summary > .tree-node-button { display: inline-block; width: auto; vertical-align: middle; }
     .tree-group-label { padding: 0.1rem 0.4rem; font-size: 0.85rem; }
     .tree-node-count { color: #888; }
     .tree-node-button.active .tree-node-count { color: #cfe0f5; }

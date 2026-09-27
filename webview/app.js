@@ -378,7 +378,13 @@ async function fetchDateFacet(granularity, params = {}) {
   const query = new URLSearchParams({ granularity, ...params });
   const response = await fetch(`/api/date-facet?${query}`);
   if (!response.ok) return [];
-  return response.json();
+  const results = await response.json();
+  // The server orders by count (facetCounts' usual, shared-with-every-
+  // other-facet convention — most photos first), which is meaningless
+  // for a calendar: years/months/days need to read in date order, most
+  // recent first, matching every other "newest first" listing in this
+  // app (search results, the HTML preview's own year/month grouping).
+  return results.sort((a, b) => b.value.localeCompare(a.value));
 }
 
 // Builds one level's <li> row: a clickable button (sets year/year+month/
