@@ -484,7 +484,11 @@ describe('POST /reject-suggestion', () => {
     });
     addReferenceFace(facesStore, {
       id: 'ref-bob', personId: personEntityId('Bob'), personName: 'Bob',
-      sourceRegionId: 'y.jpg#region-0', sourceImageId: 'y.jpg', embedding: [0.05, 0.05],
+      // Far enough from Alice (below) that the two are not an ambiguous
+      // pair under MATCH_MARGIN — this test is about reject-suggestion's
+      // own exclusion/re-matching, not about how close a call the first
+      // suggestion is.
+      sourceRegionId: 'y.jpg#region-0', sourceImageId: 'y.jpg', embedding: [0.3, 0.3],
       modelName: 'face-api.js', modelVersion: '0.22.2',
     });
 
@@ -515,7 +519,9 @@ describe('POST /reject-suggestion', () => {
     });
     addReferenceFace(facesStore, {
       id: 'ref-stranger', personId: null, personName: null,
-      sourceRegionId: null, sourceImageId: 'z.jpg', embedding: [0.05, 0.05],
+      // Far enough from Alice (above) that the two are not an ambiguous
+      // pair under MATCH_MARGIN — see the equivalent comment above.
+      sourceRegionId: null, sourceImageId: 'z.jpg', embedding: [0.3, 0.3],
       modelName: 'face-api.js', modelVersion: '0.22.2',
     });
 

@@ -1,4 +1,5 @@
 import { renderOverviewTree, selectedOverviewPaths, setAllCrateCheckboxes } from './overviewUI.js';
+import { DETECTION_MIN_CONFIDENCE, isReliableForMatching } from './faceQuality.js';
 
 const IMAGE_ENTITY_TYPE = 'http://pcdm.org/models#Object';
 const FACET_NAMES = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'albums', 'year'];
@@ -1492,19 +1493,27 @@ function loadImage(url) {
 // detected face as a fractional (0-1) top-left box plus its 128-d
 // descriptor — face-api.js's own box is in pixels, converted here so it
 // matches the fractional convention used everywhere else in this app
-// (see Spec.md's ImageRegion notes).
+// (see Spec.md's ImageRegion notes). Filtered through the quality gates
+// above first: a rejected detection is simply never submitted, the same
+// as if nothing had been detected there at all — not recorded anywhere,
+// so a later, better model or a manual tag is free to find it fresh.
 async function detectFacesForImage(imageId) {
   const img = await loadImage(entityUrl('/api/file', imageId));
-  const results = await faceapi.detectAllFaces(img).withFaceLandmarks().withFaceDescriptors();
-  return results.map((result) => ({
-    box: {
-      x: result.detection.box.x / img.naturalWidth,
-      y: result.detection.box.y / img.naturalHeight,
-      w: result.detection.box.width / img.naturalWidth,
-      h: result.detection.box.height / img.naturalHeight,
-    },
-    embedding: Array.from(result.descriptor),
-  }));
+  const results = await faceapi
+    .detectAllFaces(img, new faceapi.SsdMobilenetv1Options({ minConfidence: DETECTION_MIN_CONFIDENCE }))
+    .withFaceLandmarks()
+    .withFaceDescriptors();
+  return results
+    .filter(isReliableForMatching)
+    .map((result) => ({
+      box: {
+        x: result.detection.box.x / img.naturalWidth,
+        y: result.detection.box.y / img.naturalHeight,
+        w: result.detection.box.width / img.naturalWidth,
+        h: result.detection.box.height / img.naturalHeight,
+      },
+      embedding: Array.from(result.descriptor),
+    }));
 }
 
 // Computes an embedding for a region already tagged by another tool (or
