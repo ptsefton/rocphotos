@@ -59,6 +59,8 @@ import {
   upsertFile,
   listRoCrates,
   listEntities,
+  listEntitiesForRoCrate,
+  getRoCrateById,
   listFiles,
   getFileById,
   getAlbumById,
@@ -216,7 +218,7 @@ function resetRootAndIndex(rootDir) {
   }
 }
 
-async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false, reprocess = false } = {}) {
+async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false, reprocess = false, subdirs = [] } = {}) {
   if (fresh) {
     resetRootAndIndex(rootDir);
   }
@@ -232,8 +234,25 @@ async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false, repro
 
   const { crateDirs } = await walkCollection(fsAdapter, isExcludedDir, isExcludedFile);
 
+  // --subdir restricts the (potentially expensive) per-directory work below
+  // to just these sub-collections, so a huge collection can be indexed
+  // incrementally instead of in one single, all-or-nothing pass. A path
+  // matches if it *is* one of the requested subdirs, or is nested under
+  // one — "2006" also selects "2006/01/03". Root's own directly-contained
+  // images (a collection that keeps loose images rather than moving them
+  // into dated subfolders — see --loose-root-images) are cheap and always
+  // processed regardless, since --subdir's purpose is limiting the
+  // expensive recursive work, not root's own bookkeeping.
+  const isSelected = (crateDirPath) =>
+    subdirs.length === 0 || subdirs.some((s) => crateDirPath === s || crateDirPath.startsWith(`${s}/`));
+
   const rootCrateJson = await readExistingCrateJson(fsAdapter, '');
-  const rootCrate = loadOrCreateCrate(rootCrateJson);
+  let rootCrate;
+  try {
+    rootCrate = loadOrCreateCrate(rootCrateJson);
+  } catch (err) {
+    throw new Error(`${path.join(rootDir, CRATE_FILE_NAME)} is not a valid RO-Crate (${err.message}) — move or remove it before scanning this collection.`);
+  }
   const rootName = path.basename(rootDir);
   setDatasetName(rootCrate, rootName);
 
@@ -252,15 +271,50 @@ async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false, repro
 
   const subCrateSummaries = [];
   let rootImageRecords = null;
+  const skippedForSubdir = [];
+  const failedToLoad = [];
 
   for (const { path: crateDirPath, images } of crateDirs) {
     const isRoot = crateDirPath === '';
-    if (!isRoot) {
-      addSubCrateReference(rootCrate, crateDirPath);
+
+    if (!isRoot && !isSelected(crateDirPath)) {
+      // Not part of this run — left entirely untouched (not even read),
+      // so an incompatible or corrupt crate file elsewhere in the tree
+      // (see failedToLoad below) never blocks indexing the subdirs the
+      // caller actually asked for. Still contributes to the root preview
+      // if an earlier run already indexed it; otherwise there is nothing
+      // yet to show for it.
+      skippedForSubdir.push(crateDirPath);
+      const existingRoCrate = getRoCrateById(db, crateEntityId(crateDirPath));
+      if (existingRoCrate) {
+        const existingImages = listEntitiesForRoCrate(db, crateEntityId(crateDirPath))
+          .filter((entity) => entity.entity_type === ENTITY_TYPE_IMAGE);
+        subCrateSummaries.push({
+          path: crateDirPath,
+          imageCount: existingImages.length,
+          representativeDate: earliestDate(existingImages.map((entity) => ({ dateCreated: entity.date_created }))),
+        });
+      }
+      continue;
     }
 
     const subCrateJson = isRoot ? rootCrateJson : await readExistingCrateJson(fsAdapter, crateDirPath);
-    const subCrate = isRoot ? rootCrate : loadOrCreateCrate(subCrateJson);
+    let subCrate;
+    try {
+      subCrate = isRoot ? rootCrate : loadOrCreateCrate(subCrateJson);
+    } catch (err) {
+      // One incompatible or corrupt existing crate file should not abort
+      // indexing everything else — left untouched, exactly like a
+      // not-selected directory above, so a later scan (once the file is
+      // fixed, moved, or removed) can pick it up normally.
+      failedToLoad.push({ path: crateDirPath, message: err.message });
+      console.error(`Skipping ${crateDirPath}: ${joinPath(crateDirPath, CRATE_FILE_NAME)} is not a valid RO-Crate (${err.message}) — move or remove it, then re-scan this directory.`);
+      continue;
+    }
+
+    if (!isRoot) {
+      addSubCrateReference(rootCrate, crateDirPath);
+    }
     const crateName = crateDirPath || rootName;
     setDatasetName(subCrate, crateName);
 
@@ -370,9 +424,17 @@ async function scan(rootDir, looseRootImagesOptions = {}, { fresh = false, repro
     : renderRootCratePreview({ name: rootName, subCrates: subCrateSummaries });
   await fsAdapter.writeFile(PREVIEW_FILE_NAME, rootHtml);
 
-  console.log(`Scanned ${crateDirs.length} crate(s) under ${rootDir}`);
+  const processedCount = crateDirs.length - skippedForSubdir.length - failedToLoad.length;
+  console.log(`Scanned ${processedCount} crate(s) under ${rootDir}`);
   for (const { path: crateDirPath, images } of crateDirs) {
+    if (skippedForSubdir.includes(crateDirPath) || failedToLoad.some((f) => f.path === crateDirPath)) continue;
     console.log(`  ${crateDirPath || '(root)'}: ${images.length} image(s)`);
+  }
+  if (skippedForSubdir.length > 0) {
+    console.log(`Left untouched, not selected by --subdir: ${skippedForSubdir.join(', ')}`);
+  }
+  if (failedToLoad.length > 0) {
+    console.log(`Skipped, existing crate file could not be read (see errors above): ${failedToLoad.map((f) => f.path).join(', ')}`);
   }
 }
 
@@ -639,7 +701,7 @@ function fail(err) {
 }
 
 function usage() {
-  console.error('Usage: rocphotos scan <directory> [--fresh] [--reprocess] [--loose-root-images=move|ignore] [--loose-root-images-folder=<name>]');
+  console.error('Usage: rocphotos scan <directory> [--fresh] [--reprocess] [--loose-root-images=move|ignore] [--loose-root-images-folder=<name>] [--subdir=<name>]...');
   console.error('       rocphotos export-excel <directory> [output.xlsx] [--include-entity-crates]');
   console.error('       rocphotos export-album <directory> <album name>');
   console.error('       rocphotos serve <directory> [--port=8420]');
@@ -670,21 +732,35 @@ function usage() {
   console.error('RO-Crate JSON-LD document (its "mini crate", per AROCAPI), not just the');
   console.error('flat columns in the Entities sheet. Makes the workbook much larger; meant');
   console.error('for debugging, not routine review.');
+  console.error('');
+  console.error('--subdir=<name> restricts scanning to just this sub-collection (repeatable,');
+  console.error('e.g. --subdir=2006 --subdir=2019), for indexing a large collection');
+  console.error('incrementally instead of in one single pass. A named subdir and everything');
+  console.error('nested under it is scanned normally; every other sub-collection is left');
+  console.error('entirely untouched (not even read) this run, so an incompatible or corrupt');
+  console.error('crate file elsewhere in the tree never blocks the ones actually requested.');
+  console.error('The root\'s own directly-contained images (see --loose-root-images) are');
+  console.error('always scanned regardless. Omit it to scan the whole collection, as before.');
   process.exit(1);
 }
 
 // Splits argv into positional arguments and --key=value (or bare --key)
-// flags, in any order.
+// flags, in any order. A flag repeated more than once (--subdir=2006
+// --subdir=2019) collects into an array of its values, in the order given,
+// rather than the last one silently winning — every other flag here is
+// only ever passed once, so this is a no-op for them.
 function parseArgs(argv) {
   const positional = [];
   const flags = {};
   for (const arg of argv) {
     if (arg.startsWith('--')) {
       const eq = arg.indexOf('=');
-      if (eq === -1) {
-        flags[arg.slice(2)] = true;
+      const key = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
+      const value = eq === -1 ? true : arg.slice(eq + 1);
+      if (key in flags) {
+        flags[key] = [...(Array.isArray(flags[key]) ? flags[key] : [flags[key]]), value];
       } else {
-        flags[arg.slice(2, eq)] = arg.slice(eq + 1);
+        flags[key] = value;
       }
     } else {
       positional.push(arg);
@@ -698,13 +774,16 @@ const [command, targetDir, extraArg] = positional;
 
 if (command === 'scan' && targetDir) {
   const mode = flags['loose-root-images'];
+  const subdirs = flags.subdir === undefined ? [] : (Array.isArray(flags.subdir) ? flags.subdir : [flags.subdir]);
   if (mode !== undefined && mode !== 'move' && mode !== 'ignore') {
     fail(new Error(`Invalid --loose-root-images value "${mode}" (expected "move" or "ignore")`));
+  } else if (subdirs.some((s) => s === true)) {
+    fail(new Error('--subdir requires a value: --subdir=<name>, not a bare --subdir'));
   } else {
     scan(
       path.resolve(targetDir),
       { mode, folderName: flags['loose-root-images-folder'] },
-      { fresh: Boolean(flags.fresh), reprocess: Boolean(flags.reprocess) },
+      { fresh: Boolean(flags.fresh), reprocess: Boolean(flags.reprocess), subdirs },
     ).catch(fail);
   }
 } else if (command === 'export-excel' && targetDir) {
