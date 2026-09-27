@@ -2028,7 +2028,14 @@ async function openFacesReview() {
   search();
 
   const response = await fetch('/api/faces/detections?status=pending');
-  const { total, detections, unmatchedClusters } = await response.json();
+  // unmatchedClusters defaults to [] for a server still running the
+  // handler from before it added this field — Node does not hot-reload,
+  // so an already-running `rocphotos serve` process keeps serving its
+  // old in-memory route code until restarted, even though the static
+  // webview/ files (this one included) are always read fresh from disk.
+  // Falling back here just means clustering is unavailable until the
+  // server is restarted, rather than a hard crash.
+  const { total, detections, unmatchedClusters = [] } = await response.json();
 
   // Nothing left to review — closes the full-screen panel rather than
   // leaving it open showing an empty "No faces waiting for review."
