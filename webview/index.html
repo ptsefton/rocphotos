@@ -126,6 +126,7 @@
     #people-controls button:disabled { opacity: 0.5; cursor: default; }
     #people-controls #people-refresh { background: none; border: 1px solid #bbb; color: #333; }
     #people-controls #people-refresh:hover { background: #f0f0f0; }
+    #people-filter { display: block; width: 100%; max-width: 40rem; box-sizing: border-box; font-size: 0.85rem; padding: 0.35rem 0.6rem; border: 1px solid #bbb; border-radius: 4px; margin-bottom: 0.6rem; }
     #people-list { max-width: 40rem; }
     .person-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.35rem 0.2rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
     .person-row .person-name { flex: 1; }
@@ -321,6 +322,7 @@
       <button id="people-merge-button" disabled>Merge Selected</button>
       <button id="people-refresh">Refresh</button>
     </div>
+    <input type="text" id="people-filter" placeholder="Filter names…" autocomplete="off" />
     <div id="people-list"></div>
   </div>
 

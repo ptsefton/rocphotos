@@ -35,6 +35,7 @@ const peopleStatusEl = document.querySelector('#people-status');
 const peopleListEl = document.querySelector('#people-list');
 const peopleMergeButtonEl = document.querySelector('#people-merge-button');
 const peopleRefreshButtonEl = document.querySelector('#people-refresh');
+const peopleFilterInputEl = document.querySelector('#people-filter');
 const adminStatusEl = document.querySelector('#admin-status');
 const overviewSectionEl = document.querySelector('#overview-section');
 const overviewTreeEl = document.querySelector('#overview-tree');
@@ -2324,9 +2325,22 @@ modeButtonEls.settings.addEventListener('click', () => switchMode('settings'));
 // way every other bulk operation in this app (keywords, rating, delete)
 // does.
 let selectedPeopleNames = new Set();
+// The full, unfiltered list from the server — renderFilteredPeopleList
+// narrows this down to what #people-filter's typed text matches without
+// a round trip, the same "type to narrow" pattern the keyword/album
+// pickers already use elsewhere in this app. Kept separately from
+// whatever is currently on screen so a merge (which does need a fresh
+// fetch) and typing a filter (which never does) don't interfere.
+let allPeople = [];
 
 function updatePeopleMergeButton() {
   peopleMergeButtonEl.disabled = selectedPeopleNames.size < 2;
+}
+
+function renderFilteredPeopleList() {
+  const typed = peopleFilterInputEl.value.trim().toLowerCase();
+  const filtered = typed ? allPeople.filter(({ name }) => name.toLowerCase().includes(typed)) : allPeople;
+  renderPeopleList(filtered);
 }
 
 function renderPeopleList(people) {
@@ -2366,7 +2380,8 @@ async function loadPeople() {
   // must not stay checked, or a later merge attempt would silently
   // include it in sourceNames with nothing left to actually rename.
   selectedPeopleNames = new Set([...selectedPeopleNames].filter((name) => people.some((person) => person.name === name)));
-  renderPeopleList(people);
+  allPeople = people;
+  renderFilteredPeopleList();
   updatePeopleMergeButton();
   peopleStatusEl.textContent = people.length === 0
     ? 'No people recorded yet — confirm some faces first (see "Recognize Faces"), or tag people directly in your photos.'
@@ -2409,6 +2424,7 @@ peopleMergeButtonEl.addEventListener('click', () => {
 peopleRefreshButtonEl.addEventListener('click', () => {
   loadPeople().catch((err) => { peopleStatusEl.textContent = `Error: ${err.message}`; });
 });
+peopleFilterInputEl.addEventListener('input', renderFilteredPeopleList);
 
 // The "Sub-collections" scan screen — letting a large, decades-spanning
 // collection be scanned a few sub-collections at a time from here, the
