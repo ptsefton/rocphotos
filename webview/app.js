@@ -1847,32 +1847,33 @@ function renderMatchGroup(personName, detections) {
   const box = document.createElement('div');
   box.className = 'face-match-group';
 
-  // Shared by "Confirm all as <name>" and "Reassign all to…" below: both
-  // are the same bulk operation, just with a different target name — the
-  // suggested one, or one the reviewer picks because the whole group
-  // turned out to be the wrong person.
-  async function confirmAllAs(targetName, controlEl) {
+  // Shared by every "do this to the whole group" action below (Confirm
+  // all, Reassign all, Ignore all, None of these): attempts every
+  // detection regardless of an earlier one failing, and always
+  // refreshes the review screen afterward — a version of this that
+  // aborted the loop and skipped the refresh on the first error left
+  // already-applied detections stuck showing as still pending, and
+  // retrying re-sent the whole batch in the same order, which 400s
+  // immediately on whichever one had already gone through (see Spec.md's
+  // Face Recognition section) rather than ever reaching the ones after it.
+  async function applyToAll(path, extraBody, controlEl, verbPastTense) {
     controlEl.disabled = true;
-    // Attempts every detection regardless of an earlier one failing, and
-    // always refreshes the review screen afterward — a version of this
-    // that aborted the loop and skipped the refresh on the first error
-    // left already-succeeded confirmations stuck showing as still
-    // pending, and retrying re-sent the whole batch in the same order,
-    // which 400s immediately on whichever one had already gone through
-    // (see Spec.md's Face Recognition section) rather than ever reaching
-    // the ones after it.
     const errors = [];
     for (const detection of detections) {
       try {
-        await postEdit('/faces/confirm', { detectionId: detection.id, personName: targetName });
+        await postEdit(path, { detectionId: detection.id, ...extraBody });
       } catch (err) {
         errors.push(err.message);
       }
     }
     await openFacesReview();
     if (errors.length > 0) {
-      window.alert(`${errors.length} face(s) could not be confirmed as ${targetName} (the rest were applied):\n${errors.join('\n')}`);
+      window.alert(`${errors.length} face(s) could not be ${verbPastTense} (the rest were applied):\n${errors.join('\n')}`);
     }
+  }
+
+  function confirmAllAs(targetName, controlEl) {
+    return applyToAll('/faces/confirm', { personName: targetName }, controlEl, `confirmed as ${targetName}`);
   }
 
   const header = document.createElement('div');
@@ -1884,6 +1885,25 @@ function renderMatchGroup(personName, detections) {
   confirmAllButton.addEventListener('click', () => confirmAllAs(personName, confirmAllButton));
   header.appendChild(title);
   header.appendChild(confirmAllButton);
+
+  // Bulk versions of the per-thumbnail [-] (reject) and Ignore actions
+  // below — for when the whole group is wrong (not just one face in
+  // it), or the whole group should just be dismissed without confirming
+  // or rejecting any of it.
+  const rejectAllButton = document.createElement('button');
+  rejectAllButton.className = 'secondary';
+  rejectAllButton.textContent = `None of these are ${personName}`;
+  rejectAllButton.title = `Re-match all ${detections.length} against everyone else, excluding ${personName}`;
+  rejectAllButton.addEventListener('click', () => applyToAll('/faces/reject-suggestion', {}, rejectAllButton, `rejected as ${personName}`));
+  header.appendChild(rejectAllButton);
+
+  const ignoreAllButton = document.createElement('button');
+  ignoreAllButton.className = 'secondary';
+  ignoreAllButton.textContent = 'Ignore all';
+  ignoreAllButton.title = `Dismiss all ${detections.length} without confirming or rejecting them`;
+  ignoreAllButton.addEventListener('click', () => applyToAll('/faces/ignore', {}, ignoreAllButton, 'ignored'));
+  header.appendChild(ignoreAllButton);
+
   box.appendChild(header);
 
   const reassignAllRow = document.createElement('div');

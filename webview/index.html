@@ -81,10 +81,12 @@
     .face-card-actions button:hover { background: #1a5fb4; }
 
     .face-match-group { background: #1c1c1c; border: 1px solid #3a3a3a; border-radius: 8px; padding: 0.8rem; }
-    .face-match-group-header { display: flex; justify-content: flex-start; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; }
+    .face-match-group-header { display: flex; justify-content: flex-start; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
     .face-match-group-header span { color: #eee; font-size: 0.85rem; }
     .face-match-group-header button { background: #1a5fb4; color: #fff; border: none; border-radius: 4px; padding: 0.3rem 0.7rem; font-size: 0.78rem; cursor: pointer; }
     .face-match-group-header button:disabled { opacity: 0.5; cursor: default; }
+    .face-match-group-header button.secondary { background: #333; color: #eee; }
+    .face-match-group-header button.secondary:hover { background: #444; }
     .face-match-group-reassign-all { margin-bottom: 0.6rem; }
     .face-match-group-reassign-input { width: 16rem; max-width: 100%; box-sizing: border-box; padding: 0.25rem 0.5rem; font-size: 0.78rem; border: 1px solid #555; border-radius: 4px; background: #111; color: #eee; }
     .face-match-group-reassign-input:disabled { opacity: 0.5; }

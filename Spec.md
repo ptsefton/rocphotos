@@ -2,13 +2,19 @@
 
 ## 1. Purpose and Scope
 
-Maintains "at rest" collections of photographs and scans on a filesystem as nested RO-Crate packages, two levels deep by default. Metadata is synchronised between images and the RO-Crate structure where possible, plus a further layer of descriptive data linking images to people, other agents, and events.
+Maintains "at rest" collections of photographs and scans on a filesystem as nested RO-Crate packages, two levels deep by default. Metadata is optionally synchronised between images and the RO-Crate structure where possible, plus a further layer of descriptive data linking images to people, other agents, and events.
 
 Every crate directory also gets a static HTML view, so a collection is navigable — by date, subject, and other metadata — in a plain web browser, with no application required.
 
 Key features:
 - Stand-off annotation of images (keywords, face regions, etc.)
 - Optional write-back of metadata to image files, in place or on export
+- Face recognition
+- Albums / collections for managing export
+
+Coming soon:
+- A persistent set of contextual entity-descriptions for people, place, organizations etc with relationships beweteen entities such as parent-child, using the Records In Context relationship schema.
+- Photo presentations and photo books 
 
 ## 2. Data Model
 
@@ -128,6 +134,8 @@ Extends the Person and `ImageRegion` model (Section 3.2). A confirmed face is al
 3. Opens a review screen of pending detections as cropped thumbnails, grouped by suggested Person (an unsuggested one gets its own card under "Unidentified"). Clicking a crop opens the whole photo full-screen with that box highlighted, to judge it in context.
     - **Confirm all as \<name\>** — accepts every thumbnail in a group.
     - **Reassign all to…** — same group, different target name.
+    - **None of these are \<name\>** — bulk reject: re-matches every detection in the group against everyone else, excluding this Person.
+    - **Ignore all** — bulk dismiss, no confirm or reject.
     - **Reassign** — per-thumbnail, pre-fillable from suggestions; also how a new name is given to an unmatched face.
     - **[-] (reject)** — "not this Person"; re-matches against the reference set excluding every Person rejected so far.
     - **Ignore** — dismisses this detection only (a future model version starts fresh).
