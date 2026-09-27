@@ -151,6 +151,92 @@ function titleOrFallback(fileName, title) {
   return trimmed || fileName;
 }
 
+// The compact region encoding a standoff face/pet region's `oa:hasTarget`
+// uses (see addStandoffFaceRegion and Spec.md's Face Recognition
+// section) — a W3C Media Fragments URI, `#xywh=percent:x,y,w,h`,
+// top-left corner + size as a 0-100 percentage of the full image. Kept
+// as a plain marker search (not an anchored regex over the whole target
+// id) since the image path preceding the fragment can itself contain
+// arbitrary characters.
+const XYWH_PERCENT_MARKER = '#xywh=percent:';
+
+function toXywhPercentFragment(path, box) {
+  const pct = (fraction) => Math.round(fraction * 100 * 10000) / 10000;
+  return `${path}${XYWH_PERCENT_MARKER}${pct(box.x)},${pct(box.y)},${pct(box.w)},${pct(box.h)}`;
+}
+
+// Returns a top-left, 0-1 fractional box (face-api.js's own convention),
+// or null if `targetId` has no recognised fragment.
+function parseXywhPercentFragment(targetId) {
+  if (!targetId) return null;
+  const markerIndex = targetId.lastIndexOf(XYWH_PERCENT_MARKER);
+  if (markerIndex === -1) return null;
+  const parts = targetId.slice(markerIndex + XYWH_PERCENT_MARKER.length).split(',').map(Number);
+  if (parts.length !== 4 || parts.some(Number.isNaN)) return null;
+  const [x, y, w, h] = parts;
+  return { x: x / 100, y: y / 100, w: w / 100, h: h / 100 };
+}
+
+/**
+ * Adds a "standoff" face/pet region for a confirmed detection — recorded
+ * entirely in the crate, independent of whether it has also been (or
+ * ever will be) written into the photo file's own EXIF (Spec.md's Face
+ * Recognition section: writing to the original file is an opt-in,
+ * off-by-default, separate step — confirming a face must not depend on
+ * that opt-in to have any visible effect at all). Modelled on the W3C
+ * Web Annotation Vocabulary (`oa:`, `http://www.w3.org/ns/oa#`) plus a
+ * `prov:specializationOf` proxy for the body — the same indirection
+ * Albums already use for a member image, and for the same reason: *this*
+ * appearance of a Person/Pet, in this one region, could later carry its
+ * own region-specific properties without touching the real, shared
+ * Person/Pet entity every other photo depicting them also references.
+ *
+ * Safe to call more than once for the same image (a photo can have more
+ * than one confirmed face): each call adds its own new region rather
+ * than replacing an earlier one. Ids are `#region-standoff-<n>`, in
+ * their own namespace distinct from `#region-<n>`'s EXIF-derived
+ * numbering, which is fully renumbered from scratch on every rescan
+ * (see addImageEntity below) — a standoff region must never share that
+ * namespace, or a later rescan could hand its number to an unrelated
+ * EXIF-derived region.
+ *
+ * @param {ROCrate} crate
+ * @param {string} path - image path, relative to the crate directory
+ * @param {{name: string, subjectId: string, subjectType: 'Person'|'Pet', box: {x: number, y: number, w: number, h: number}}} options - box is face-api.js's own fractional (0-1) top-left shape
+ * @returns {{regionId: string}|null} null if the image has no entity yet
+ */
+export function addStandoffFaceRegion(crate, path, { name, subjectId, subjectType, box }) {
+  const entity = crate.getEntity(path);
+  if (!entity) return null;
+
+  const usedStandoffIndexes = (entity.regions ?? [])
+    .map((ref) => /#region-standoff-(\d+)$/.exec(ref['@id'])?.[1])
+    .filter((n) => n !== undefined)
+    .map(Number);
+  const nextIndex = usedStandoffIndexes.length > 0 ? Math.max(...usedStandoffIndexes) + 1 : 0;
+
+  const regionId = `${path}#region-standoff-${nextIndex}`;
+  const bodyId = `${regionId}-body`;
+
+  crate.addEntity({ '@id': subjectId, '@type': subjectType, name }, { replace: true });
+  crate.addEntity({ '@id': bodyId, '@type': subjectType, 'prov:specializationOf': { '@id': subjectId } }, { replace: true });
+  crate.addEntity({
+    '@id': regionId,
+    '@type': ['ImageRegion', 'oa:Annotation'],
+    name,
+    regionType: subjectType === 'Person' ? 'Face' : 'Pet',
+    'oa:motivatedBy': { '@id': 'oa:identifying' },
+    'oa:hasTarget': { '@id': toXywhPercentFragment(path, box) },
+    'oa:hasBody': { '@id': bodyId },
+    writtenToFile: false,
+  }, { replace: true });
+
+  crate.addValues(path, 'regions', { '@id': regionId });
+  crate.addValues(path, 'about', { '@id': subjectId });
+
+  return { regionId };
+}
+
 /**
  * Adds or updates an ImageObject entity (and its linked thumbnail entity,
  * if one is supplied) within a sub-collection crate, and lists it in the
@@ -199,8 +285,8 @@ export function addImageEntity(crate, {
   // plain keyword.
   const keywords = (exifError ? [] : keywordsFromExif(exif)).filter((keyword) => !regionNames.has(keyword));
   const rating = exifError ? null : ratingFromExif(exif);
-  const people = regions.filter((region) => region.type === 'Face').map((region) => region.name);
-  const pets = regions.filter((region) => region.type === 'Pet').map((region) => region.name);
+  let people = regions.filter((region) => region.type === 'Face').map((region) => region.name);
+  let pets = regions.filter((region) => region.type === 'Pet').map((region) => region.name);
   const title = titleOrFallback(fileName, exifError ? null : titleFromExif(exif));
   const description = exifError ? null : descriptionFromExif(exif);
 
@@ -242,13 +328,45 @@ export function addImageEntity(crate, {
     } else if ('rating' in entity) {
       delete entity.rating;
     }
+    // Preserves any existing "standoff" regions (confirmed by this app
+    // but not, or not yet, written into the file's own EXIF — see
+    // addStandoffFaceRegion) across this rescan: unlike an EXIF-derived
+    // region, which is fully rebuilt from scratch every pass below, a
+    // standoff region has no EXIF of its own to rebuild from, so it
+    // would otherwise be silently deleted the next time this image is
+    // rescanned. Dropped only once the same name shows up among the
+    // freshly-read EXIF regions instead — write-back has since happened
+    // (or another tool independently tagged them) — its own now-
+    // redundant region and body-proxy nodes are deleted outright, not
+    // left dangling in the graph.
+    const freshNames = new Set(regions.map((region) => region.name));
+    const preservedRegionRefs = [];
+    const preservedAboutRefs = [];
+    for (const ref of entity.regions ?? []) {
+      const existingRegion = crate.getEntity(ref['@id']);
+      if (!existingRegion || unwrap(existingRegion.writtenToFile) !== false) continue;
+      const name = unwrap(existingRegion.name);
+      const bodyId = unwrap(existingRegion['oa:hasBody'])?.['@id'];
+      if (freshNames.has(name)) {
+        if (bodyId) crate.deleteEntity(bodyId);
+        crate.deleteEntity(ref['@id']);
+        continue;
+      }
+      preservedRegionRefs.push(ref);
+      const subjectId = unwrap(crate.getEntity(bodyId)?.['prov:specializationOf'])?.['@id'];
+      if (subjectId) preservedAboutRefs.push({ '@id': subjectId });
+      const type = unwrap(existingRegion.regionType);
+      if (type === 'Face') people = [...people, name];
+      else if (type === 'Pet') pets = [...pets, name];
+    }
+
+    const about = [];
+    const regionRefs = [];
     if (regions.length > 0) {
       // Duplicated into every crate that references them ("the RO-Crate
       // way"): each crate's own ro-crate-metadata.json stays a complete,
       // standalone description of what it contains, rather than relying
       // on a Person/Pet node defined only in some other crate's file.
-      const about = [];
-      const regionRefs = [];
       regions.forEach((region, index) => {
         const subjectId = region.type === 'Face' ? personEntityId(region.name) : petEntityId(region.name);
         const subjectType = region.type === 'Face' ? 'Person' : 'Pet';
@@ -273,8 +391,10 @@ export function addImageEntity(crate, {
         crate.addEntity(regionEntity, { replace: true });
         regionRefs.push({ '@id': regionId });
       });
-      entity.about = about;
-      entity.regions = regionRefs;
+    }
+    if (regions.length > 0 || preservedRegionRefs.length > 0) {
+      entity.about = [...about, ...preservedAboutRefs];
+      entity.regions = [...regionRefs, ...preservedRegionRefs];
     } else {
       if ('about' in entity) delete entity.about;
       if ('regions' in entity) delete entity.regions;
@@ -371,13 +491,23 @@ export function readImageRecord(crate, path) {
   // Each element of entity.regions is likewise already the resolved
   // ImageRegion entity itself; name and regionType are read straight off
   // it rather than through its own `about` reference (see addImageEntity).
-  const regions = (entity.regions ?? []).map((region) => ({
-    name: unwrap(region.name),
-    type: unwrap(region.regionType),
-    area: region.xPosition !== undefined
-      ? { x: unwrap(region.xPosition), y: unwrap(region.yPosition), w: unwrap(region.width), h: unwrap(region.height) }
-      : null,
-  }));
+  // Two possible shapes: an EXIF-derived region's own xPosition/etc.
+  // (MWG's centre-based convention), or a standoff region's `oa:hasTarget`
+  // fragment (see addStandoffFaceRegion — face-api.js's own top-left
+  // convention, converted to the same centre-based shape here so every
+  // caller of readImageRecord sees one consistent `area` regardless of
+  // which kind of region it came from).
+  const regions = (entity.regions ?? []).map((region) => {
+    const name = unwrap(region.name);
+    const type = unwrap(region.regionType);
+    if (region.xPosition !== undefined) {
+      return { name, type, area: { x: unwrap(region.xPosition), y: unwrap(region.yPosition), w: unwrap(region.width), h: unwrap(region.height) } };
+    }
+    const targetId = unwrap(region['oa:hasTarget'])?.['@id'];
+    const box = parseXywhPercentFragment(targetId);
+    const area = box ? { x: box.x + box.w / 2, y: box.y + box.h / 2, w: box.w, h: box.h } : null;
+    return { name, type, area };
+  });
 
   return {
     path,
@@ -496,6 +626,14 @@ export function removeImageEntity(crate, path) {
     crate.deleteEntity(ref['@id']);
   }
   for (const ref of entity.regions ?? []) {
+    const region = crate.getEntity(ref['@id']);
+    // A standoff region's body is its own small proxy entity (see
+    // addStandoffFaceRegion), exclusively owned by this one region the
+    // same way its EXIF PropertyValue nodes are — never the shared
+    // Person/Pet entity itself, which prov:specializationOf points to
+    // and which this deliberately leaves alone.
+    const bodyId = unwrap(region?.['oa:hasBody'])?.['@id'];
+    if (bodyId) crate.deleteEntity(bodyId);
     crate.deleteEntity(ref['@id']);
   }
   const thumbnailId = unwrap(entity.thumbnail)?.['@id'];

@@ -590,9 +590,11 @@ async function openViewer(entity) {
 
     // A pet is tagged the same way as a person (Type: "Pet" rather than
     // "Face" — MWG has no separate "animal face" region type), so it
-    // belongs in the same overlay.
+    // belongs in the same overlay. A region has a drawable box either
+    // way it was recorded — the legacy xPosition/etc. shape, or a
+    // standoff region's oa:hasTarget fragment (see regionBox below).
     currentFaceRegions = (metadata.regions ?? []).filter(
-      (region) => (region.regionType === 'Face' || region.regionType === 'Pet') && region.xPosition !== undefined,
+      (region) => (region.regionType === 'Face' || region.regionType === 'Pet') && (region.xPosition !== undefined || region['oa:hasTarget'] !== undefined),
     );
     viewerFacesToggleEl.disabled = currentFaceRegions.length === 0;
   } catch {
@@ -604,6 +606,33 @@ function closeViewer() {
   viewerEl.classList.remove('open');
   viewerImageEl.src = '';
   currentViewerEntityId = null;
+}
+
+// A region's drawable box, as a top-left fraction (0-1) of the full
+// image, regardless of which of the two shapes it was recorded in (see
+// Spec.md's Face Recognition section): the legacy xPosition/yPosition/
+// width/height (MWG's own centre-based convention), or a standoff
+// region's oa:hasTarget — a Media Fragments URI fragment,
+// `#xywh=percent:x,y,w,h`, already top-left (see addStandoffFaceRegion
+// in crateBuilder.js, which this mirrors — webview/app.js cannot import
+// from src/core/, see Spec.md's Face Recognition section for why).
+// Returns null if neither shape is recognised.
+function regionBox(region) {
+  if (region.xPosition !== undefined) {
+    const x = unwrapJsonLdValue(region.xPosition);
+    const y = unwrapJsonLdValue(region.yPosition);
+    const width = unwrapJsonLdValue(region.width);
+    const height = unwrapJsonLdValue(region.height);
+    return { left: x - width / 2, top: y - height / 2, width, height };
+  }
+  const targetId = unwrapJsonLdValue(region['oa:hasTarget'])?.['@id'];
+  const marker = '#xywh=percent:';
+  const markerIndex = targetId?.lastIndexOf(marker) ?? -1;
+  if (markerIndex === -1) return null;
+  const parts = targetId.slice(markerIndex + marker.length).split(',').map(Number);
+  if (parts.length !== 4 || parts.some(Number.isNaN)) return null;
+  const [x, y, width, height] = parts;
+  return { left: x / 100, top: y / 100, width: width / 100, height: height / 100 };
 }
 
 function renderFaceOverlay() {
@@ -622,12 +651,15 @@ function renderFaceOverlay() {
   const offsetY = (clientHeight - renderedHeight) / 2;
 
   for (const region of currentFaceRegions) {
+    const regionBoxFraction = regionBox(region);
+    if (!regionBoxFraction) continue;
+
     const box = document.createElement('div');
     box.className = 'face-box';
-    box.style.left = `${offsetX + region.xPosition * renderedWidth - (region.width * renderedWidth) / 2}px`;
-    box.style.top = `${offsetY + region.yPosition * renderedHeight - (region.height * renderedHeight) / 2}px`;
-    box.style.width = `${region.width * renderedWidth}px`;
-    box.style.height = `${region.height * renderedHeight}px`;
+    box.style.left = `${offsetX + regionBoxFraction.left * renderedWidth}px`;
+    box.style.top = `${offsetY + regionBoxFraction.top * renderedHeight}px`;
+    box.style.width = `${regionBoxFraction.width * renderedWidth}px`;
+    box.style.height = `${regionBoxFraction.height * renderedHeight}px`;
 
     const label = document.createElement('span');
     label.className = 'face-box-label';

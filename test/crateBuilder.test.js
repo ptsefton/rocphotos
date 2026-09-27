@@ -14,7 +14,9 @@ import {
   removeImageEntity,
   setAlbumEntity,
   albumMemberIds,
+  addStandoffFaceRegion,
 } from '../src/core/crateBuilder.js';
+import { personEntityId, petEntityId } from '../src/core/db/store.js';
 
 describe('setDatasetName', () => {
   it('sets the root dataset name only when not already set', () => {
@@ -488,6 +490,124 @@ describe('addImageEntity people and pets', () => {
   });
 });
 
+describe('addStandoffFaceRegion', () => {
+  it('records a confirmed face as a standoff region, readable back with a centre-based area like an EXIF-derived one', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: {} });
+
+    const subjectId = personEntityId('Jane Smith');
+    const result = addStandoffFaceRegion(crate, 'photo.jpg', {
+      name: 'Jane Smith', subjectId, subjectType: 'Person',
+      box: { x: 0.4, y: 0.3, w: 0.2, h: 0.2 }, // face-api.js's own top-left shape
+    });
+
+    expect(result.regionId).toEqual('photo.jpg#region-standoff-0');
+    const record = readImageRecord(crate, 'photo.jpg');
+    expect(record.people).toEqual(['Jane Smith']);
+    expect(record.regions).toEqual([
+      { name: 'Jane Smith', type: 'Face', area: { x: 0.5, y: 0.4, w: 0.2, h: 0.2 } }, // converted to centre-based
+    ]);
+
+    const region = crate.getEntity(result.regionId);
+    expect(region['@type']).toEqual(expect.arrayContaining(['ImageRegion', 'oa:Annotation']));
+    expect(region.writtenToFile).toEqual([false]);
+    expect(region['oa:motivatedBy'][0]['@id']).toEqual('oa:identifying');
+    const bodyId = region['oa:hasBody'][0]['@id'];
+    expect(crate.getEntity(bodyId)['prov:specializationOf'][0]['@id']).toEqual(subjectId);
+  });
+
+  it('gives each standoff region on the same image its own id, not colliding with the next', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: {} });
+
+    const first = addStandoffFaceRegion(crate, 'photo.jpg', {
+      name: 'Jane Smith', subjectId: personEntityId('Jane Smith'), subjectType: 'Person', box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 },
+    });
+    const second = addStandoffFaceRegion(crate, 'photo.jpg', {
+      name: 'Bob Jones', subjectId: personEntityId('Bob Jones'), subjectType: 'Person', box: { x: 0.5, y: 0.5, w: 0.1, h: 0.1 },
+    });
+
+    expect(first.regionId).not.toEqual(second.regionId);
+    expect(readImageRecord(crate, 'photo.jpg').people.sort()).toEqual(['Bob Jones', 'Jane Smith']);
+  });
+
+  it('returns null for an image with no entity yet, rather than throwing', () => {
+    const crate = loadOrCreateCrate(null);
+    expect(addStandoffFaceRegion(crate, 'nope.jpg', { name: 'X', subjectId: 'x', subjectType: 'Person', box: { x: 0, y: 0, w: 0.1, h: 0.1 } })).toBeNull();
+  });
+
+  it('survives a rescan (addImageEntity) that finds no EXIF regions of its own', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: {} });
+    addStandoffFaceRegion(crate, 'photo.jpg', {
+      name: 'Jane Smith', subjectId: personEntityId('Jane Smith'), subjectType: 'Person', box: { x: 0.4, y: 0.3, w: 0.2, h: 0.2 },
+    });
+
+    // A routine rescan of the same, still-untagged-in-EXIF file must not
+    // silently drop the standoff confirmation — the whole point of it
+    // being independent of the file in the first place.
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Make: 'Acme' } });
+
+    const record = readImageRecord(crate, 'photo.jpg');
+    expect(record.people).toEqual(['Jane Smith']);
+    expect(record.regions).toHaveLength(1);
+  });
+
+  it('is superseded, not duplicated, once the same name appears in a fresh EXIF-derived region', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: {} });
+    const standoff = addStandoffFaceRegion(crate, 'photo.jpg', {
+      name: 'Jane Smith', subjectId: personEntityId('Jane Smith'), subjectType: 'Person', box: { x: 0.4, y: 0.3, w: 0.2, h: 0.2 },
+    });
+    const bodyId = crate.getEntity(standoff.regionId)['oa:hasBody'][0]['@id'];
+
+    // Write-back (or another tool) has since tagged the same person for
+    // real - the next rescan picks that up from EXIF.
+    addImageEntity(crate, {
+      path: 'photo.jpg',
+      exif: { Regions: { RegionList: { Name: 'Jane Smith', Type: 'Face', Area: { x: 0.5, y: 0.4, w: 0.2, h: 0.2 } } } },
+    });
+
+    const record = readImageRecord(crate, 'photo.jpg');
+    expect(record.people).toEqual(['Jane Smith']); // not ['Jane Smith', 'Jane Smith']
+    expect(record.regions).toHaveLength(1);
+    // The superseded standoff region and its body proxy are cleaned up,
+    // not left dangling in the graph.
+    expect(crate.getEntity(standoff.regionId)).toBeUndefined();
+    expect(crate.getEntity(bodyId)).toBeUndefined();
+  });
+
+  it('leaves an unrelated standoff region for a different person alone when another name is superseded', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: {} });
+    addStandoffFaceRegion(crate, 'photo.jpg', {
+      name: 'Jane Smith', subjectId: personEntityId('Jane Smith'), subjectType: 'Person', box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 },
+    });
+    addStandoffFaceRegion(crate, 'photo.jpg', {
+      name: 'Bob Jones', subjectId: personEntityId('Bob Jones'), subjectType: 'Person', box: { x: 0.5, y: 0.5, w: 0.1, h: 0.1 },
+    });
+
+    addImageEntity(crate, {
+      path: 'photo.jpg',
+      exif: { Regions: { RegionList: { Name: 'Jane Smith', Type: 'Face', Area: { x: 0.15, y: 0.15, w: 0.1, h: 0.1 } } } },
+    });
+
+    expect(readImageRecord(crate, 'photo.jpg').people.sort()).toEqual(['Bob Jones', 'Jane Smith']);
+  });
+
+  it('records a standoff pet region under its own Pet entity, distinct from a person of the same name', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: {} });
+    addStandoffFaceRegion(crate, 'photo.jpg', {
+      name: 'Max', subjectId: petEntityId('Max'), subjectType: 'Pet', box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 },
+    });
+
+    const record = readImageRecord(crate, 'photo.jpg');
+    expect(record.pets).toEqual(['Max']);
+    expect(record.people).toEqual([]);
+  });
+});
+
 describe('setImageKeywords', () => {
   it('replaces whatever keywords were there, independent of EXIF', () => {
     const crate = loadOrCreateCrate(null);
@@ -581,6 +701,23 @@ describe('removeImageEntity', () => {
     expect(crate.getEntity('photo.jpg#region-0')).toBeUndefined();
     expect(crate.getEntity('thumbnails/photo.jpg.thumb.jpg')).toBeUndefined();
     expect(crate.rootDataset.hasPart?.some((ref) => ref['@id'] === 'photo.jpg')).toBeFalsy();
+  });
+
+  it('also removes a standoff region\'s own body proxy, not just the region itself', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: {} });
+    const { regionId } = addStandoffFaceRegion(crate, 'photo.jpg', {
+      name: 'Jane Smith', subjectId: personEntityId('Jane Smith'), subjectType: 'Person', box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 },
+    });
+    const bodyId = crate.getEntity(regionId)['oa:hasBody'][0]['@id'];
+
+    removeImageEntity(crate, 'photo.jpg');
+
+    expect(crate.getEntity(regionId)).toBeUndefined();
+    expect(crate.getEntity(bodyId)).toBeUndefined();
+    // The shared Person entity itself is untouched (same rule as an
+    // EXIF-derived region's Person/Pet) - not asserted further here,
+    // covered by the test below.
   });
 
   it('leaves the Person/Pet entity it depicted alone, since another image may still depict them', () => {

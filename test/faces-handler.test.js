@@ -546,17 +546,41 @@ describe('POST /reject-suggestion', () => {
 });
 
 describe('POST /confirm', () => {
-  it('requires a writeFaceRegion implementation (unavailable in the browser-only run mode)', async () => {
-    const handler = createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion: null });
-    const res = await handler({ method: 'POST', path: '/confirm', body: { detectionId: 'x', personName: 'Bob' } });
-    expect(res.status).toEqual(501);
+  it('confirms a face as a standoff region, fully visible immediately, even with no writeFaceRegion implementation at all (browser-only run mode)', async () => {
+    const handler = createFacesHandler({ mainStore, facesStore, fsAdapter });
+    const created = JSON.parse((await handler({
+      method: 'POST', path: '/detections',
+      body: { imageId: photoId, modelName: 'face-api.js', modelVersion: '0.22.2', faces: [{ box: { x: 0.3, y: 0.4, w: 0.2, h: 0.1 }, embedding: [1, 2, 3] }] },
+    })).body).created[0];
+
+    const res = await handler({ method: 'POST', path: '/confirm', body: { detectionId: created.id, personName: 'Bob' } });
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body)).toMatchObject({ personName: 'Bob', writtenToFile: false });
+
+    // Fully visible without any file write at all — the whole point of a
+    // standoff region (Spec.md's Face Recognition section).
+    const crateJson = new TextDecoder().decode(await fsAdapter.readFile(`2025/${CRATE_FILE_NAME}`));
+    const record = readImageRecord(loadOrCreateCrate(crateJson), 'photo.jpg');
+    expect(record.people).toEqual(['Bob']);
+    expect(listFacetValuesForEntity(mainStore, photoId, 'people')).toEqual(['Bob']);
+    expect(listDetections(facesStore, { status: 'confirmed' })).toHaveLength(1);
   });
 
-  it('refuses when writeFaceRegion is available but writeBackEnabled is not passed (defaults to false), so a caller that forgets it fails safe rather than writing', async () => {
+  it('confirms a face as a standoff region even when writeFaceRegion is available but this collection has not turned write-back on (writeBackEnabled defaults to false)', async () => {
     const handler = createFacesHandler({ mainStore, facesStore, fsAdapter, writeFaceRegion });
-    const res = await handler({ method: 'POST', path: '/confirm', body: { detectionId: 'x', personName: 'Bob' } });
-    expect(res.status).toEqual(403);
+    const created = JSON.parse((await handler({
+      method: 'POST', path: '/detections',
+      body: { imageId: photoId, modelName: 'face-api.js', modelVersion: '0.22.2', faces: [{ box: { x: 0.3, y: 0.4, w: 0.2, h: 0.1 }, embedding: [1, 2, 3] }] },
+    })).body).created[0];
+
+    const res = await handler({ method: 'POST', path: '/confirm', body: { detectionId: created.id, personName: 'Bob' } });
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body).writtenToFile).toBe(false);
     expect(writeFaceRegion).not.toHaveBeenCalled();
+
+    const crateJson = new TextDecoder().decode(await fsAdapter.readFile(`2025/${CRATE_FILE_NAME}`));
+    const record = readImageRecord(loadOrCreateCrate(crateJson), 'photo.jpg');
+    expect(record.people).toEqual(['Bob']);
   });
 
   it('rejects a blank person name', async () => {
@@ -637,15 +661,21 @@ describe('POST /confirm', () => {
     const parsed = JSON.parse(res.body);
     expect(parsed.personName).toEqual('Bob');
     expect(parsed.personId).toEqual(personEntityId('Bob'));
+    expect(parsed.writtenToFile).toBe(true);
 
     // The injected writer was called with the detection's own box and
     // the file's fsAdapter-relative path.
     expect(writeFaceRegion).toHaveBeenCalledWith(photoId, { name: 'Bob', area: { x: 0.3, y: 0.4, w: 0.2, h: 0.1 } });
 
-    // The crate on disk now has Bob as a region and as a depicted person.
+    // The crate on disk now has Bob as a region and as a depicted person —
+    // exactly once: the standoff region addStandoffFaceRegion recorded
+    // before the write attempt is superseded by the freshly-read
+    // EXIF-derived one, not left alongside it as a duplicate (see
+    // addImageEntity's own merge/supersede logic in crateBuilder.js).
     const crateJson = new TextDecoder().decode(await fsAdapter.readFile(`2025/${CRATE_FILE_NAME}`));
     const record = readImageRecord(loadOrCreateCrate(crateJson), 'photo.jpg');
     expect(record.people).toEqual(['Bob']);
+    expect(record.regions).toHaveLength(1);
 
     // The main index reflects the same, without waiting for a rescan.
     expect(listFacetValuesForEntity(mainStore, photoId, 'people')).toEqual(['Bob']);
@@ -656,6 +686,26 @@ describe('POST /confirm', () => {
 
     // The faces crate was written for inspectability.
     expect(await fsAdapter.exists('_rocphotos/faces/ro-crate-metadata.json')).toBe(true);
+  });
+
+  it('still confirms as a standoff region when write-back is enabled but writeFaceRegion itself fails (e.g. a transient exiftool error)', async () => {
+    const handler = createFacesHandler({ mainStore, facesStore, fsAdapter, writeBackEnabled: true, writeFaceRegion: vi.fn().mockRejectedValue(new Error('exiftool exploded')) });
+    const created = JSON.parse((await handler({
+      method: 'POST', path: '/detections',
+      body: { imageId: photoId, modelName: 'face-api.js', modelVersion: '0.22.2', faces: [{ box: { x: 0.3, y: 0.4, w: 0.2, h: 0.1 }, embedding: [1, 2, 3] }] },
+    })).body).created[0];
+
+    const res = await handler({ method: 'POST', path: '/confirm', body: { detectionId: created.id, personName: 'Bob' } });
+
+    // The failed write-back attempt does not fail the confirmation
+    // itself — it already genuinely happened, as a standoff region.
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body).writtenToFile).toBe(false);
+
+    const crateJson = new TextDecoder().decode(await fsAdapter.readFile(`2025/${CRATE_FILE_NAME}`));
+    const record = readImageRecord(loadOrCreateCrate(crateJson), 'photo.jpg');
+    expect(record.people).toEqual(['Bob']);
+    expect(listDetections(facesStore, { status: 'confirmed' })).toHaveLength(1);
   });
 
   it('records the new reference under the same (collection-relative) region id /existing-regions itself computes, so a confirmed face is never re-offered for backfill', async () => {

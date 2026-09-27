@@ -7,8 +7,8 @@ import {
   searchEntities,
   ENTITY_TYPE_IMAGE,
 } from '../db/store.js';
-import { CRATE_FILE_NAME, loadOrCreateCrate, serializeCrate, readImageRecord } from '../crateBuilder.js';
-import { rescanImageMetadata } from '../scanImage.js';
+import { CRATE_FILE_NAME, loadOrCreateCrate, serializeCrate, readImageRecord, addStandoffFaceRegion } from '../crateBuilder.js';
+import { rescanImageMetadata, syncImageIndexFromCrate } from '../scanImage.js';
 import { joinPath } from '../pathUtils.js';
 import { findClosestReference } from './matching.js';
 import { correctAreaForOrientation } from './orientation.js';
@@ -453,28 +453,29 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
     // ("Reassign"), or giving a brand new one ("New person"): all three
     // are the same operation here, since this app identifies a person by
     // name alone (see Spec.md's Person/Pet section) — the same name
-    // always resolves to the same entity, a new one otherwise. Writes a
-    // real MWG face region into the photo file itself (via the injected
-    // writeFaceRegion), then re-extracts that one image's EXIF so the
-    // change flows through the exact same region-ingestion pipeline a
-    // digiKam- or Lightroom-tagged photo already goes through — no
-        // separate code path for a machine-confirmed region's shape.
+    // always resolves to the same entity, a new one otherwise.
+    //
+    // Always recorded as a standoff region first (Spec.md's Face
+    // Recognition section) — this alone is what makes a confirmation
+    // fully visible (viewer tags, "Show faces", people/pets facets)
+    // immediately, in every run mode, regardless of whether writing to
+    // the original file is even possible here or has been turned on for
+    // this collection. Writing a real MWG region into the photo file
+    // itself (via the injected writeFaceRegion) is then attempted as a
+    // genuinely separate, best-effort, optional step — not what makes a
+    // confirmation "real"; its own failure (exiftool erroring, say)
+    // never undoes or fails a confirmation that has already happened.
     if (method === 'POST' && path === '/confirm') {
-      if (!writeFaceRegion) {
-        return json(501, { error: 'Writing face regions back into photo files requires the desktop server (rocphotos serve) with exiftool installed, not the browser-only mode.' });
-      }
-      if (!writeBackEnabled) {
-        return json(403, { error: 'Writing recognized faces back into photo files is turned off for this collection. Turn on "Write recognized faces back into photo files" in Settings to confirm faces.' });
-      }
       const personName = typeof body?.personName === 'string' ? body.personName.trim() : '';
       if (!personName) return badRequest('personName is required');
 
-      // Everything below is a read-modify-write of a photo file and/or a
-      // crate file (writeFaceRegion, then rescanImageMetadata's crate
-      // write, then the faces crate's own read-modify-write) — two of
-      // these confirmations running at once, for the same image or even
-      // just the same directory, can otherwise interleave and silently
-      // lose whichever one's write finishes first (see writeQueue.js).
+      // Everything below is a read-modify-write of a crate file and/or a
+      // photo file (the standoff region, then writeFaceRegion +
+      // rescanImageMetadata's crate write when write-back applies, then
+      // the faces crate's own read-modify-write) — two of these
+      // confirmations running at once, for the same image or even just
+      // the same directory, can otherwise interleave and silently lose
+      // whichever one's write finishes first (see writeQueue.js).
       // Confirmed as a real cause of data loss: batch-confirming several
       // people in the same folder in quick succession left only one of
       // two people actually tagged on a given photo, with the other
@@ -492,13 +493,44 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
 
         const { crateDirPath, crate } = await loadCrateForImage(fsAdapter, imageRow.ro_crate_id);
         const imagePath = crateRelativeEntityId(imageRow.ro_crate_id, imageRow.id);
+        const resolvedPersonId = personEntityId(personName);
+        const box = { x: detection.box_x, y: detection.box_y, w: detection.box_w, h: detection.box_h };
 
-        await writeFaceRegion(fileRow.relative_path, {
-          name: personName,
-          area: { x: detection.box_x, y: detection.box_y, w: detection.box_w, h: detection.box_h },
+        const standoff = addStandoffFaceRegion(crate, imagePath, {
+          name: personName, subjectId: resolvedPersonId, subjectType: 'Person', box,
         });
+        let sourceRegionId = standoff?.regionId;
 
-        const record = await rescanImageMetadata(fsAdapter, mainStore, crateDirPath, crate, imagePath);
+        let writtenToFile = false;
+        if (writeFaceRegion && writeBackEnabled) {
+          try {
+            await writeFaceRegion(fileRow.relative_path, { name: personName, area: box });
+            const record = await rescanImageMetadata(fsAdapter, mainStore, crateDirPath, crate, imagePath);
+            // The freshly-written region is always last among the
+            // EXIF-derived ones (see the exiftool adapter, which only
+            // ever appends) — kept for provenance/inspection only; see
+            // hasReferenceForPersonOnImage for why the "already
+            // backfilled?" check does not depend on this id being built
+            // consistently.
+            sourceRegionId = `${detection.image_id}#region-${record.regions.length - 1}`;
+            writtenToFile = true;
+          } catch (err) {
+            // Left as a standoff region — still fully visible, just not
+            // written into the file. Logged, not surfaced as a request
+            // failure: the confirmation itself already succeeded.
+            console.error(`Could not write a face region into ${fileRow.relative_path}: ${err.message}`);
+          }
+        }
+
+        if (!writtenToFile) {
+          // No file write happened this time (unavailable, turned off,
+          // or it failed) — the crate already has the standoff region;
+          // the index still needs to learn about it, the same way
+          // rescanImageMetadata would if a file write had happened
+          // instead.
+          syncImageIndexFromCrate(mainStore, crateDirPath, imagePath, readImageRecord(crate, imagePath));
+        }
+
         await fsAdapter.writeFile(joinPath(crateDirPath, CRATE_FILE_NAME), serializeCrate(crate));
         await persistStore(mainStore);
         // Keeps the AROCAPI handler's own read cache (if shared — see
@@ -508,16 +540,6 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
         // overlay would keep showing whatever this crate looked like the
         // last time anything read it, until the server was restarted.
         crateCache?.set(imageRow.ro_crate_id, crate);
-
-        // The newly-written region is always last in the region list
-        // (see the exiftool adapter, which only ever appends) — its id
-        // is therefore derivable from the freshly re-read region count,
-        // without needing writeFaceRegion to hand a region id back. Kept
-        // for provenance/inspection only now — see
-        // hasReferenceForPersonOnImage for why the "already backfilled?"
-        // check no longer depends on this id being built consistently.
-        const sourceRegionId = `${detection.image_id}#region-${record.regions.length - 1}`;
-        const resolvedPersonId = personEntityId(personName);
 
         const facesCrate = await loadOrCreateFacesCrate(fsAdapter);
         const referenceFaceId = crypto.randomUUID();
@@ -546,7 +568,7 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
         updateDetectionStatus(facesStore, detection.id, { status: 'confirmed', resolvedPersonId, resolvedPersonName: personName });
         await persistStore(facesStore);
 
-        return json(200, { ok: true, personId: resolvedPersonId, personName });
+        return json(200, { ok: true, personId: resolvedPersonId, personName, writtenToFile });
       });
     }
 

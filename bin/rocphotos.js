@@ -580,7 +580,7 @@ async function serve(rootDir, { port = 8420 } = {}) {
   // files until someone explicitly turns it on.
   const writeBackEnabled = await loadWriteMetadataToFilesSetting(fsAdapter);
   if (exiftoolAvailable && !writeBackEnabled) {
-    console.warn('Note: writing recognized faces back into photo files is turned off for this collection (see Settings) — confirming a face will be refused until it is turned on.');
+    console.warn('Note: writing recognized faces back into photo files is turned off for this collection (see Settings) — confirming a face will still succeed, as crate-only metadata, until it is turned on.');
   }
   const handleFacesRequest = createFacesHandler({
     mainStore: store,
