@@ -74,7 +74,7 @@
     .faces-review-subheading { color: #ccc; font-size: 0.8rem; text-transform: uppercase; margin: 0; }
     .faces-review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; }
     .face-card { background: #222; border-radius: 6px; padding: 0.6rem; display: flex; flex-direction: column; gap: 0.4rem; }
-    .face-card canvas { width: 100%; border-radius: 4px; background: #333; }
+    .face-card canvas { width: 100%; border-radius: 4px; background: #333; cursor: pointer; }
     .face-card-label { color: #eee; font-size: 0.8rem; }
     .face-card-actions { display: flex; flex-wrap: wrap; gap: 0.3rem; }
     .face-card-actions button { background: #333; color: #eee; border: none; border-radius: 4px; padding: 0.25rem 0.5rem; font-size: 0.72rem; cursor: pointer; }
@@ -90,13 +90,21 @@
     .face-match-group-reassign-input:disabled { opacity: 0.5; }
     .face-match-thumbs { display: flex; flex-wrap: wrap; gap: 0.7rem; }
     .face-match-thumb { position: relative; width: 150px; display: flex; flex-direction: column; gap: 0.3rem; }
-    .face-match-thumb canvas { width: 100%; border-radius: 4px; background: #333; display: block; }
+    .face-match-thumb canvas { width: 100%; border-radius: 4px; background: #333; display: block; cursor: pointer; }
     .face-match-thumb-remove { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; line-height: 18px; padding: 0; border-radius: 50%; background: #b00020; color: #fff; border: none; cursor: pointer; font-size: 0.9rem; z-index: 1; }
     .face-match-thumb-remove:hover { background: #d0002a; }
     .face-match-thumb-input { width: 100%; box-sizing: border-box; padding: 0.2rem 0.4rem; font-size: 0.72rem; border: 1px solid #555; border-radius: 4px; background: #111; color: #eee; }
     .face-match-thumb-actions { display: flex; gap: 0.3rem; }
     .face-match-thumb-actions button { flex: 1; background: #333; color: #eee; border: none; border-radius: 4px; padding: 0.2rem 0.3rem; font-size: 0.68rem; cursor: pointer; }
     .face-match-thumb-actions button:hover { background: #1a5fb4; }
+
+    /* Above #faces-review (z-index 100), since it opens from within that
+       screen and must sit on top of it, not behind. */
+    #face-context-viewer { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.95); z-index: 110; align-items: center; justify-content: center; padding: 2rem; box-sizing: border-box; }
+    #face-context-viewer.open { display: flex; }
+    #face-context-image-wrap { position: relative; display: inline-block; max-width: 100%; max-height: 90vh; line-height: 0; }
+    #face-context-image { max-width: 100%; max-height: 90vh; object-fit: contain; display: block; }
+    #face-context-close { position: fixed; top: 1rem; right: 1.5rem; color: #fff; font-size: 2rem; line-height: 1; cursor: pointer; background: none; border: none; z-index: 1; }
 
     #scan-screen h2, #settings-screen h2 { font-size: 1rem; margin: 0 0 0.6rem; }
     #admin-status, #settings-status { color: #555; font-size: 0.9rem; margin-bottom: 1rem; }
@@ -338,6 +346,14 @@
     <button id="faces-review-close" aria-label="Close">&times;</button>
     <h2 id="faces-review-heading">Review faces</h2>
     <div id="faces-review-list"></div>
+  </div>
+
+  <div id="face-context-viewer">
+    <button id="face-context-close" aria-label="Close">&times;</button>
+    <div id="face-context-image-wrap">
+      <img id="face-context-image" alt="" />
+      <div id="face-context-highlight" class="face-box"></div>
+    </div>
   </div>
 
   <dialog id="keyword-dialog">

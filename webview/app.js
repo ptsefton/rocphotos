@@ -87,6 +87,10 @@ const viewerFacesToggleEl = document.querySelector('#viewer-faces-toggle');
 const recognizeFacesButtonEl = document.querySelector('#recognize-faces-button');
 const facesReviewEl = document.querySelector('#faces-review');
 const facesReviewListEl = document.querySelector('#faces-review-list');
+const faceContextViewerEl = document.querySelector('#face-context-viewer');
+const faceContextImageEl = document.querySelector('#face-context-image');
+const faceContextHighlightEl = document.querySelector('#face-context-highlight');
+const faceContextCloseEl = document.querySelector('#face-context-close');
 
 // Face regions (with a bounding box) for the entity currently open in the
 // viewer, redrawn whenever the overlay is shown and whenever the image's
@@ -1725,6 +1729,57 @@ async function drawFaceCrop(canvas, detection) {
   canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
 }
 
+// A tight crop (drawFaceCrop above) is often not enough to tell whether
+// a detection or a suggested match is actually right — a face alone,
+// out of context, can be genuinely ambiguous. Clicking one instead opens
+// the whole original photo, full-screen, with the same box highlighted
+// on it (in image-fraction coordinates, the same as detection.box itself
+// — face-api.js's own convention, top-left + size, already what
+// drawFaceCrop above reads directly with no conversion), on top of the
+// review screen rather than replacing it.
+let currentFaceContextBox = null;
+
+function renderFaceContextHighlight() {
+  const { naturalWidth, naturalHeight, clientWidth, clientHeight } = faceContextImageEl;
+  if (!naturalWidth || !naturalHeight || !currentFaceContextBox) return;
+
+  // object-fit: contain centers the image within its box, adding
+  // letterboxing on one axis when the aspect ratios differ — see
+  // renderFaceOverlay below, which this mirrors for the same reason.
+  const scale = Math.min(clientWidth / naturalWidth, clientHeight / naturalHeight);
+  const renderedWidth = naturalWidth * scale;
+  const renderedHeight = naturalHeight * scale;
+  const offsetX = (clientWidth - renderedWidth) / 2;
+  const offsetY = (clientHeight - renderedHeight) / 2;
+
+  const box = currentFaceContextBox;
+  faceContextHighlightEl.style.left = `${offsetX + box.x * renderedWidth}px`;
+  faceContextHighlightEl.style.top = `${offsetY + box.y * renderedHeight}px`;
+  faceContextHighlightEl.style.width = `${box.w * renderedWidth}px`;
+  faceContextHighlightEl.style.height = `${box.h * renderedHeight}px`;
+}
+
+function openFaceContext(detection) {
+  currentFaceContextBox = detection.box;
+  faceContextImageEl.src = entityUrl('/api/file', detection.imageId);
+  faceContextViewerEl.classList.add('open');
+}
+
+function closeFaceContext() {
+  faceContextViewerEl.classList.remove('open');
+  faceContextImageEl.src = '';
+  currentFaceContextBox = null;
+}
+
+faceContextImageEl.addEventListener('load', renderFaceContextHighlight);
+window.addEventListener('resize', () => {
+  if (faceContextViewerEl.classList.contains('open')) renderFaceContextHighlight();
+});
+faceContextCloseEl.addEventListener('click', closeFaceContext);
+faceContextViewerEl.addEventListener('click', (event) => {
+  if (event.target === faceContextViewerEl) closeFaceContext();
+});
+
 async function resolveDetection(detectionId, path, body) {
   try {
     await postEdit(path, { detectionId, ...body });
@@ -1743,6 +1798,8 @@ function renderFaceCard(detection) {
   card.className = 'face-card';
 
   const canvas = document.createElement('canvas');
+  canvas.title = 'Click to see this face in the full photo';
+  canvas.addEventListener('click', () => openFaceContext(detection));
   card.appendChild(canvas);
   drawFaceCrop(canvas, detection).catch(() => {});
 
@@ -1853,6 +1910,8 @@ function renderMatchGroup(personName, detections) {
     thumb.className = 'face-match-thumb';
 
     const canvas = document.createElement('canvas');
+    canvas.title = 'Click to see this face in the full photo';
+    canvas.addEventListener('click', () => openFaceContext(detection));
     thumb.appendChild(canvas);
     drawFaceCrop(canvas, detection).catch(() => {});
 
