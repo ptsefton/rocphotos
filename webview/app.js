@@ -1816,6 +1816,53 @@ async function resolveDetection(detectionId, path, body) {
   }
 }
 
+// Shared by every "do this to several detections at once" action on the
+// review screen — a match/cluster group's own bulk buttons (renderMatchGroup)
+// and the checkbox-driven Unidentified bulk bar (openFacesReview) alike:
+// attempts every one regardless of an earlier one failing, and always
+// refreshes the review screen afterward. A version of this that aborted
+// the loop and skipped the refresh on the first error left already-applied
+// detections stuck showing as still pending, and retrying re-sent the
+// whole batch in the same order, which 400s immediately on whichever one
+// had already gone through (see Spec.md's Face Recognition section)
+// rather than ever reaching the ones after it.
+async function applyToDetections(detectionIds, path, extraBody, verbPastTense) {
+  const errors = [];
+  for (const detectionId of detectionIds) {
+    try {
+      await postEdit(path, { detectionId, ...extraBody });
+    } catch (err) {
+      errors.push(err.message);
+    }
+  }
+  await openFacesReview();
+  if (errors.length > 0) {
+    window.alert(`${errors.length} face(s) could not be ${verbPastTense} (the rest were applied):\n${errors.join('\n')}`);
+  }
+}
+
+// Checkbox-driven manual grouping for the "Unidentified" grid (below) —
+// a complement to the automatic clustering (clusterUnmatched,
+// server-side): that groups by embedding similarity alone, so a face it
+// missed (or one the reviewer just recognises on sight, regardless of
+// how alike two crops actually look to the model) can still be checked
+// alongside others and named together in one action, the same way an
+// automatic cluster already can be. Reset on every fresh render of the
+// review screen (see openFacesReview) — matching the main grid's own
+// selectedIds, which is reset the same way by every search() — so a
+// checked box never silently refers to a detection already resolved by
+// some unrelated action elsewhere on the screen.
+let selectedUnidentifiedIds = new Set();
+let unidentifiedBulkBarEl = null;
+let unidentifiedBulkCountEl = null;
+
+function updateUnidentifiedBulkBar() {
+  if (!unidentifiedBulkBarEl) return;
+  const count = selectedUnidentifiedIds.size;
+  unidentifiedBulkBarEl.hidden = count === 0;
+  if (unidentifiedBulkCountEl) unidentifiedBulkCountEl.textContent = `${count} selected`;
+}
+
 // For a detection with no suggestion: naming it (via the lookup dialog),
 // ignoring it, or ignoring it as a permanent stranger. A suggested match
 // is never rendered this way — see renderMatchGroup below, which groups
@@ -1823,6 +1870,20 @@ async function resolveDetection(detectionId, path, body) {
 function renderFaceCard(detection) {
   const card = document.createElement('div');
   card.className = 'face-card';
+
+  const checkboxLabel = document.createElement('label');
+  checkboxLabel.className = 'select-checkbox';
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.title = 'Select to name this and other checked faces together';
+  checkbox.checked = selectedUnidentifiedIds.has(detection.id);
+  checkbox.addEventListener('change', () => {
+    if (checkbox.checked) selectedUnidentifiedIds.add(detection.id);
+    else selectedUnidentifiedIds.delete(detection.id);
+    updateUnidentifiedBulkBar();
+  });
+  checkboxLabel.appendChild(checkbox);
+  card.appendChild(checkboxLabel);
 
   const canvas = document.createElement('canvas');
   canvas.title = 'Click to see this face in the full photo';
@@ -1879,33 +1940,28 @@ function renderFaceCard(detection) {
 // to attach to and is left out; the name-input row becomes the group's
 // only (and primary) way to confirm it, instead of a secondary
 // "reassign" escape hatch for a wrong suggestion.
-function renderMatchGroup(personName, detections) {
+// `onRemoveFromCluster`, only meaningful for an unnamed cluster
+// (personName null), is called with a detection just pulled out of it
+// via its own per-thumbnail [-] — see below.
+function renderMatchGroup(personName, detections, { onRemoveFromCluster } = {}) {
   const box = document.createElement('div');
   box.className = 'face-match-group';
 
-  // Shared by every "do this to the whole group" action below (Confirm
-  // all, Reassign all, Ignore all, None of these): attempts every
-  // detection regardless of an earlier one failing, and always
-  // refreshes the review screen afterward — a version of this that
-  // aborted the loop and skipped the refresh on the first error left
-  // already-applied detections stuck showing as still pending, and
-  // retrying re-sent the whole batch in the same order, which 400s
-  // immediately on whichever one had already gone through (see Spec.md's
-  // Face Recognition section) rather than ever reaching the ones after it.
-  async function applyToAll(path, extraBody, controlEl, verbPastTense) {
+  // A cluster (never a suggested-Person group — see the per-thumbnail
+  // [-] handler below) can shrink client-side, without a server round
+  // trip, as members are pulled out of it one at a time; every bulk
+  // action (bulkTargets) and every displayed count must track that, not
+  // the original, possibly-now-too-large `detections` list.
+  let bulkTargets = detections;
+
+  // Confirm all/Reassign all/Ignore all/None of these are all this same
+  // bulk operation (applyToDetections), just against bulkTargets (which
+  // can shrink client-side — see the per-thumbnail [-] below) rather
+  // than a fixed list, and disabling whichever control was clicked
+  // first.
+  function applyToAll(path, extraBody, controlEl, verbPastTense) {
     controlEl.disabled = true;
-    const errors = [];
-    for (const detection of detections) {
-      try {
-        await postEdit(path, { detectionId: detection.id, ...extraBody });
-      } catch (err) {
-        errors.push(err.message);
-      }
-    }
-    await openFacesReview();
-    if (errors.length > 0) {
-      window.alert(`${errors.length} face(s) could not be ${verbPastTense} (the rest were applied):\n${errors.join('\n')}`);
-    }
+    return applyToDetections(bulkTargets.map((d) => d.id), path, extraBody, verbPastTense);
   }
 
   function confirmAllAs(targetName, controlEl) {
@@ -1915,7 +1971,6 @@ function renderMatchGroup(personName, detections) {
   const header = document.createElement('div');
   header.className = 'face-match-group-header';
   const title = document.createElement('span');
-  title.textContent = personName ? `Presumed: ${personName} (${detections.length})` : `Unidentified cluster (${detections.length})`;
   header.appendChild(title);
 
   if (personName) {
@@ -1930,11 +1985,10 @@ function renderMatchGroup(personName, detections) {
   // it), or the whole group should just be dismissed without confirming
   // or rejecting any of it. "None of these" has no suggested name to
   // reject for an unnamed cluster, so it is left out there.
+  let rejectAllButton = null;
   if (personName) {
-    const rejectAllButton = document.createElement('button');
+    rejectAllButton = document.createElement('button');
     rejectAllButton.className = 'secondary';
-    rejectAllButton.textContent = `None of these are ${personName}`;
-    rejectAllButton.title = `Re-match all ${detections.length} against everyone else, excluding ${personName}`;
     rejectAllButton.addEventListener('click', () => applyToAll('/faces/reject-suggestion', {}, rejectAllButton, `rejected as ${personName}`));
     header.appendChild(rejectAllButton);
   }
@@ -1942,7 +1996,6 @@ function renderMatchGroup(personName, detections) {
   const ignoreAllButton = document.createElement('button');
   ignoreAllButton.className = 'secondary';
   ignoreAllButton.textContent = 'Ignore all';
-  ignoreAllButton.title = `Dismiss all ${detections.length} without confirming or rejecting them`;
   ignoreAllButton.addEventListener('click', () => applyToAll('/faces/ignore', {}, ignoreAllButton, 'ignored'));
   header.appendChild(ignoreAllButton);
 
@@ -1953,10 +2006,6 @@ function renderMatchGroup(personName, detections) {
   const reassignAllInput = document.createElement('input');
   reassignAllInput.type = 'text';
   reassignAllInput.className = 'face-match-group-reassign-input';
-  reassignAllInput.placeholder = personName ? 'Reassign all to… (Enter)' : `Who is this? (${detections.length}) (Enter)`;
-  reassignAllInput.title = personName
-    ? `If this whole group is actually someone else, type their name and press Enter to confirm all ${detections.length} as them instead`
-    : `Type a name and press Enter to confirm all ${detections.length} of these as them`;
   reassignAllInput.setAttribute('list', 'person-datalist');
   reassignAllInput.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
@@ -1966,6 +2015,27 @@ function renderMatchGroup(personName, detections) {
   });
   reassignAllRow.appendChild(reassignAllInput);
   box.appendChild(reassignAllRow);
+
+  // Every label mentioning how many are in this group, refreshed after
+  // each client-side removal from a cluster (see the per-thumbnail [-]
+  // below) — a group with a suggested Person never shrinks this way (its
+  // own [-] and "None of these" both round-trip the server and refresh
+  // the whole screen instead), so this only ever runs more than once for
+  // an unnamed cluster.
+  function refreshLabels() {
+    const count = bulkTargets.length;
+    title.textContent = personName ? `Presumed: ${personName} (${count})` : `Unidentified cluster (${count})`;
+    if (rejectAllButton) {
+      rejectAllButton.textContent = `None of these are ${personName}`;
+      rejectAllButton.title = `Re-match all ${count} against everyone else, excluding ${personName}`;
+    }
+    ignoreAllButton.title = `Dismiss all ${count} without confirming or rejecting them`;
+    reassignAllInput.placeholder = personName ? 'Reassign all to… (Enter)' : `Who is this? (${count}) (Enter)`;
+    reassignAllInput.title = personName
+      ? `If this whole group is actually someone else, type their name and press Enter to confirm all ${count} as them instead`
+      : `Type a name and press Enter to confirm all ${count} of these as them`;
+  }
+  refreshLabels();
 
   const thumbsEl = document.createElement('div');
   thumbsEl.className = 'face-match-thumbs';
@@ -1979,15 +2049,40 @@ function renderMatchGroup(personName, detections) {
     thumb.appendChild(canvas);
     drawFaceCrop(canvas, detection).catch(() => {});
 
-    // Nothing to "reject" for an unnamed cluster — there is no
-    // suggested name attached to pull this one detection back out of.
-    // Ignore (below) is this thumbnail's own way out of the group.
     if (personName) {
+      // Not "this Person" — re-matches server-side, excluding them.
       const removeButton = document.createElement('button');
       removeButton.className = 'face-match-thumb-remove';
       removeButton.textContent = '−';
       removeButton.title = `Not ${personName} — remember that and try matching again`;
       removeButton.addEventListener('click', () => resolveDetection(detection.id, '/faces/reject-suggestion', {}));
+      thumb.appendChild(removeButton);
+    } else {
+      // Not the same person as the rest of this cluster — a purely
+      // client-side ungrouping (nothing server-side changes: the
+      // detection is still pending, just no longer rendered as part of
+      // this group), since a cluster is only ever a way of presenting
+      // still-pending detections together, never itself a stored fact.
+      // Pulled into its own single "Unidentified" card via
+      // onRemoveFromCluster, same as any other detection unlike
+      // anything else pending; a cluster shrunk to just one member is
+      // no longer really a cluster, so it dissolves entirely rather
+      // than lingering as a group of one.
+      const removeButton = document.createElement('button');
+      removeButton.className = 'face-match-thumb-remove';
+      removeButton.textContent = '−';
+      removeButton.title = 'Not the same person as the rest of this group — move to its own card';
+      removeButton.addEventListener('click', () => {
+        bulkTargets = bulkTargets.filter((d) => d.id !== detection.id);
+        thumb.remove();
+        onRemoveFromCluster?.(detection);
+        if (bulkTargets.length <= 1) {
+          for (const last of bulkTargets) onRemoveFromCluster?.(last);
+          box.remove();
+        } else {
+          refreshLabels();
+        }
+      });
       thumb.appendChild(removeButton);
     }
 
@@ -2063,6 +2158,13 @@ async function openFacesReview() {
 
   document.querySelector('#faces-review-heading').textContent = `Review faces (${total} pending)`;
   facesReviewListEl.innerHTML = '';
+  // A fresh render throws away every existing card and rebuilds them —
+  // matching the main grid's own selectedIds, reset the same way by
+  // every search() — so a checked box can never silently go on
+  // referring to a detection some other action already resolved.
+  selectedUnidentifiedIds = new Set();
+  unidentifiedBulkBarEl = null;
+  unidentifiedBulkCountEl = null;
 
   // Keeps #person-datalist filled for the inline reassign inputs on
   // each thumbnail below (see renderMatchGroup) — populated here rather
@@ -2104,22 +2206,68 @@ async function openFacesReview() {
     facesReviewListEl.appendChild(renderMatchGroup(personName, group));
   }
 
-  for (const ids of unmatchedClusters) {
-    facesReviewListEl.appendChild(renderMatchGroup(null, ids.map((id) => detectionsById.get(id))));
-  }
-
-  if (singles.length > 0) {
+  // Created lazily: a detection pulled out of a cluster via its own [-]
+  // (see renderMatchGroup) needs this section to exist and grow even
+  // when there were no true singles (unlike anything else pending) to
+  // begin with.
+  let unidentifiedGridEl = null;
+  function ensureUnidentifiedSection() {
+    if (unidentifiedGridEl) return unidentifiedGridEl;
     const heading = document.createElement('h3');
     heading.className = 'faces-review-subheading';
     heading.textContent = 'Unidentified';
     facesReviewListEl.appendChild(heading);
 
-    const grid = document.createElement('div');
-    grid.className = 'faces-review-grid';
+    // Hidden until at least one card's checkbox is checked (see
+    // renderFaceCard/updateUnidentifiedBulkBar) — a manual complement to
+    // automatic clustering: the model's own embedding-similarity guess
+    // (above) can miss a real match, or the reviewer may just recognise
+    // two faces as the same person regardless of how alike the crops
+    // look to it, so any subset can be checked and named together here.
+    const bulkBar = document.createElement('div');
+    bulkBar.className = 'faces-review-bulk-bar';
+    bulkBar.hidden = true;
+    unidentifiedBulkBarEl = bulkBar;
+
+    unidentifiedBulkCountEl = document.createElement('span');
+    bulkBar.appendChild(unidentifiedBulkCountEl);
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.placeholder = 'Name selected as… (Enter)';
+    nameInput.setAttribute('list', 'person-datalist');
+    nameInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      const name = nameInput.value.trim();
+      if (name) applyToDetections([...selectedUnidentifiedIds], '/faces/confirm', { personName: name }, `confirmed as ${name}`);
+    });
+    bulkBar.appendChild(nameInput);
+
+    const ignoreButton = document.createElement('button');
+    ignoreButton.textContent = 'Ignore selected';
+    ignoreButton.addEventListener('click', () => applyToDetections([...selectedUnidentifiedIds], '/faces/ignore', {}, 'ignored'));
+    bulkBar.appendChild(ignoreButton);
+
+    facesReviewListEl.appendChild(bulkBar);
+
+    unidentifiedGridEl = document.createElement('div');
+    unidentifiedGridEl.className = 'faces-review-grid';
+    facesReviewListEl.appendChild(unidentifiedGridEl);
+    return unidentifiedGridEl;
+  }
+
+  for (const ids of unmatchedClusters) {
+    facesReviewListEl.appendChild(renderMatchGroup(null, ids.map((id) => detectionsById.get(id)), {
+      onRemoveFromCluster: (detection) => ensureUnidentifiedSection().appendChild(renderFaceCard(detection)),
+    }));
+  }
+
+  if (singles.length > 0) {
+    const grid = ensureUnidentifiedSection();
     for (const detection of singles) {
       grid.appendChild(renderFaceCard(detection));
     }
-    facesReviewListEl.appendChild(grid);
   }
 
   facesReviewEl.classList.add('open');
