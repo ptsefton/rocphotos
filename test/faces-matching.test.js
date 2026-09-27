@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { euclideanDistance, findClosestReference, MATCH_THRESHOLD, MATCH_MARGIN } from '../src/core/faces/matching.js';
+import { euclideanDistance, findClosestReference, MATCH_THRESHOLD, MATCH_MARGIN, clusterUnmatched, CLUSTER_THRESHOLD } from '../src/core/faces/matching.js';
 
 describe('euclideanDistance', () => {
   it('is zero for identical vectors', () => {
@@ -69,5 +69,54 @@ describe('findClosestReference', () => {
   it('MATCH_MARGIN is a real, positive number smaller than MATCH_THRESHOLD', () => {
     expect(MATCH_MARGIN).toBeGreaterThan(0);
     expect(MATCH_MARGIN).toBeLessThan(MATCH_THRESHOLD);
+  });
+});
+
+describe('clusterUnmatched', () => {
+  it('groups mutually close detections into one cluster', () => {
+    const a = { id: 'a', embedding: [0, 0] };
+    const b = { id: 'b', embedding: [0.05, 0.05] };
+    const c = { id: 'c', embedding: [0.06, 0.04] };
+    const clusters = clusterUnmatched([a, b, c]);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].map((d) => d.id).sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('keeps distant detections in separate clusters', () => {
+    const a = { id: 'a', embedding: [0, 0] };
+    const b = { id: 'b', embedding: [10, 10] };
+    const clusters = clusterUnmatched([a, b]);
+    expect(clusters).toHaveLength(2);
+  });
+
+  it('does not chain two distant detections together through a coincidental middle one (complete-linkage)', () => {
+    // b is close to both a and c, but a and c are themselves far apart —
+    // single-linkage clustering would wrongly merge all three; this must
+    // keep a and c separate from each other.
+    const a = { id: 'a', embedding: [0, 0] };
+    const b = { id: 'b', embedding: [0.3, 0] };
+    const c = { id: 'c', embedding: [0.6, 0] };
+    expect(euclideanDistance(a.embedding, b.embedding)).toBeLessThanOrEqual(CLUSTER_THRESHOLD);
+    expect(euclideanDistance(b.embedding, c.embedding)).toBeLessThanOrEqual(CLUSTER_THRESHOLD);
+    expect(euclideanDistance(a.embedding, c.embedding)).toBeGreaterThan(CLUSTER_THRESHOLD);
+
+    const clusters = clusterUnmatched([a, b, c]);
+    const idsPerCluster = clusters.map((cluster) => cluster.map((d) => d.id).sort());
+    expect(idsPerCluster).not.toContainEqual(['a', 'b', 'c']);
+    // a and c must never end up in the same cluster as each other.
+    for (const ids of idsPerCluster) {
+      if (ids.includes('a')) expect(ids).not.toContain('c');
+    }
+  });
+
+  it('gives a face unlike anything else pending its own cluster of one', () => {
+    const a = { id: 'a', embedding: [0, 0] };
+    const lonely = { id: 'lonely', embedding: [50, 50] };
+    const clusters = clusterUnmatched([a, lonely]);
+    expect(clusters).toEqual(expect.arrayContaining([[a], [lonely]]));
+  });
+
+  it('returns nothing for an empty input', () => {
+    expect(clusterUnmatched([])).toEqual([]);
   });
 });

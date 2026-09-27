@@ -10,7 +10,7 @@ import {
 import { CRATE_FILE_NAME, loadOrCreateCrate, serializeCrate, readImageRecord, addStandoffFaceRegion } from '../crateBuilder.js';
 import { rescanImageMetadata, syncImageIndexFromCrate } from '../scanImage.js';
 import { joinPath } from '../pathUtils.js';
-import { findClosestReference } from './matching.js';
+import { findClosestReference, clusterUnmatched } from './matching.js';
 import { correctAreaForOrientation } from './orientation.js';
 import { SAME_FACE_OVERLAP_THRESHOLD, bestOverlapEitherOrientation } from './geometry.js';
 import { serializeWrites } from '../writeQueue.js';
@@ -369,6 +369,20 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
         }
       }
 
+      // Groups pending detections with no suggested Person into
+      // visually-similar clusters (webview/app.js renders these as an
+      // "Unidentified cluster" group, the same one-action-confirms-all
+      // shape as a suggested-Person match group, just with a name typed
+      // in rather than proposed) — computed here, server-side, so raw
+      // embeddings never need to go out over the API at all; only a
+      // cluster's member ids do. A cluster of size 1 is exactly the
+      // existing one-at-a-time "Unidentified" card, so only real (>1)
+      // clusters are reported.
+      const unclusterable = detections.filter((detection) => detection.status === 'pending' && !detection.suggested_person_id);
+      const unmatchedClusters = clusterUnmatched(unclusterable)
+        .filter((cluster) => cluster.length > 1)
+        .map((cluster) => cluster.map((detection) => detection.id));
+
       return json(200, {
         total: detections.length,
         detections: detections.map((detection) => ({
@@ -381,6 +395,7 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
           suggestedDistance: detection.suggested_distance,
           status: detection.status,
         })),
+        unmatchedClusters,
       });
     }
 

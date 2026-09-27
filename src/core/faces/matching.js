@@ -70,3 +70,38 @@ export function findClosestReference(embedding, referenceFaces) {
   }
   return best;
 }
+
+// A dedicated, tighter threshold for grouping unmatched detections with
+// each other — no named reference was close enough to any of them, so
+// this only ever decides "are these two probably the same unidentified
+// person", never an actual name. Tighter than MATCH_THRESHOLD, and
+// complete-linkage below (every member must be close to every other
+// member, not just the nearest one) rather than single-linkage/chaining,
+// since a wrongly-merged cluster here would extend one bad guess across
+// a whole "confirm all as X" action instead of just one detection.
+export const CLUSTER_THRESHOLD = 0.4;
+
+/**
+ * Groups detections with no suggested Person into visually-similar
+ * clusters (webview/app.js's review screen — "Unidentified cluster"),
+ * so a reviewer can name several photos of the same not-yet-known
+ * person in one action instead of one at a time. A detection joins the
+ * first existing cluster it is within CLUSTER_THRESHOLD of on *every*
+ * member (complete-linkage — see CLUSTER_THRESHOLD above), or starts a
+ * new one (including a cluster of one, for a face unlike anything else
+ * pending) if it fits none.
+ *
+ * @param {Array<{id: string, embedding: number[]}>} detections
+ * @returns {Array<Array<{id: string, embedding: number[]}>>}
+ */
+export function clusterUnmatched(detections) {
+  const clusters = [];
+  for (const detection of detections) {
+    const cluster = clusters.find((candidate) => candidate.every(
+      (member) => euclideanDistance(detection.embedding, member.embedding) <= CLUSTER_THRESHOLD,
+    ));
+    if (cluster) cluster.push(detection);
+    else clusters.push([detection]);
+  }
+  return clusters;
+}

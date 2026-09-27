@@ -135,13 +135,14 @@ Extends the Person and `ImageRegion` model (Section 3.2). A confirmed face is al
 **Workflow.** "Recognize Faces", next to Select All:
 1. Backfills already-tagged faces, loads the face-api.js models, checks `POST /api/faces/scan-status` for unscanned images in view.
 2. Detects and submits results (`POST /api/faces/detections`) for each; a detection overlapping an already-named region is dropped (would otherwise duplicate it every run). Matches: close to a Person → suggested; close to a stranger reference → `auto_ignored`; otherwise unmatched, pending review.
-3. Opens a review screen of pending detections as cropped thumbnails, grouped by suggested Person (an unsuggested one gets its own card under "Unidentified"). Clicking a crop opens the whole photo full-screen with that box highlighted, to judge it in context.
-    - **Confirm all as \<name\>** — accepts every thumbnail in a group.
+3. Opens a review screen of pending detections as cropped thumbnails, grouped by suggested Person. A detection with no suggestion at all is instead grouped with any other unsuggested detection it is visually similar to (`clusterUnmatched`, `src/core/faces/matching.js` — complete-linkage on a tighter `CLUSTER_THRESHOLD`, computed server-side so raw embeddings never need to reach the client, only a cluster's member ids do); only a face unlike anything else pending gets its own single card under "Unidentified". Clicking a crop opens the whole photo full-screen with that box highlighted, to judge it in context.
+    - **Confirm all as \<name\>** — accepts every thumbnail in a group with a suggested Person.
     - **Reassign all to…** — same group, different target name.
     - **None of these are \<name\>** — bulk reject: re-matches every detection in the group against everyone else, excluding this Person.
     - **Ignore all** — bulk dismiss, no confirm or reject.
-    - **Reassign** — per-thumbnail, pre-fillable from suggestions; also how a new name is given to an unmatched face.
-    - **[-] (reject)** — "not this Person"; re-matches against the reference set excluding every Person rejected so far.
+    - A cluster with no suggested name at all has none of the three above (nothing to confirm, reject, or re-suggest) — its name-input row (below) is the only, and primary, way to resolve it, typing one name to confirm every member at once.
+    - **Reassign** — per-thumbnail, pre-fillable from suggestions; also how a new name is given to an unmatched face or an unnamed cluster's own member.
+    - **[-] (reject)** — on a thumbnail with a suggested Person only: "not this Person"; re-matches against the reference set excluding every Person rejected so far.
     - **Ignore** — dismisses this detection only (a future model version starts fresh).
     - **Ignore as stranger** — adds a reference with no Person, so future close matches are auto-ignored.
 4. Confirming records a standoff region (Section 3.2) — fully visible immediately (viewer tags, "Show faces", people/pets facets) — then, if write-back is enabled, attempts the real file write, which supersedes the standoff region. Either way adds the embedding as a new reference example. Response reports `writtenToFile: true/false`.

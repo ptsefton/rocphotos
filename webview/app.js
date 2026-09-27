@@ -1858,6 +1858,15 @@ function renderFaceCard(detection) {
 // the next-best match turns out to be a suppressed stranger), rather
 // than reappearing under the same wrong name the next time this screen
 // opens.
+// `personName` is null for an unnamed cluster — visually-similar
+// detections with no suggested Person at all (see clusterUnmatchedIds
+// below), grouped so several photos of the same not-yet-named person
+// can be confirmed in one action instead of one at a time. Everything
+// that assumes a specific proposed name (Confirm all as X, None of
+// these are X, and the per-thumbnail [-] "not this Person") has nothing
+// to attach to and is left out; the name-input row becomes the group's
+// only (and primary) way to confirm it, instead of a secondary
+// "reassign" escape hatch for a wrong suggestion.
 function renderMatchGroup(personName, detections) {
   const box = document.createElement('div');
   box.className = 'face-match-group';
@@ -1894,23 +1903,29 @@ function renderMatchGroup(personName, detections) {
   const header = document.createElement('div');
   header.className = 'face-match-group-header';
   const title = document.createElement('span');
-  title.textContent = `Presumed: ${personName} (${detections.length})`;
-  const confirmAllButton = document.createElement('button');
-  confirmAllButton.textContent = `Confirm all as ${personName}`;
-  confirmAllButton.addEventListener('click', () => confirmAllAs(personName, confirmAllButton));
+  title.textContent = personName ? `Presumed: ${personName} (${detections.length})` : `Unidentified cluster (${detections.length})`;
   header.appendChild(title);
-  header.appendChild(confirmAllButton);
+
+  if (personName) {
+    const confirmAllButton = document.createElement('button');
+    confirmAllButton.textContent = `Confirm all as ${personName}`;
+    confirmAllButton.addEventListener('click', () => confirmAllAs(personName, confirmAllButton));
+    header.appendChild(confirmAllButton);
+  }
 
   // Bulk versions of the per-thumbnail [-] (reject) and Ignore actions
   // below — for when the whole group is wrong (not just one face in
   // it), or the whole group should just be dismissed without confirming
-  // or rejecting any of it.
-  const rejectAllButton = document.createElement('button');
-  rejectAllButton.className = 'secondary';
-  rejectAllButton.textContent = `None of these are ${personName}`;
-  rejectAllButton.title = `Re-match all ${detections.length} against everyone else, excluding ${personName}`;
-  rejectAllButton.addEventListener('click', () => applyToAll('/faces/reject-suggestion', {}, rejectAllButton, `rejected as ${personName}`));
-  header.appendChild(rejectAllButton);
+  // or rejecting any of it. "None of these" has no suggested name to
+  // reject for an unnamed cluster, so it is left out there.
+  if (personName) {
+    const rejectAllButton = document.createElement('button');
+    rejectAllButton.className = 'secondary';
+    rejectAllButton.textContent = `None of these are ${personName}`;
+    rejectAllButton.title = `Re-match all ${detections.length} against everyone else, excluding ${personName}`;
+    rejectAllButton.addEventListener('click', () => applyToAll('/faces/reject-suggestion', {}, rejectAllButton, `rejected as ${personName}`));
+    header.appendChild(rejectAllButton);
+  }
 
   const ignoreAllButton = document.createElement('button');
   ignoreAllButton.className = 'secondary';
@@ -1926,8 +1941,10 @@ function renderMatchGroup(personName, detections) {
   const reassignAllInput = document.createElement('input');
   reassignAllInput.type = 'text';
   reassignAllInput.className = 'face-match-group-reassign-input';
-  reassignAllInput.placeholder = 'Reassign all to… (Enter)';
-  reassignAllInput.title = `If this whole group is actually someone else, type their name and press Enter to confirm all ${detections.length} as them instead`;
+  reassignAllInput.placeholder = personName ? 'Reassign all to… (Enter)' : `Who is this? (${detections.length}) (Enter)`;
+  reassignAllInput.title = personName
+    ? `If this whole group is actually someone else, type their name and press Enter to confirm all ${detections.length} as them instead`
+    : `Type a name and press Enter to confirm all ${detections.length} of these as them`;
   reassignAllInput.setAttribute('list', 'person-datalist');
   reassignAllInput.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
@@ -1950,12 +1967,17 @@ function renderMatchGroup(personName, detections) {
     thumb.appendChild(canvas);
     drawFaceCrop(canvas, detection).catch(() => {});
 
-    const removeButton = document.createElement('button');
-    removeButton.className = 'face-match-thumb-remove';
-    removeButton.textContent = '−';
-    removeButton.title = `Not ${personName} — remember that and try matching again`;
-    removeButton.addEventListener('click', () => resolveDetection(detection.id, '/faces/reject-suggestion', {}));
-    thumb.appendChild(removeButton);
+    // Nothing to "reject" for an unnamed cluster — there is no
+    // suggested name attached to pull this one detection back out of.
+    // Ignore (below) is this thumbnail's own way out of the group.
+    if (personName) {
+      const removeButton = document.createElement('button');
+      removeButton.className = 'face-match-thumb-remove';
+      removeButton.textContent = '−';
+      removeButton.title = `Not ${personName} — remember that and try matching again`;
+      removeButton.addEventListener('click', () => resolveDetection(detection.id, '/faces/reject-suggestion', {}));
+      thumb.appendChild(removeButton);
+    }
 
     // Reassigning this one face directly, without waiting for the [-]
     // button's guess-again matching: typed here rather than in a modal,
@@ -2006,7 +2028,7 @@ async function openFacesReview() {
   search();
 
   const response = await fetch('/api/faces/detections?status=pending');
-  const { total, detections } = await response.json();
+  const { total, detections, unmatchedClusters } = await response.json();
 
   // Nothing left to review — closes the full-screen panel rather than
   // leaving it open showing an empty "No faces waiting for review."
@@ -2039,23 +2061,35 @@ async function openFacesReview() {
 
   // Presumed matches are grouped together, one box per suggested Person,
   // so several can be approved (or pruned of a wrong one) in a single
-  // action; a detection with no suggestion gets its own card below.
+  // action. A detection with no suggestion at all is grouped the same
+  // way with any other unsuggested detection it is visually similar to
+  // (unmatchedClusters — server-computed, see /faces/detections in
+  // handler.js, since clustering needs the raw embeddings, never sent
+  // to the client at all); only a face unlike anything else pending
+  // gets its own single "Unidentified" card below.
+  const detectionsById = new Map(detections.map((detection) => [detection.id, detection]));
+  const clusteredIds = new Set(unmatchedClusters.flat());
+
   const matchGroups = new Map();
-  const unmatched = [];
+  const singles = [];
   for (const detection of detections) {
-    if (!detection.suggestedPersonName) {
-      unmatched.push(detection);
-      continue;
+    if (detection.suggestedPersonName) {
+      if (!matchGroups.has(detection.suggestedPersonName)) matchGroups.set(detection.suggestedPersonName, []);
+      matchGroups.get(detection.suggestedPersonName).push(detection);
+    } else if (!clusteredIds.has(detection.id)) {
+      singles.push(detection);
     }
-    if (!matchGroups.has(detection.suggestedPersonName)) matchGroups.set(detection.suggestedPersonName, []);
-    matchGroups.get(detection.suggestedPersonName).push(detection);
   }
 
   for (const [personName, group] of matchGroups) {
     facesReviewListEl.appendChild(renderMatchGroup(personName, group));
   }
 
-  if (unmatched.length > 0) {
+  for (const ids of unmatchedClusters) {
+    facesReviewListEl.appendChild(renderMatchGroup(null, ids.map((id) => detectionsById.get(id))));
+  }
+
+  if (singles.length > 0) {
     const heading = document.createElement('h3');
     heading.className = 'faces-review-subheading';
     heading.textContent = 'Unidentified';
@@ -2063,7 +2097,7 @@ async function openFacesReview() {
 
     const grid = document.createElement('div');
     grid.className = 'faces-review-grid';
-    for (const detection of unmatched) {
+    for (const detection of singles) {
       grid.appendChild(renderFaceCard(detection));
     }
     facesReviewListEl.appendChild(grid);

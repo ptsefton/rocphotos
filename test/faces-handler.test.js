@@ -441,6 +441,52 @@ describe('GET /detections', () => {
     expect(parsed.detections[0].imageId).toEqual(photoId);
     expect(parsed.detections[0].imageTitle).toEqual('photo.jpg');
   });
+
+  it('clusters two mutually close, unsuggested detections together, apart from a distant third', async () => {
+    await handleRequest({
+      method: 'POST', path: '/detections',
+      body: {
+        imageId: photoId, modelName: 'm', modelVersion: '1',
+        faces: [
+          { box: { x: 0, y: 0, w: 0.1, h: 0.1 }, embedding: [0, 0] },
+          { box: { x: 0.2, y: 0, w: 0.1, h: 0.1 }, embedding: [0.05, 0.05] },
+          { box: { x: 0.4, y: 0, w: 0.1, h: 0.1 }, embedding: [10, 10] },
+        ],
+      },
+    });
+
+    const res = await handleRequest({ method: 'GET', path: '/detections', query: { status: 'pending' } });
+    const parsed = JSON.parse(res.body);
+    expect(parsed.total).toEqual(3);
+    // Only the close pair is reported as a cluster — a cluster of one is
+    // just the existing, un-clustered "Unidentified" case.
+    expect(parsed.unmatchedClusters).toHaveLength(1);
+    expect(parsed.unmatchedClusters[0]).toHaveLength(2);
+  });
+
+  it('never clusters a detection that already has a suggested Person, even if visually close to an unmatched one', async () => {
+    addReferenceFace(facesStore, {
+      id: 'ref-dave', personId: personEntityId('Dave'), personName: 'Dave',
+      sourceRegionId: 'x.jpg#region-0', sourceImageId: 'x.jpg', embedding: [0, 0],
+      modelName: 'm', modelVersion: '1',
+    });
+
+    await handleRequest({
+      method: 'POST', path: '/detections',
+      body: {
+        imageId: photoId, modelName: 'm', modelVersion: '1',
+        faces: [
+          { box: { x: 0, y: 0, w: 0.1, h: 0.1 }, embedding: [0, 0] }, // suggested: Dave
+          { box: { x: 0.2, y: 0, w: 0.1, h: 0.1 }, embedding: [5, 5] }, // unmatched, alone
+        ],
+      },
+    });
+
+    const res = await handleRequest({ method: 'GET', path: '/detections', query: { status: 'pending' } });
+    const parsed = JSON.parse(res.body);
+    expect(parsed.detections.find((d) => d.suggestedPersonName === 'Dave')).toBeTruthy();
+    expect(parsed.unmatchedClusters).toEqual([]);
+  });
 });
 
 describe('POST /ignore', () => {
