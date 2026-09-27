@@ -16,6 +16,9 @@ import {
   repairMismatchedSourceRegionIds,
   hasReferenceForPersonOnImage,
   deduplicateReferenceFaces,
+  markRegionUndetectable,
+  isRegionUndetectable,
+  mergePersonInFacesStore,
 } from '../src/core/faces/store.js';
 
 let db;
@@ -279,5 +282,77 @@ describe('repairMismatchedSourceRegionIds', () => {
       modelName: 'm', modelVersion: '1',
     });
     expect(repairMismatchedSourceRegionIds(db)).toEqual(0);
+  });
+});
+
+describe('mergePersonInFacesStore', () => {
+  const sourceId = 'arcp://name,rocphoto/person/janesmith2';
+  const targetId = 'arcp://name,rocphoto/person/janesmith';
+
+  it('re-points reference_faces at the target identity', () => {
+    addReferenceFace(db, {
+      id: 'ref-1', personId: sourceId, personName: 'jane smith', sourceRegionId: 'a.jpg#region-0',
+      sourceImageId: 'a.jpg', embedding: [1], modelName: 'm', modelVersion: '1',
+    });
+    const { movedReferenceFaceIds } = mergePersonInFacesStore(db, { sourceIds: [sourceId], targetId, targetName: 'Jane Smith' });
+
+    expect(movedReferenceFaceIds).toEqual(['ref-1']);
+    const [reference] = listReferenceFaces(db, 'm', '1');
+    expect(reference.personId).toEqual(targetId);
+    expect(reference.personName).toEqual('Jane Smith');
+  });
+
+  it('deduplicates a reference_faces row left redundant by the merge (same image/model as one the target already had)', () => {
+    addReferenceFace(db, {
+      id: 'ref-1', personId: sourceId, personName: 'jane smith', sourceRegionId: 'a.jpg#region-0',
+      sourceImageId: 'a.jpg', embedding: [1], modelName: 'm', modelVersion: '1',
+    });
+    addReferenceFace(db, {
+      id: 'ref-2', personId: targetId, personName: 'Jane Smith', sourceRegionId: 'a.jpg#region-1',
+      sourceImageId: 'a.jpg', embedding: [2], modelName: 'm', modelVersion: '1',
+    });
+    mergePersonInFacesStore(db, { sourceIds: [sourceId], targetId, targetName: 'Jane Smith' });
+
+    expect(listReferenceFaces(db, 'm', '1')).toHaveLength(1);
+  });
+
+  it('moves a backfill_undetectable_regions row, dropping it instead of erroring if the target already covers the same (image, model)', () => {
+    markRegionUndetectable(db, { imageId: 'a.jpg', personId: sourceId, personName: 'jane smith', modelName: 'm', modelVersion: '1' });
+    markRegionUndetectable(db, { imageId: 'b.jpg', personId: targetId, personName: 'Jane Smith', modelName: 'm', modelVersion: '1' });
+    markRegionUndetectable(db, { imageId: 'b.jpg', personId: sourceId, personName: 'jane smith', modelName: 'm', modelVersion: '1' });
+
+    expect(() => mergePersonInFacesStore(db, { sourceIds: [sourceId], targetId, targetName: 'Jane Smith' })).not.toThrow();
+
+    expect(isRegionUndetectable(db, 'a.jpg', targetId, 'm', '1')).toBe(true);
+    expect(isRegionUndetectable(db, 'a.jpg', sourceId, 'm', '1')).toBe(false);
+    expect(isRegionUndetectable(db, 'b.jpg', targetId, 'm', '1')).toBe(true);
+    expect(isRegionUndetectable(db, 'b.jpg', sourceId, 'm', '1')).toBe(false);
+  });
+
+  it('re-points a detection\'s suggested and resolved person, and rewrites it out of rejected_person_ids', () => {
+    addDetection(db, {
+      id: 'det-1', imageId: 'a.jpg', box: { x: 0, y: 0, w: 1, h: 1 }, embedding: [1],
+      suggestedPersonId: sourceId, suggestedPersonName: 'jane smith', status: 'pending', modelName: 'm', modelVersion: '1',
+    });
+    updateDetectionStatus(db, 'det-1', { status: 'confirmed', resolvedPersonId: sourceId, resolvedPersonName: 'jane smith' });
+    addDetection(db, {
+      id: 'det-2', imageId: 'b.jpg', box: { x: 0, y: 0, w: 1, h: 1 }, embedding: [1],
+      status: 'pending', modelName: 'm', modelVersion: '1',
+    });
+    updateDetectionSuggestion(db, 'det-2', {
+      suggestedPersonId: null, suggestedPersonName: null, suggestedDistance: null, status: 'pending', rejectedPersonIds: [sourceId],
+    });
+
+    mergePersonInFacesStore(db, { sourceIds: [sourceId], targetId, targetName: 'Jane Smith' });
+
+    const det1 = getDetection(db, 'det-1');
+    expect(det1.suggested_person_id).toEqual(targetId);
+    expect(det1.resolved_person_id).toEqual(targetId);
+    const det2 = getDetection(db, 'det-2');
+    expect(det2.rejectedPersonIds).toEqual([targetId]);
+  });
+
+  it('does nothing for an empty sourceIds list', () => {
+    expect(mergePersonInFacesStore(db, { sourceIds: [], targetId, targetName: 'Jane Smith' })).toEqual({ movedReferenceFaceIds: [] });
   });
 });

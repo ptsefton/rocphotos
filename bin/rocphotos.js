@@ -12,6 +12,7 @@ import { detectLooseRootImages } from '../src/core/walker.js';
 import { createHandler } from '../src/core/arocapi/handler.js';
 import { createAdminHandler } from '../src/core/admin/handler.js';
 import { createFacesHandler } from '../src/core/faces/handler.js';
+import { createPeopleHandler } from '../src/core/people/handler.js';
 import { ensureFacesSchema, FACES_INDEX_FILE_NAME } from '../src/core/faces/store.js';
 import { writeFaceRegion, isExiftoolAvailable } from '../src/adapters/exiftoolWriteback.js';
 import { CRATE_FILE_NAME, loadOrCreateCrate, albumMemberIds } from '../src/core/crateBuilder.js';
@@ -455,11 +456,19 @@ async function serve(rootDir, { port = 8420 } = {}) {
       : null,
     writeBackEnabled,
   });
+  const handlePeopleRequest = createPeopleHandler({ mainStore: store, facesStore, fsAdapter, crateCache });
 
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://127.0.0.1');
-      if (url.pathname.startsWith('/api/faces/')) {
+      if (url.pathname.startsWith('/api/people/') || url.pathname === '/api/people') {
+        const query = Object.fromEntries(url.searchParams);
+        const body = req.method === 'POST' ? await readJsonBody(req) : null;
+        const apiPath = url.pathname.slice('/api/people'.length) || '/';
+        const result = await handlePeopleRequest({ method: req.method, path: apiPath, query, body });
+        res.writeHead(result.status, result.headers);
+        res.end(result.body instanceof Uint8Array ? Buffer.from(result.body) : result.body);
+      } else if (url.pathname.startsWith('/api/faces/')) {
         const query = Object.fromEntries(url.searchParams);
         const body = req.method === 'POST' ? await readJsonBody(req) : null;
         const apiPath = url.pathname.slice('/api/faces'.length) || '/';

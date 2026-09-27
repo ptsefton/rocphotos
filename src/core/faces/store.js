@@ -405,3 +405,89 @@ export function updateDetectionSuggestion(driver, id, { suggestedPersonId, sugge
     [suggestedPersonId, suggestedPersonName, suggestedDistance, status, JSON.stringify(rejectedPersonIds), id],
   );
 }
+
+/**
+ * Re-points every row of this index that names one of `sourceIds` at
+ * `targetId`/`targetName` instead — the faces-index side of merging two
+ * Person identities into one (see people/handler.js, which does the same
+ * for the photo crates and the main SQL index). Four independent columns
+ * each redundantly store a person id/name (see Spec.md's People section),
+ * so all four need rewriting, not just one:
+ *
+ * - reference_faces.person_id/person_name — a plain UPDATE can produce a
+ *   row that duplicates one already there for the target identity (same
+ *   image, same model); cleaned up afterwards by deduplicateReferenceFaces,
+ *   the same one-off repair already run at every startup for this exact
+ *   row shape.
+ * - backfill_undetectable_regions.person_id/person_name — PRIMARY KEY
+ *   (image_id, person_id, model_name, model_version), so a plain UPDATE
+ *   could violate it outright if the target identity already has an
+ *   equivalent row; moved one row at a time instead, dropping a source
+ *   row whose (image, model) the target already covers rather than
+ *   erroring.
+ * - detections.suggested_person_id/name and resolved_person_id/name — no
+ *   uniqueness constraint tying either to a person, so a plain UPDATE is
+ *   enough.
+ * - detections.rejected_person_ids — a JSON-serialized array (see
+ *   /faces/reject-suggestion), not a joinable column, so every row is
+ *   rewritten in application code and only touched if it actually
+ *   mentions one of sourceIds.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {{sourceIds: string[], targetId: string, targetName: string}} options
+ * @returns {{movedReferenceFaceIds: string[]}} the reference_faces rows that were moved — the caller uses this to keep the separate faces crate's mirrored entities (see faces/crate.js) in sync too
+ */
+export function mergePersonInFacesStore(driver, { sourceIds, targetId, targetName }) {
+  if (sourceIds.length === 0) return { movedReferenceFaceIds: [] };
+  const placeholders = sourceIds.map(() => '?').join(',');
+
+  const movedReferenceFaceIds = driver
+    .all(`SELECT id FROM reference_faces WHERE person_id IN (${placeholders})`, sourceIds)
+    .map((row) => row.id);
+  driver.run(
+    `UPDATE reference_faces SET person_id = ?, person_name = ? WHERE person_id IN (${placeholders})`,
+    [targetId, targetName, ...sourceIds],
+  );
+  deduplicateReferenceFaces(driver);
+
+  const undetectableRows = driver.all(
+    `SELECT * FROM backfill_undetectable_regions WHERE person_id IN (${placeholders})`,
+    sourceIds,
+  );
+  for (const row of undetectableRows) {
+    const targetAlreadyCovers = driver.get(
+      'SELECT 1 FROM backfill_undetectable_regions WHERE image_id = ? AND person_id = ? AND model_name = ? AND model_version = ?',
+      [row.image_id, targetId, row.model_name, row.model_version],
+    );
+    driver.run(
+      'DELETE FROM backfill_undetectable_regions WHERE image_id = ? AND person_id = ? AND model_name = ? AND model_version = ?',
+      [row.image_id, row.person_id, row.model_name, row.model_version],
+    );
+    if (!targetAlreadyCovers) {
+      driver.run(
+        `INSERT INTO backfill_undetectable_regions (image_id, person_id, person_name, model_name, model_version, marked_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [row.image_id, targetId, targetName, row.model_name, row.model_version, row.marked_at],
+      );
+    }
+  }
+
+  driver.run(
+    `UPDATE detections SET suggested_person_id = ?, suggested_person_name = ? WHERE suggested_person_id IN (${placeholders})`,
+    [targetId, targetName, ...sourceIds],
+  );
+  driver.run(
+    `UPDATE detections SET resolved_person_id = ?, resolved_person_name = ? WHERE resolved_person_id IN (${placeholders})`,
+    [targetId, targetName, ...sourceIds],
+  );
+
+  const sourceIdSet = new Set(sourceIds);
+  for (const row of driver.all('SELECT id, rejected_person_ids FROM detections')) {
+    const rejected = JSON.parse(row.rejected_person_ids ?? '[]');
+    if (!rejected.some((id) => sourceIdSet.has(id))) continue;
+    const rewritten = [...new Set(rejected.map((id) => (sourceIdSet.has(id) ? targetId : id)))];
+    driver.run('UPDATE detections SET rejected_person_ids = ? WHERE id = ?', [JSON.stringify(rewritten), row.id]);
+  }
+
+  return { movedReferenceFaceIds };
+}

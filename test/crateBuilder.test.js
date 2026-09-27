@@ -15,6 +15,7 @@ import {
   setAlbumEntity,
   albumMemberIds,
   addStandoffFaceRegion,
+  renamePersonInCrate,
 } from '../src/core/crateBuilder.js';
 import { personEntityId, petEntityId } from '../src/core/db/store.js';
 
@@ -735,5 +736,66 @@ describe('removeImageEntity', () => {
   it('does nothing for an image with no entity yet', () => {
     const crate = loadOrCreateCrate(null);
     expect(() => removeImageEntity(crate, 'nonexistent.jpg')).not.toThrow();
+  });
+});
+
+describe('renamePersonInCrate', () => {
+  const sourceId = personEntityId('jane smith');
+  const targetId = personEntityId('Jane Smith');
+
+  it('re-points an EXIF-derived region (and the image\'s own about) at the target identity', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Regions: { RegionList: { Name: 'jane smith', Type: 'Face', Area: { x: 0.5, y: 0.5, w: 0.2, h: 0.2 } } } } });
+
+    const changed = renamePersonInCrate(crate, 'photo.jpg', { sourceId, targetId, targetName: 'Jane Smith', subjectType: 'Person' });
+
+    expect(changed).toBe(true);
+    const record = readImageRecord(crate, 'photo.jpg');
+    expect(record.people).toEqual(['Jane Smith']);
+    expect(record.regions).toEqual([{ name: 'Jane Smith', type: 'Face', area: { x: 0.5, y: 0.5, w: 0.2, h: 0.2 } }]);
+    expect(crate.getEntity('photo.jpg').about[0]['@id']).toEqual(targetId);
+    expect(crate.getEntity(targetId).name).toEqual(['Jane Smith']);
+  });
+
+  it('re-points a standoff region\'s body-proxy specialization', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: {} });
+    addStandoffFaceRegion(crate, 'photo.jpg', {
+      name: 'jane smith', subjectId: sourceId, subjectType: 'Person', box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 },
+    });
+
+    renamePersonInCrate(crate, 'photo.jpg', { sourceId, targetId, targetName: 'Jane Smith', subjectType: 'Person' });
+
+    const record = readImageRecord(crate, 'photo.jpg');
+    expect(record.people).toEqual(['Jane Smith']);
+    expect(record.regions[0].name).toEqual('Jane Smith');
+  });
+
+  it('dedupes the image\'s about array if it somehow already referenced both identities', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: {} });
+    crate.addEntity({ '@id': sourceId, '@type': 'Person', name: 'jane smith' }, { replace: true });
+    crate.addEntity({ '@id': targetId, '@type': 'Person', name: 'Jane Smith' }, { replace: true });
+    crate.addValues('photo.jpg', 'about', [{ '@id': sourceId }, { '@id': targetId }]);
+
+    renamePersonInCrate(crate, 'photo.jpg', { sourceId, targetId, targetName: 'Jane Smith', subjectType: 'Person' });
+
+    expect(crate.getEntity('photo.jpg').about).toHaveLength(1);
+    expect(crate.getEntity('photo.jpg').about[0]['@id']).toEqual(targetId);
+  });
+
+  it('is a no-op, returning false, for an image that never referenced the source identity', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: { Regions: { RegionList: { Name: 'Someone Else', Type: 'Face' } } } });
+
+    const changed = renamePersonInCrate(crate, 'photo.jpg', { sourceId, targetId, targetName: 'Jane Smith', subjectType: 'Person' });
+
+    expect(changed).toBe(false);
+    expect(readImageRecord(crate, 'photo.jpg').people).toEqual(['Someone Else']);
+  });
+
+  it('is a no-op for an image with no entity yet, rather than throwing', () => {
+    const crate = loadOrCreateCrate(null);
+    expect(() => renamePersonInCrate(crate, 'nope.jpg', { sourceId, targetId, targetName: 'Jane Smith', subjectType: 'Person' })).not.toThrow();
   });
 });

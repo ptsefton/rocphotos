@@ -29,8 +29,12 @@ const datesAllEl = document.querySelector('#dates-all');
 const datesTreeEl = document.querySelector('#dates-tree');
 const albumsListEl = document.querySelector('#albums-list');
 const exportAlbumButtonEl = document.querySelector('#export-album-button');
-const modeButtonEls = { explore: document.querySelector('#mode-explore'), scan: document.querySelector('#mode-scan'), settings: document.querySelector('#mode-settings') };
-const screenEls = { explore: document.querySelector('#explore-screen'), scan: document.querySelector('#scan-screen'), settings: document.querySelector('#settings-screen') };
+const modeButtonEls = { explore: document.querySelector('#mode-explore'), people: document.querySelector('#mode-people'), scan: document.querySelector('#mode-scan'), settings: document.querySelector('#mode-settings') };
+const screenEls = { explore: document.querySelector('#explore-screen'), people: document.querySelector('#people-screen'), scan: document.querySelector('#scan-screen'), settings: document.querySelector('#settings-screen') };
+const peopleStatusEl = document.querySelector('#people-status');
+const peopleListEl = document.querySelector('#people-list');
+const peopleMergeButtonEl = document.querySelector('#people-merge-button');
+const peopleRefreshButtonEl = document.querySelector('#people-refresh');
 const adminStatusEl = document.querySelector('#admin-status');
 const overviewSectionEl = document.querySelector('#overview-section');
 const overviewTreeEl = document.querySelector('#overview-tree');
@@ -2277,15 +2281,19 @@ document.querySelector('#faces-review-close').addEventListener('click', () => {
   facesReviewEl.classList.remove('open');
 });
 
-// Three top-level modes, switched via #mode-bar, never more than one
+// Four top-level modes, switched via #mode-bar, never more than one
 // screen visible at a time: Explore (the facets/grid/viewer, everything
-// above), Scan (the sub-collection admin tree below), and Settings
-// (below that). Each of Scan/Settings loads its own data lazily, once,
-// the first time it is switched into — not on every switch back to it —
-// so glancing at a tab does not repeat a directory walk (Scan) or a
-// config re-read (Settings) it already has.
+// above), People (merging identities, below), Scan (the sub-collection
+// admin tree below that), and Settings (below that). Each of
+// People/Scan/Settings loads its own data lazily, once, the first time
+// it is switched into — not on every switch back to it — so glancing at
+// a tab does not repeat a directory walk (Scan), a config re-read
+// (Settings), or a facet fetch (People) it already has; People's own
+// list is instead explicitly re-fetched after every merge (see
+// mergeSelectedPeople) since that is the one action that changes it.
 let overviewLoadedOnce = false;
 let settingsLoadedOnce = false;
+let peopleLoadedOnce = false;
 
 function switchMode(mode) {
   for (const key of Object.keys(screenEls)) {
@@ -2298,11 +2306,109 @@ function switchMode(mode) {
   if (mode === 'settings' && !settingsLoadedOnce) {
     loadSettings().catch((err) => { settingsStatusEl.textContent = `Error: ${err.message}`; });
   }
+  if (mode === 'people' && !peopleLoadedOnce) {
+    loadPeople().catch((err) => { peopleStatusEl.textContent = `Error: ${err.message}`; });
+  }
 }
 
 modeButtonEls.explore.addEventListener('click', () => switchMode('explore'));
+modeButtonEls.people.addEventListener('click', () => switchMode('people'));
 modeButtonEls.scan.addEventListener('click', () => switchMode('scan'));
 modeButtonEls.settings.addEventListener('click', () => switchMode('settings'));
+
+// The People tab (Spec.md's People section): every distinct Person, with
+// how many images depict them, and a checkbox-driven way to merge two or
+// more into one identity — the "interesting UI challenge" being that a
+// merge needs the user to pick which of several existing spellings (or a
+// brand new one) survives, not just confirm a single yes/no action the
+// way every other bulk operation in this app (keywords, rating, delete)
+// does.
+let selectedPeopleNames = new Set();
+
+function updatePeopleMergeButton() {
+  peopleMergeButtonEl.disabled = selectedPeopleNames.size < 2;
+}
+
+function renderPeopleList(people) {
+  peopleListEl.innerHTML = '';
+  for (const { name, imageCount } of people) {
+    const row = document.createElement('label');
+    row.className = 'person-row';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = selectedPeopleNames.has(name);
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) selectedPeopleNames.add(name);
+      else selectedPeopleNames.delete(name);
+      updatePeopleMergeButton();
+    });
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'person-name';
+    nameEl.textContent = name;
+
+    const countEl = document.createElement('span');
+    countEl.className = 'person-image-count';
+    countEl.textContent = imageCount === 1 ? '1 photo' : `${imageCount} photos`;
+
+    row.append(checkbox, nameEl, countEl);
+    peopleListEl.appendChild(row);
+  }
+}
+
+async function loadPeople() {
+  peopleStatusEl.textContent = 'Loading…';
+  const response = await fetch('/api/people/');
+  if (!response.ok) throw new Error(`Failed to load people: ${response.status}`);
+  const { people } = await response.json();
+  // A name no longer in the fresh list (e.g. it was just merged away)
+  // must not stay checked, or a later merge attempt would silently
+  // include it in sourceNames with nothing left to actually rename.
+  selectedPeopleNames = new Set([...selectedPeopleNames].filter((name) => people.some((person) => person.name === name)));
+  renderPeopleList(people);
+  updatePeopleMergeButton();
+  peopleStatusEl.textContent = people.length === 0
+    ? 'No people recorded yet — confirm some faces first (see "Recognize Faces"), or tag people directly in your photos.'
+    : 'Select two or more names below, then Merge Selected — you\'ll be asked which name should survive.';
+  peopleLoadedOnce = true;
+}
+
+async function mergeSelectedPeople() {
+  const sourceNames = [...selectedPeopleNames];
+  if (sourceNames.length < 2) return;
+
+  const targetName = await promptPersonName(
+    `Merge ${sourceNames.join(', ')} into which name? (existing or new)`,
+    sourceNames[0],
+  );
+  if (!targetName) return;
+
+  peopleMergeButtonEl.disabled = true;
+  peopleStatusEl.textContent = 'Merging…';
+  try {
+    const response = await fetch('/api/people/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceNames, targetName }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? `Merge failed: ${response.status}`);
+    selectedPeopleNames = new Set();
+    await loadPeople();
+    peopleStatusEl.textContent = `Merged into "${result.targetName}" (${result.imagesUpdated} photo${result.imagesUpdated === 1 ? '' : 's'} updated).`;
+  } catch (err) {
+    peopleStatusEl.textContent = `Error: ${err.message}`;
+    updatePeopleMergeButton();
+  }
+}
+
+peopleMergeButtonEl.addEventListener('click', () => {
+  mergeSelectedPeople().catch((err) => { peopleStatusEl.textContent = `Error: ${err.message}`; });
+});
+peopleRefreshButtonEl.addEventListener('click', () => {
+  loadPeople().catch((err) => { peopleStatusEl.textContent = `Error: ${err.message}`; });
+});
 
 // The "Sub-collections" scan screen — letting a large, decades-spanning
 // collection be scanned a few sub-collections at a time from here, the

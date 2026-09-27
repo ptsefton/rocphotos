@@ -605,6 +605,74 @@ export function setImageDescription(crate, path, description) {
 }
 
 /**
+ * Re-points every reference to `sourceId` on one image within a crate
+ * (its own `about` link, plus each of its regions' `about` (EXIF shape) or
+ * body-proxy `prov:specializationOf` (standoff shape) — see
+ * addStandoffFaceRegion/addImageEntity for the two shapes) at `targetId`
+ * instead, and renames a region's own duplicated `name` field to match —
+ * the mechanics of merging two Person/Pet identities into one (see
+ * Spec.md's People section). Ensures `targetId`'s own node exists in this
+ * crate (creating it if this crate never referenced the surviving
+ * identity before), the same replace-on-every-call convention as
+ * addStandoffFaceRegion's own Person/Pet node. Does not touch the crate's
+ * `sourceId` node itself — the caller removes it, once, after every image
+ * across every crate that referenced it has been re-pointed (see
+ * people/handler.js), since a partially-merged crate must never lose the
+ * node a not-yet-processed image still refers to.
+ *
+ * A no-op, returning false, if this image never actually referenced
+ * `sourceId` at all (e.g. it was tagged with a different one of several
+ * names being merged in the same operation) or has no entity yet.
+ *
+ * @param {ROCrate} crate
+ * @param {string} imagePath - image path, relative to the crate directory
+ * @param {{sourceId: string, targetId: string, targetName: string, subjectType: 'Person'|'Pet'}} options
+ * @returns {boolean} whether anything on this image was actually changed
+ */
+export function renamePersonInCrate(crate, imagePath, { sourceId, targetId, targetName, subjectType }) {
+  if (sourceId === targetId) return false;
+  const entity = crate.getEntity(imagePath);
+  if (!entity) return false;
+
+  const sourceEntity = crate.getEntity(sourceId);
+  const sourceName = sourceEntity ? unwrap(sourceEntity.name) : null;
+  let changed = false;
+
+  if ((entity.about ?? []).some((ref) => ref['@id'] === sourceId)) {
+    const ids = new Set(entity.about.map((ref) => ref['@id']));
+    ids.delete(sourceId);
+    ids.add(targetId);
+    entity.about = [...ids].map((id) => ({ '@id': id }));
+    changed = true;
+  }
+
+  for (const ref of entity.regions ?? []) {
+    const region = crate.getEntity(ref['@id']);
+    if (!region) continue;
+
+    if (unwrap(region.about)?.['@id'] === sourceId) {
+      region.about = { '@id': targetId };
+      changed = true;
+    }
+    const bodyId = unwrap(region['oa:hasBody'])?.['@id'];
+    const body = bodyId ? crate.getEntity(bodyId) : null;
+    if (body && unwrap(body['prov:specializationOf'])?.['@id'] === sourceId) {
+      body['prov:specializationOf'] = { '@id': targetId };
+      changed = true;
+    }
+    if (sourceName !== null && unwrap(region.name) === sourceName) {
+      region.name = targetName;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    crate.addEntity({ '@id': targetId, '@type': subjectType, name: targetName }, { replace: true });
+  }
+  return changed;
+}
+
+/**
  * Removes an image entirely from a crate — used when the source file
  * itself has been moved to the trash (see core/trash.js) and so no
  * longer belongs in the crate's graph at all. Cleans up every node

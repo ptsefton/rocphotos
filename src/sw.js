@@ -11,6 +11,7 @@ import { createBrowserFsAdapter } from './adapters/browserFs.js';
 import { openBrowserSqlite } from './adapters/browserSqlite.js';
 import { createHandler } from './core/arocapi/handler.js';
 import { createFacesHandler } from './core/faces/handler.js';
+import { createPeopleHandler } from './core/people/handler.js';
 import { ensureFacesSchema, FACES_INDEX_FILE_NAME } from './core/faces/store.js';
 import { ensureSchema, INDEX_FILE_NAME } from './core/db/store.js';
 import sqlWasmUrl from 'sql.js/dist/sql-wasm-browser.wasm?url';
@@ -154,6 +155,16 @@ async function handleApiRequest(request, url) {
     // updating the crate/index without also updating the photo file.
     const handleFacesRequest = createFacesHandler({ mainStore: ctx.driver, facesStore: ctx.facesStore, fsAdapter: ctx.fsAdapter });
     const result = await handleFacesRequest({ method: request.method, path: apiPath, query, body });
+    return new Response(result.body, { status: result.status, headers: result.headers });
+  }
+
+  if (url.pathname.startsWith('/api/people/') || url.pathname === '/api/people') {
+    const apiPath = url.pathname.slice('/api/people'.length) || '/';
+    // A merge never touches a photo file, only crate JSON-LD and the two
+    // SQLite indexes — unlike /faces/confirm above, this behaves
+    // identically in every run mode, so no capability is missing here.
+    const handlePeopleRequest = createPeopleHandler({ mainStore: ctx.driver, facesStore: ctx.facesStore, fsAdapter: ctx.fsAdapter });
+    const result = await handlePeopleRequest({ method: request.method, path: apiPath, query, body });
     return new Response(result.body, { status: result.status, headers: result.headers });
   }
 
