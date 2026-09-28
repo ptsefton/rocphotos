@@ -2356,24 +2356,44 @@ function renderFilteredPeopleList() {
   renderPeopleList(filtered);
 }
 
+// Leaves the People tab for the grid, showing every photo of one
+// person. Replaces the active filters outright rather than adding to
+// them ("all the pics for this person" means all of them, not however
+// many also happen to match whatever Explore was last narrowed to) —
+// which also keeps the grid's own count matching the photo count shown
+// next to the name here, since that is likewise unfiltered.
+function showPhotosForPerson(name) {
+  activeFilters = { people: name };
+  switchMode('explore');
+  search();
+}
+
 function renderPeopleList(people) {
   peopleListEl.innerHTML = '';
   for (const { name, imageCount } of people) {
-    const row = document.createElement('label');
+    // A plain div, not a label wrapping the whole row: the name beside
+    // the checkbox is now itself clickable, and a click on it inside a
+    // label would toggle the checkbox as well as follow the link.
+    const row = document.createElement('div');
     row.className = 'person-row';
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
+    checkbox.id = `person-select-${encodeURIComponent(name)}`;
     checkbox.checked = selectedPeopleNames.has(name);
+    checkbox.setAttribute('aria-label', `Select ${name}`);
     checkbox.addEventListener('change', () => {
       if (checkbox.checked) selectedPeopleNames.add(name);
       else selectedPeopleNames.delete(name);
       updatePeopleMergeButton();
     });
 
-    const nameEl = document.createElement('span');
+    const nameEl = document.createElement('button');
+    nameEl.type = 'button';
     nameEl.className = 'person-name';
     nameEl.textContent = name;
+    nameEl.title = `Show every photo of ${name}`;
+    nameEl.addEventListener('click', () => showPhotosForPerson(name));
 
     const countEl = document.createElement('span');
     countEl.className = 'person-image-count';
