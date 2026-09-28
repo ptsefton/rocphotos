@@ -2326,12 +2326,16 @@ modeButtonEls.scan.addEventListener('click', () => switchMode('scan'));
 modeButtonEls.settings.addEventListener('click', () => switchMode('settings'));
 
 // The People tab (Spec.md's People section): every distinct Person, with
-// how many images depict them, and a checkbox-driven way to merge two or
-// more into one identity — the "interesting UI challenge" being that a
-// merge needs the user to pick which of several existing spellings (or a
-// brand new one) survives, not just confirm a single yes/no action the
-// way every other bulk operation in this app (keywords, rating, delete)
-// does.
+// how many images depict them, and a checkbox-driven way to rename one
+// or merge several into one identity — the "interesting UI challenge"
+// being that both need the user to supply the surviving name (one of
+// the existing spellings, or a new one), not just confirm a single
+// yes/no action the way every other bulk operation in this app
+// (keywords, rating, delete) does.
+//
+// Renaming one person and merging several are the same request (see
+// people/handler.js), but they are not the same thing to the person
+// doing it, so the one button says which it is about to do.
 let selectedPeopleNames = new Set();
 // The full, unfiltered list from the server — renderFilteredPeopleList
 // narrows this down to what #people-filter's typed text matches without
@@ -2342,7 +2346,8 @@ let selectedPeopleNames = new Set();
 let allPeople = [];
 
 function updatePeopleMergeButton() {
-  peopleMergeButtonEl.disabled = selectedPeopleNames.size < 2;
+  peopleMergeButtonEl.disabled = selectedPeopleNames.size === 0;
+  peopleMergeButtonEl.textContent = selectedPeopleNames.size === 1 ? 'Rename Selected' : 'Merge Selected';
 }
 
 function renderFilteredPeopleList() {
@@ -2393,22 +2398,28 @@ async function loadPeople() {
   updatePeopleMergeButton();
   peopleStatusEl.textContent = people.length === 0
     ? 'No people recorded yet — confirm some faces first (see "Recognize Faces"), or tag people directly in your photos.'
-    : 'Select two or more names below, then Merge Selected — you\'ll be asked which name should survive.';
+    : 'Check one name to rename it, or two or more to merge them — either way you\'ll be asked for the name to use.';
   peopleLoadedOnce = true;
 }
 
 async function mergeSelectedPeople() {
   const sourceNames = [...selectedPeopleNames];
-  if (sourceNames.length < 2) return;
+  if (sourceNames.length === 0) return;
+  const renaming = sourceNames.length === 1;
 
   const targetName = await promptPersonName(
-    `Merge ${sourceNames.join(', ')} into which name? (existing or new)`,
+    renaming
+      ? `Rename "${sourceNames[0]}" to? (an existing name merges them)`
+      : `Merge ${sourceNames.join(', ')} into which name? (existing or new)`,
     sourceNames[0],
   );
-  if (!targetName) return;
+  // Cancelled, or a rename left at the name it already has — either way
+  // there is nothing to do, and reporting "0 photos updated" for it
+  // would only look like something went wrong.
+  if (!targetName || (renaming && targetName === sourceNames[0])) return;
 
   peopleMergeButtonEl.disabled = true;
-  peopleStatusEl.textContent = 'Merging…';
+  peopleStatusEl.textContent = renaming ? 'Renaming…' : 'Merging…';
   try {
     const response = await fetch('/api/people/merge', {
       method: 'POST',
@@ -2416,10 +2427,13 @@ async function mergeSelectedPeople() {
       body: JSON.stringify({ sourceNames, targetName }),
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error ?? `Merge failed: ${response.status}`);
+    if (!response.ok) throw new Error(result.error ?? `${renaming ? 'Rename' : 'Merge'} failed: ${response.status}`);
     selectedPeopleNames = new Set();
     await loadPeople();
-    peopleStatusEl.textContent = `Merged into "${result.targetName}" (${result.imagesUpdated} photo${result.imagesUpdated === 1 ? '' : 's'} updated).`;
+    const photos = `${result.imagesUpdated} photo${result.imagesUpdated === 1 ? '' : 's'} updated`;
+    peopleStatusEl.textContent = renaming
+      ? `Renamed "${sourceNames[0]}" to "${result.targetName}" (${photos}).`
+      : `Merged into "${result.targetName}" (${photos}).`;
   } catch (err) {
     peopleStatusEl.textContent = `Error: ${err.message}`;
     updatePeopleMergeButton();

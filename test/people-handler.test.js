@@ -115,9 +115,41 @@ describe('GET /', () => {
 });
 
 describe('POST /merge', () => {
-  it('rejects fewer than two source names', async () => {
-    const res = await handleRequest({ method: 'POST', path: '/merge', body: { sourceNames: ['jane smith'], targetName: 'Jane Smith' } });
+  it('rejects an empty source list', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/merge', body: { sourceNames: [], targetName: 'Jane Smith' } });
     expect(res.status).toEqual(400);
+  });
+
+  it('renames one person, a single-source merge, leaving everyone else alone', async () => {
+    const res = await handleRequest({
+      method: 'POST', path: '/merge',
+      body: { sourceNames: ['jane smith'], targetName: 'Jane Q. Smith' },
+    });
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body).imagesUpdated).toEqual(2); // a.jpg and c.jpg
+
+    expect(facetCounts(mainStore, 'people', {})).toEqual(expect.arrayContaining([
+      { value: 'Jane Q. Smith', count: 2 },
+      { value: 'Jane Smith', count: 1 }, // b.jpg's own, untouched
+    ]));
+    expect(getEntityById(mainStore, personEntityId('jane smith'))).toBeUndefined();
+    expect(getEntityById(mainStore, personEntityId('Jane Q. Smith'))).toBeTruthy();
+
+    const rewritten2024 = loadOrCreateCrate(new TextDecoder().decode(await fsAdapter.readFile('2024/' + CRATE_FILE_NAME)));
+    expect(readImageRecord(rewritten2024, 'a.jpg').people).toEqual(['Jane Q. Smith']);
+    const [reference] = listReferenceFaces(facesStore, 'm', '1');
+    expect(reference.personName).toEqual('Jane Q. Smith');
+  });
+
+  it('treats renaming onto a name already in use as a merge into it', async () => {
+    const res = await handleRequest({
+      method: 'POST', path: '/merge',
+      body: { sourceNames: ['jane smith'], targetName: 'Jane Smith' },
+    });
+    expect(res.status).toEqual(200);
+
+    expect(facetCounts(mainStore, 'people', {})).toEqual([{ value: 'Jane Smith', count: 3 }]);
+    expect(getEntityById(mainStore, personEntityId('jane smith'))).toBeUndefined();
   });
 
   it('rejects a missing targetName', async () => {

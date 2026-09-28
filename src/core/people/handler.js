@@ -40,20 +40,24 @@ const MERGE_PAGE_SIZE = 200;
  * Creates a pure, transport-agnostic handler for the `/people/*` routes
  * (mounted at `/api/people/*` — see bin/rocphotos.js's `serve` and
  * src/sw.js) backing the web view's People tab (see Spec.md's People
- * section): listing every distinct Person, and merging two or more of
- * them into one identity.
+ * section): listing every distinct Person, and re-pointing one or more
+ * of them at a single surviving identity.
  *
- * A merge never touches an original photo file — only crate JSON-LD and
- * the two SQLite indexes — so, unlike the faces handler's /confirm, it
+ * Renaming and merging are the same operation here, not two, because a
+ * Person's identity is 100% name-derived (see db/store.js's
+ * personEntityId): giving one person a new name and folding several
+ * people into one both come down to "every one of these names now means
+ * this name instead". One source name is a rename, several is a merge,
+ * and a rename whose new name happens to be one already in use is
+ * simply a merge into it — which is why this route takes a list and
+ * does not try to tell the cases apart. The web view labels its button
+ * for whichever is happening, since to a person using it they are
+ * obviously different things.
+ *
+ * It never touches an original photo file — only crate JSON-LD and the
+ * two SQLite indexes — so, unlike the faces handler's /confirm, it
  * needs no writeFaceRegion/writeBackEnabled capability and behaves
  * identically in every run mode.
- *
- * A Person's identity is 100% name-derived (see db/store.js's
- * personEntityId) — merging "Jane Smith" and "jane smith" into "Jane
- * Smith" is indistinguishable, from this route's point of view, from
- * merging them into a brand new name typed by the user; either way,
- * every source name not already spelled exactly like targetName is
- * re-pointed at it.
  *
  * @param {object} deps
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver & {persist?: () => Promise<void>}} deps.mainStore - the main photo index
@@ -93,7 +97,10 @@ export function createPeopleHandler({ mainStore, facesStore, fsAdapter, crateCac
         ? [...new Set(body.sourceNames.map((name) => String(name).trim()).filter(Boolean))]
         : [];
       const targetName = typeof body?.targetName === 'string' ? body.targetName.trim() : '';
-      if (sourceNames.length < 2) return badRequest('sourceNames must list at least two distinct people to merge');
+      // One name is a rename, several a merge (see this handler's own
+      // doc comment for why that is a labelling difference rather than
+      // two operations) — so the only real requirement is at least one.
+      if (sourceNames.length === 0) return badRequest('sourceNames must list at least one person');
       if (!targetName) return badRequest('targetName is required');
 
       const targetId = personEntityId(targetName);
