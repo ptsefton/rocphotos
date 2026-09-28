@@ -15,8 +15,8 @@ import { createAdminHandler } from '../src/core/admin/handler.js';
 import { createFacesHandler } from '../src/core/faces/handler.js';
 import { createPeopleHandler } from '../src/core/people/handler.js';
 import { ensureFacesSchema, FACES_INDEX_FILE_NAME } from '../src/core/faces/store.js';
-import { writeFaceRegion, isExiftoolAvailable } from '../src/adapters/exiftoolWriteback.js';
-import { CRATE_FILE_NAME, loadOrCreateCrate, albumMemberIds } from '../src/core/crateBuilder.js';
+import { writeFaceRegion, writeImageMetadata, isExiftoolAvailable } from '../src/adapters/exiftoolWriteback.js';
+import { CRATE_FILE_NAME, loadOrCreateCrate, albumMemberIds, readImageRecord } from '../src/core/crateBuilder.js';
 import { PREVIEW_FILE_NAME } from '../src/core/htmlPreview.js';
 import { thumbnailPathFor } from '../src/core/thumbnails.js';
 import { loadEntityFromCrate } from '../src/core/entityCrate.js';
@@ -27,6 +27,7 @@ import {
   addExcludedFiles,
   loadWriteMetadataToFilesSetting,
   loadExportPathSetting,
+  loadExportWithMetadataSetting,
 } from '../src/core/config.js';
 import {
   INDEX_FILE_NAME,
@@ -35,11 +36,14 @@ import {
   listEntities,
   listFiles,
   getFileById,
+  getEntityById,
   getAlbumById,
   albumEntityId,
+  crateRelativeEntityId,
+  crateDirPathFromEntityId,
 } from '../src/core/db/store.js';
 import { joinPath } from '../src/core/pathUtils.js';
-import { exportFiles, resolveExportTarget } from '../src/core/export.js';
+import { exportFiles, resolveExportTarget, writeExportMetadata } from '../src/core/export.js';
 import { scanCollection, bootstrapCollection, readExistingCrateJson } from '../src/core/scanCollection.js';
 
 // Attempts to generate a thumbnail from freshly-read image bytes. Only
@@ -342,22 +346,45 @@ async function exportAlbum(rootDir, albumName) {
   const rootCrateJson = await readExistingCrateJson(fsAdapter, '');
   const rootCrate = loadOrCreateCrate(rootCrateJson);
   const memberIds = albumMemberIds(rootCrate, album.id);
-  const relativePaths = memberIds.map((id) => getFileById(db, id)?.relative_path).filter(Boolean);
+  const members = memberIds
+    .map((id) => ({ id, relativePath: getFileById(db, id)?.relative_path, row: getEntityById(db, id) }))
+    .filter((member) => member.relativePath && member.row);
   db.close();
 
   const exportPath = await loadExportPathSetting(fsAdapter);
   const { absoluteBase, destDir } = resolveExportTarget(album.name, exportPath);
   const destFsAdapter = absoluteBase ? createAbsoluteFsAdapterFor(rootDir)(absoluteBase) : fsAdapter;
-  const { exported, errors } = await exportFiles(fsAdapter, destDir, relativePaths, destFsAdapter);
+  const { exported, errors } = await exportFiles(fsAdapter, destDir, members.map((member) => member.relativePath), destFsAdapter);
+
+  let metadataWritten = 0;
+  if (await loadExportWithMetadataSetting(fsAdapter)) {
+    const exportedPaths = new Set(exported);
+    const crates = new Map();
+    const records = [];
+    for (const { id, relativePath, row } of members) {
+      if (!exportedPaths.has(relativePath)) continue;
+      if (!crates.has(row.ro_crate_id)) {
+        crates.set(row.ro_crate_id, loadOrCreateCrate(await readExistingCrateJson(fsAdapter, crateDirPathFromEntityId(row.ro_crate_id))));
+      }
+      const record = readImageRecord(crates.get(row.ro_crate_id), crateRelativeEntityId(row.ro_crate_id, id));
+      if (record) records.push({ relativePath, record });
+    }
+    const result = await writeExportMetadata(destFsAdapter, destDir, records, writeImageMetadata);
+    errors.push(...result.errors);
+    metadataWritten = result.written;
+  }
 
   const reportedDest = absoluteBase
     ? path.join(resolveConfiguredExportPath(rootDir, absoluteBase), destDir)
     : path.join(rootDir, destDir);
   console.log(`Exported ${exported.length} file(s) from "${album.name}" to ${reportedDest}`);
+  if (metadataWritten > 0) {
+    console.log(`Wrote metadata into ${metadataWritten} of them.`);
+  }
   if (errors.length > 0) {
     console.error(`${errors.length} file(s) could not be exported:`);
-    for (const { relativePath, message } of errors) {
-      console.error(`  ${relativePath}: ${message}`);
+    for (const { id, message } of errors) {
+      console.error(`  ${id}: ${message}`);
     }
   }
 }
@@ -440,7 +467,27 @@ async function serve(rootDir, { port = 8420 } = {}) {
   // would keep serving whichever version of that crate it last read
   // until restarted.
   const crateCache = new Map();
-  const handleRequest = createHandler({ store, fsAdapter, crateCache, createAbsoluteFsAdapter: createAbsoluteFsAdapterFor(rootDir) });
+  // Checked up front, before the handlers that each need to know about
+  // it are built: writing a confirmed face back into a photo (the faces
+  // handler, below) and writing metadata into exported copies (the
+  // export route) both shell out to it.
+  const exiftoolAvailable = await isExiftoolAvailable();
+  if (!exiftoolAvailable) {
+    console.warn('Warning: the `exiftool` binary was not found — confirming a recognized face will not be able to write it back into the photo file, and an export cannot write metadata into the exported copies.');
+  }
+  const handleRequest = createHandler({
+    store,
+    fsAdapter,
+    crateCache,
+    createAbsoluteFsAdapter: createAbsoluteFsAdapterFor(rootDir),
+    // Unlike the faces handler's writeFaceRegion below, this is not
+    // gated on the collection's write-back opt-in: it only ever writes
+    // to copies an export just made, never to an original (see
+    // config.js's loadExportWithMetadataSetting). Still needs exiftool,
+    // so it is left out entirely when that is missing, which the export
+    // route reports rather than failing over.
+    writeImageMetadata: exiftoolAvailable ? writeImageMetadata : null,
+  });
   const handleAdminRequest = createAdminHandler({
     db: store,
     fsAdapter,
@@ -454,10 +501,6 @@ async function serve(rootDir, { port = 8420 } = {}) {
   const facesStore = openNodeSqlite(facesDbPath);
   ensureFacesSchema(facesStore);
 
-  const exiftoolAvailable = await isExiftoolAvailable();
-  if (!exiftoolAvailable) {
-    console.warn('Warning: the `exiftool` binary was not found — confirming a recognized face will not be able to write it back into the photo file.');
-  }
   // Read once at startup, the same way exiftoolAvailable is — a change
   // made via the Settings screen while this server is already running
   // takes effect on its next restart, not immediately. Off by default,

@@ -39,8 +39,8 @@ import { loadEntityFromCrate, loadRawCrate } from '../entityCrate.js';
 import { moveToTrash } from '../trash.js';
 import { joinPath } from '../pathUtils.js';
 import { serializeWrites } from '../writeQueue.js';
-import { exportDirFor, exportFiles, resolveExportTarget } from '../export.js';
-import { loadExportPathSetting } from '../config.js';
+import { exportDirFor, exportFiles, resolveExportTarget, writeExportMetadata } from '../export.js';
+import { loadExportPathSetting, loadExportWithMetadataSetting } from '../config.js';
 
 // The facets this deployment supports: camera and lens (from EXIF),
 // keyword (from IPTC/XMP, possibly several per image), rating (an XMP
@@ -150,9 +150,10 @@ async function persistStore(store) {
  * @param {import('../fsAdapter.js').FsAdapter} deps.fsAdapter
  * @param {Map<string, import('ro-crate').ROCrate>} [deps.crateCache] - the long-lived read cache below; accepted rather than always created fresh so another writer of the same crate files (see faces/handler.js's /confirm route) can share and keep it in sync too. Defaults to a private one when not given (e.g. in tests, or the browser SW's per-request handler — see src/sw.js).
  * @param {(absolutePath: string) => import('../fsAdapter.js').FsAdapter} [deps.createAbsoluteFsAdapter] - builds an adapter rooted at an absolute path anywhere on disk, for exporting an album outside the collection (Settings' "Export path" — see the /albums/{id}/export route). Supplied only by the Node-backed run modes, which have unrestricted filesystem access; absent in the browser SW, whose granted directory handle cannot reach outside itself.
+ * @param {(absolutePath: string, metadata: object) => Promise<void>} [deps.writeImageMetadata] - writes an image record's regions/keywords/title/caption/rating into a file via `exiftool` (src/adapters/exiftoolWriteback.js), for Settings' "Copy metadata into exported files". Supplied only where exiftool can actually be run, the same way the faces handler's own writeFaceRegion is; its absence just means an export copies the files without adding anything to them.
  * @returns {(request: {method: string, path: string, query?: object, body?: object}) => Promise<{status: number, headers: object, body: string|Uint8Array}>}
  */
-export function createHandler({ store, fsAdapter, crateCache = new Map(), createAbsoluteFsAdapter = null }) {
+export function createHandler({ store, fsAdapter, crateCache = new Map(), createAbsoluteFsAdapter = null, writeImageMetadata = null }) {
 
   // A short-lived, per-edit-request cache of crates being written to —
   // deliberately not the same long-lived crateCache the read routes
@@ -670,7 +671,31 @@ export function createHandler({ store, fsAdapter, crateCache = new Map(), create
 
       const destFsAdapter = absoluteBase ? createAbsoluteFsAdapter(absoluteBase) : fsAdapter;
       const { exported, errors } = await exportFiles(fsAdapter, destDir, relativePaths, destFsAdapter);
-      return json(200, { destDir: absoluteBase ? joinPath(absoluteBase, destDir) : destDir, exported: exported.length, errors });
+
+      // Only now, over the copies that actually made it (see
+      // writeExportMetadata) — and only bothering to read each image's
+      // crate at all when this collection asked for it.
+      let metadata = null;
+      if (await loadExportWithMetadataSetting(fsAdapter)) {
+        const exportedPaths = new Set(exported);
+        const records = [];
+        for (const id of memberIds) {
+          const relativePath = getFileById(store, id)?.relative_path;
+          if (!relativePath || !exportedPaths.has(relativePath)) continue;
+          const row = getEntityById(store, id);
+          if (!row) continue;
+          const crate = await loadRawCrate(fsAdapter, crateCache, row.ro_crate_id);
+          const record = readImageRecord(crate, crateRelativeEntityId(row.ro_crate_id, id));
+          if (record) records.push({ relativePath, record });
+        }
+        const result = await writeExportMetadata(destFsAdapter, destDir, records, writeImageMetadata);
+        errors.push(...result.errors);
+        metadata = result.unsupported
+          ? { written: 0, unsupported: 'Writing metadata into exported files needs `exiftool` and `rocphotos serve` or the CLI — the files themselves exported fine.' }
+          : { written: result.written };
+      }
+
+      return json(200, { destDir: absoluteBase ? joinPath(absoluteBase, destDir) : destDir, exported: exported.length, errors, metadata });
     }
 
     return notFound(`No route for ${method} ${path}`);

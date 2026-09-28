@@ -47,6 +47,7 @@ const settingsStatusEl = document.querySelector('#settings-status');
 const settingsFormEl = document.querySelector('#settings-form');
 const settingsWriteMetadataCheckbox = document.querySelector('#settings-write-metadata');
 const settingsExportPathEl = document.querySelector('#settings-export-path');
+const settingsExportWithMetadataCheckbox = document.querySelector('#settings-export-with-metadata');
 const settingsExcludeDirsEl = document.querySelector('#settings-exclude-dirs');
 const settingsExcludeFilesEl = document.querySelector('#settings-exclude-files');
 
@@ -553,7 +554,13 @@ exportAlbumButtonEl.addEventListener('click', async () => {
   exportAlbumButtonEl.disabled = true;
   try {
     const result = await postEdit(`/albums/${encodeURIComponent(id)}/export`, {});
-    statusEl.textContent = `Exported ${result.exported} file(s) from "${name}" into ${result.destDir}/`;
+    // The copies are what an export is; anything the metadata step
+    // could not do (see the route's own `metadata`) is reported after
+    // them rather than as a failed export.
+    const metadataNote = result.metadata?.unsupported
+      ? ` ${result.metadata.unsupported}`
+      : result.metadata ? ` Metadata written into ${result.metadata.written} of them.` : '';
+    statusEl.textContent = `Exported ${result.exported} file(s) from "${name}" into ${result.destDir}/.${metadataNote}`;
   } catch (err) {
     window.alert(`Could not export "${name}": ${err.message}`);
   } finally {
@@ -2528,6 +2535,7 @@ async function loadSettings() {
     const config = await response.json();
     settingsWriteMetadataCheckbox.checked = config.writeMetadataToFiles;
     settingsExportPathEl.value = config.exportPath ?? '';
+    settingsExportWithMetadataCheckbox.checked = config.exportWithMetadata;
     settingsExcludeDirsEl.value = config.excludeDirectories.join('\n');
     settingsExcludeFilesEl.value = config.excludeFiles.join('\n');
     settingsStatusEl.textContent = '';
@@ -2547,6 +2555,7 @@ settingsFormEl.addEventListener('submit', async (event) => {
       body: JSON.stringify({
         writeMetadataToFiles: settingsWriteMetadataCheckbox.checked,
         exportPath: settingsExportPathEl.value,
+        exportWithMetadata: settingsExportWithMetadataCheckbox.checked,
         excludeDirectories: settingsExcludeDirsEl.value.split('\n').map((line) => line.trim()).filter(Boolean),
         excludeFiles: settingsExcludeFilesEl.value.split('\n').map((line) => line.trim()).filter(Boolean),
       }),

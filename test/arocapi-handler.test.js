@@ -19,7 +19,7 @@ import {
 } from '../src/core/db/store.js';
 import { loadOrCreateCrate, serializeCrate, addImageEntity, addSubCrateReference, CRATE_FILE_NAME } from '../src/core/crateBuilder.js';
 import { createFixtureTree, removeFixtureTree } from './helpers/tempDir.js';
-import { setExportPathSetting } from '../src/core/config.js';
+import { setExportPathSetting, saveConfig } from '../src/core/config.js';
 
 let currentRoot = null;
 let handleRequest;
@@ -746,7 +746,7 @@ describe('Albums', () => {
     const res = await handleRequest({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/export` });
     expect(res.status).toEqual(200);
     const result = JSON.parse(res.body);
-    expect(result).toEqual({ destDir: '_exports/RoadTrip2025', exported: 2, errors: [] });
+    expect(result).toEqual({ destDir: '_exports/RoadTrip2025', exported: 2, errors: [], metadata: null });
 
     const fsAdapter = createNodeFsAdapter(currentRoot);
     expect(await fsAdapter.exists('_exports/RoadTrip2025/2025/03/10/photo.jpg')).toBe(true);
@@ -757,6 +757,63 @@ describe('Albums', () => {
   it('404s exporting an unknown album', async () => {
     const res = await handleRequest({ method: 'POST', path: '/albums/nope/export' });
     expect(res.status).toEqual(404);
+  });
+
+  it('writes each exported copy\'s metadata when the collection asked for it', async () => {
+    const fsAdapter = createNodeFsAdapter(currentRoot);
+    await saveConfig(fsAdapter, { exportWithMetadata: true });
+    const written = [];
+    const withMetadata = createHandler({
+      store: db,
+      fsAdapter,
+      writeImageMetadata: async (absolutePath, metadata) => written.push({ absolutePath, metadata }),
+    });
+
+    const album = JSON.parse((await withMetadata({ method: 'POST', path: '/albums', body: { name: 'Road Trip 2025' } })).body);
+    await withMetadata({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/add`, body: { imageIds: ['2025/03/10/photo.jpg'] } });
+    const res = await withMetadata({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/export` });
+
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body).metadata).toEqual({ written: 1 });
+    expect(written).toHaveLength(1);
+    expect(written[0].absolutePath).toEqual(`${currentRoot}/_exports/RoadTrip2025/2025/03/10/photo.jpg`);
+    // Straight from the crate's own record, including the regions the
+    // index only ever holds the names of.
+    expect(written[0].metadata.description).toEqual('A heron at the lake');
+    expect(written[0].metadata.keywords).toEqual(['Bird', 'Background']);
+    expect(written[0].metadata.regions.map((region) => region.name)).toEqual(['Peter Malcolm Sefton', 'Rex']);
+  });
+
+  it('leaves exported copies alone when the collection did not ask for metadata', async () => {
+    const fsAdapter = createNodeFsAdapter(currentRoot);
+    const written = [];
+    const withMetadata = createHandler({
+      store: db,
+      fsAdapter,
+      writeImageMetadata: async (...args) => written.push(args),
+    });
+
+    const album = JSON.parse((await withMetadata({ method: 'POST', path: '/albums', body: { name: 'Road Trip 2025' } })).body);
+    await withMetadata({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/add`, body: { imageIds: ['2025/03/10/photo.jpg'] } });
+    const res = await withMetadata({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/export` });
+
+    expect(JSON.parse(res.body).metadata).toBeNull();
+    expect(written).toEqual([]);
+  });
+
+  it('exports the files anyway, saying what it could not do, when metadata is asked for but exiftool is not available', async () => {
+    const fsAdapter = createNodeFsAdapter(currentRoot);
+    await saveConfig(fsAdapter, { exportWithMetadata: true });
+
+    const album = JSON.parse((await handleRequest({ method: 'POST', path: '/albums', body: { name: 'Road Trip 2025' } })).body);
+    await handleRequest({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/add`, body: { imageIds: ['2025/03/10/photo.jpg'] } });
+    const res = await handleRequest({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/export` });
+
+    expect(res.status).toEqual(200);
+    const result = JSON.parse(res.body);
+    expect(result.exported).toEqual(1);
+    expect(result.metadata.unsupported).toMatch(/exiftool/);
+    expect(await fsAdapter.exists('_exports/RoadTrip2025/2025/03/10/photo.jpg')).toBe(true);
   });
 
   it('exports to a configured absolute path instead, through the adapter the run mode supplies for it', async () => {
@@ -777,7 +834,7 @@ describe('Albums', () => {
     const res = await withAbsoluteExports({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/export` });
 
     expect(res.status).toEqual(200);
-    expect(JSON.parse(res.body)).toEqual({ destDir: '/somewhere/else/RoadTrip2025', exported: 1, errors: [] });
+    expect(JSON.parse(res.body)).toEqual({ destDir: '/somewhere/else/RoadTrip2025', exported: 1, errors: [], metadata: null });
     const destFsAdapter = createNodeFsAdapter(elsewhere);
     expect(await destFsAdapter.exists('RoadTrip2025/2025/03/10/photo.jpg')).toBe(true);
     // Nothing landed in the collection's own _exports/ this time.

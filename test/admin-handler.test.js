@@ -107,6 +107,7 @@ describe('GET/POST /config', () => {
       excludeFiles: [],
       writeMetadataToFiles: false,
       exportPath: null,
+      exportWithMetadata: false,
     });
   });
 
@@ -114,13 +115,14 @@ describe('GET/POST /config', () => {
     const saveRes = await handleRequest({
       method: 'POST',
       path: '/config',
-      body: { excludeDirectories: ['^\\.', '^HTML'], excludeFiles: ['^Thumbs\\.db$'], writeMetadataToFiles: true, exportPath: '~/Pictures/Exports' },
+      body: { excludeDirectories: ['^\\.', '^HTML'], excludeFiles: ['^Thumbs\\.db$'], writeMetadataToFiles: true, exportPath: '~/Pictures/Exports', exportWithMetadata: true },
     });
     expect(JSON.parse(saveRes.body)).toEqual({
       excludeDirectories: ['^\\.', '^HTML'],
       excludeFiles: ['^Thumbs\\.db$'],
       writeMetadataToFiles: true,
       exportPath: '~/Pictures/Exports',
+      exportWithMetadata: true,
     });
 
     const getRes = await handleRequest({ method: 'GET', path: '/config' });
@@ -129,6 +131,7 @@ describe('GET/POST /config', () => {
       excludeFiles: ['^Thumbs\\.db$'],
       writeMetadataToFiles: true,
       exportPath: '~/Pictures/Exports',
+      exportWithMetadata: true,
     });
   });
 
@@ -142,6 +145,7 @@ describe('GET/POST /config', () => {
       excludeFiles: [],
       writeMetadataToFiles: true,
       exportPath: null,
+      exportWithMetadata: false,
     });
   });
 

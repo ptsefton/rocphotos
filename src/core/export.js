@@ -93,6 +93,64 @@ export function resolveExportTarget(albumName, exportPath = null) {
  * @param {import('./fsAdapter.js').FsAdapter} [destFsAdapter] - written through, when exporting outside the collection
  * @returns {Promise<{exported: string[], errors: Array<{id: string, message: string}>}>} errors use `id` (holding the relative path) rather than `relativePath`, matching the {id, message} shape every other bulk operation's errors use (see /edit/* in arocapi/handler.js) — the shape the web view's postEdit helper already knows how to format into an error message
  */
+/**
+ * Writes each exported copy's own metadata into it (see Settings'
+ * "Copy metadata into exported files", config.js's
+ * loadExportWithMetadataSetting) — confirmed face/pet regions,
+ * keywords, title, caption, rating, as the crate currently has them.
+ *
+ * Copying a photo already carries its original EXIF along with the
+ * bytes; what this adds is everything this app knows that the file
+ * itself does not yet — a face confirmed here but never written back, a
+ * keyword or caption edited here — so an exported copy stands on its
+ * own in any other photo tool, rather than only making sense next to
+ * this collection's crates.
+ *
+ * Needs two things only the Node-backed run modes have: an `exiftool`
+ * wrapper (`writeImageMetadata`) and a destination adapter that can say
+ * where a relative path really is on disk (`absolutePathFor` — see
+ * adapters/nodeFs.js). Missing either is reported as `unsupported`
+ * rather than thrown: the copies themselves are already safely written
+ * by then, so the export as a whole has succeeded and the caller only
+ * needs to say what was left undone.
+ *
+ * A file whose metadata cannot be written is likewise reported, not
+ * thrown — same reasoning, and the same {id, message} error shape
+ * exportFiles itself uses.
+ *
+ * @param {import('./fsAdapter.js').FsAdapter} destFsAdapter
+ * @param {string} destDir
+ * @param {Array<{relativePath: string, record: object}>} records - each exported file with its crate record (crateBuilder.js's readImageRecord)
+ * @param {((absolutePath: string, metadata: object) => Promise<void>)|null} writeImageMetadata
+ * @returns {Promise<{written: number, unsupported: boolean, errors: Array<{id: string, message: string}>}>}
+ */
+export async function writeExportMetadata(destFsAdapter, destDir, records, writeImageMetadata) {
+  if (!writeImageMetadata || !destFsAdapter.absolutePathFor) {
+    return { written: 0, unsupported: true, errors: [] };
+  }
+
+  let written = 0;
+  const errors = [];
+  for (const { relativePath, record } of records) {
+    const exifByName = Object.fromEntries((record.exifEntries ?? []).map((entry) => [entry.name, entry.value]));
+    try {
+      await writeImageMetadata(destFsAdapter.absolutePathFor(joinPath(destDir, relativePath)), {
+        regions: record.regions ?? [],
+        keywords: record.keywords ?? [],
+        title: record.title ?? null,
+        description: record.description ?? null,
+        rating: record.rating ?? null,
+        imageWidth: Number(exifByName.ImageWidth) || null,
+        imageHeight: Number(exifByName.ImageHeight) || null,
+      });
+      written += 1;
+    } catch (err) {
+      errors.push({ id: relativePath, message: `exported, but its metadata could not be written: ${err.message}` });
+    }
+  }
+  return { written, unsupported: false, errors };
+}
+
 export async function exportFiles(fsAdapter, destDir, relativePaths, destFsAdapter = fsAdapter) {
   const exported = [];
   const errors = [];

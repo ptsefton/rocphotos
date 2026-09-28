@@ -6,6 +6,7 @@ import {
   compileNamePatternMatcher,
   loadWriteMetadataToFilesSetting,
   loadExportPathSetting,
+  loadExportWithMetadataSetting,
   saveConfig,
 } from '../config.js';
 import { isAbsoluteExportPath, EXPORTS_DIR_NAME } from '../export.js';
@@ -119,6 +120,7 @@ export function createAdminHandler({ db, fsAdapter, rootName, crateCache = new M
         excludeFiles: await loadExcludedFilePatterns(fsAdapter),
         writeMetadataToFiles: await loadWriteMetadataToFilesSetting(fsAdapter),
         exportPath: await loadExportPathSetting(fsAdapter),
+        exportWithMetadata: await loadExportWithMetadataSetting(fsAdapter),
       });
     }
 
@@ -138,12 +140,14 @@ export function createAdminHandler({ db, fsAdapter, rootName, crateCache = new M
       if (Array.isArray(body?.excludeFiles)) updates.excludeFiles = body.excludeFiles;
       if (typeof body?.writeMetadataToFiles === 'boolean') updates.writeMetadataToFiles = body.writeMetadataToFiles;
       if (typeof body?.exportPath === 'string') updates.exportPath = exportPath || null;
+      if (typeof body?.exportWithMetadata === 'boolean') updates.exportWithMetadata = body.exportWithMetadata;
       const updated = await saveConfig(fsAdapter, updates);
       return json(200, {
         excludeDirectories: Array.isArray(updated.excludeDirectories) ? updated.excludeDirectories : await loadExcludedDirectoryPatterns(fsAdapter),
         excludeFiles: Array.isArray(updated.excludeFiles) ? updated.excludeFiles : await loadExcludedFilePatterns(fsAdapter),
         writeMetadataToFiles: updated.writeMetadataToFiles === true,
         exportPath: updated.exportPath ?? null,
+        exportWithMetadata: updated.exportWithMetadata === true,
       });
     }
 

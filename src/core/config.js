@@ -183,6 +183,27 @@ export async function setExportPathSetting(fsAdapter, exportPath) {
 }
 
 /**
+ * Whether an album export should also write this app's own metadata —
+ * confirmed face/pet regions, keywords, title, caption, rating — into
+ * the exported copies themselves (see export.js's writeExportMetadata).
+ * Off by default, since it needs `exiftool` and makes an export slower
+ * than a plain file copy.
+ *
+ * Unrelated to writeMetadataToFiles above, despite the similar name, and
+ * deliberately not gated behind it: that one modifies the collection's
+ * own original photos in place, which is why it carries a warning and
+ * defaults off; this one only ever touches copies this export just made,
+ * leaving every original untouched no matter what goes wrong.
+ *
+ * @param {import('./fsAdapter.js').FsAdapter} fsAdapter
+ * @returns {Promise<boolean>}
+ */
+export async function loadExportWithMetadataSetting(fsAdapter) {
+  const config = await loadConfig(fsAdapter);
+  return config.exportWithMetadata === true;
+}
+
+/**
  * Adds one or more exact filenames to the config's excludeFiles list,
  * merging with (rather than overwriting) whatever is already there —
  * including other config fields such as excludeDirectories. Used to

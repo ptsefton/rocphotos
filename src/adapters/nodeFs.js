@@ -52,5 +52,17 @@ export function createNodeFsAdapter(rootDir) {
     async deleteFile(relPath) {
       await fs.unlink(resolve(relPath));
     },
+
+    // Not part of the core FsAdapter interface every implementation has
+    // to provide: only an adapter actually backed by the real filesystem
+    // can say where a relative path really is, which is what an external
+    // tool operating on the same file needs (see exiftoolWriteback.js,
+    // and export.js's writeExportMetadata for a caller that treats its
+    // absence as "this run mode cannot do that", rather than as an
+    // error). The browser adapter has no equivalent — a File System
+    // Access API handle exposes no path at all.
+    absolutePathFor(relPath) {
+      return resolve(relPath);
+    },
   };
 }

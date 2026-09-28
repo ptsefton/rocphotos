@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createNodeFsAdapter } from '../src/adapters/nodeFs.js';
-import { exportDirFor, exportFiles, resolveExportTarget, isAbsoluteExportPath, EXPORTS_DIR_NAME } from '../src/core/export.js';
+import { exportDirFor, exportFiles, resolveExportTarget, writeExportMetadata, isAbsoluteExportPath, EXPORTS_DIR_NAME } from '../src/core/export.js';
 import { createFixtureTree, removeFixtureTree } from './helpers/tempDir.js';
 
 let currentRoot = null;
@@ -76,6 +76,70 @@ describe('exportFiles', () => {
     expect(new TextDecoder().decode(await destFsAdapter.readFile('RoadTrip/2025/03/10/photo.jpg'))).toEqual('photo bytes');
     // Nothing was written into the collection itself.
     expect(await sourceFsAdapter.exists('RoadTrip')).toBe(false);
+  });
+});
+
+describe('writeExportMetadata', () => {
+  const record = {
+    title: 'A Title',
+    description: 'A caption',
+    rating: 4,
+    keywords: ['beach'],
+    regions: [{ name: 'Jane Smith', type: 'Face', area: { x: 0.5, y: 0.4, w: 0.2, h: 0.2 } }],
+    exifEntries: [{ name: 'ImageWidth', value: '4000' }, { name: 'ImageHeight', value: '3000' }],
+  };
+
+  it('writes each exported copy\'s own metadata, at its real path on disk', async () => {
+    currentRoot = await createFixtureTree({ exports: { RoadTrip: { '2025': { 'photo.jpg': 'bytes' } } } });
+    const destFsAdapter = createNodeFsAdapter(currentRoot);
+    const calls = [];
+
+    const result = await writeExportMetadata(
+      destFsAdapter,
+      'exports/RoadTrip',
+      [{ relativePath: '2025/photo.jpg', record }],
+      async (absolutePath, metadata) => calls.push({ absolutePath, metadata }),
+    );
+
+    expect(result).toEqual({ written: 1, unsupported: false, errors: [] });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].absolutePath).toEqual(`${currentRoot}/exports/RoadTrip/2025/photo.jpg`);
+    expect(calls[0].metadata).toEqual({
+      regions: record.regions,
+      keywords: ['beach'],
+      title: 'A Title',
+      description: 'A caption',
+      rating: 4,
+      imageWidth: 4000,
+      imageHeight: 3000,
+    });
+  });
+
+  it('reports itself unsupported, rather than throwing, with no exiftool wrapper to write through', async () => {
+    currentRoot = await createFixtureTree({});
+    const result = await writeExportMetadata(createNodeFsAdapter(currentRoot), 'exports', [{ relativePath: 'a.jpg', record }], null);
+    expect(result).toEqual({ written: 0, unsupported: true, errors: [] });
+  });
+
+  it('reports itself unsupported when the destination adapter cannot say where a file really is', async () => {
+    const browserLikeAdapter = { writeFile: async () => {}, readFile: async () => new Uint8Array() };
+    const result = await writeExportMetadata(browserLikeAdapter, 'exports', [{ relativePath: 'a.jpg', record }], async () => {});
+    expect(result).toEqual({ written: 0, unsupported: true, errors: [] });
+  });
+
+  it('reports a file whose metadata could not be written, and carries on with the rest', async () => {
+    currentRoot = await createFixtureTree({});
+    const result = await writeExportMetadata(
+      createNodeFsAdapter(currentRoot),
+      'exports',
+      [{ relativePath: 'bad.jpg', record }, { relativePath: 'good.jpg', record }],
+      async (absolutePath) => {
+        if (absolutePath.endsWith('bad.jpg')) throw new Error('exiftool exploded');
+      },
+    );
+
+    expect(result.written).toEqual(1);
+    expect(result.errors).toEqual([{ id: 'bad.jpg', message: expect.stringContaining('exiftool exploded') }]);
   });
 });
 
