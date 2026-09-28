@@ -19,6 +19,7 @@ import {
 } from '../src/core/db/store.js';
 import { loadOrCreateCrate, serializeCrate, addImageEntity, addSubCrateReference, CRATE_FILE_NAME } from '../src/core/crateBuilder.js';
 import { createFixtureTree, removeFixtureTree } from './helpers/tempDir.js';
+import { setExportPathSetting } from '../src/core/config.js';
 
 let currentRoot = null;
 let handleRequest;
@@ -756,5 +757,44 @@ describe('Albums', () => {
   it('404s exporting an unknown album', async () => {
     const res = await handleRequest({ method: 'POST', path: '/albums/nope/export' });
     expect(res.status).toEqual(404);
+  });
+
+  it('exports to a configured absolute path instead, through the adapter the run mode supplies for it', async () => {
+    const fsAdapter = createNodeFsAdapter(currentRoot);
+    await setExportPathSetting(fsAdapter, '/somewhere/else');
+    const elsewhere = await createFixtureTree({});
+    const withAbsoluteExports = createHandler({
+      store: db,
+      fsAdapter,
+      createAbsoluteFsAdapter: (configuredPath) => {
+        expect(configuredPath).toEqual('/somewhere/else');
+        return createNodeFsAdapter(elsewhere);
+      },
+    });
+
+    const album = JSON.parse((await withAbsoluteExports({ method: 'POST', path: '/albums', body: { name: 'Road Trip 2025' } })).body);
+    await withAbsoluteExports({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/add`, body: { imageIds: ['2025/03/10/photo.jpg'] } });
+    const res = await withAbsoluteExports({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/export` });
+
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body)).toEqual({ destDir: '/somewhere/else/RoadTrip2025', exported: 1, errors: [] });
+    const destFsAdapter = createNodeFsAdapter(elsewhere);
+    expect(await destFsAdapter.exists('RoadTrip2025/2025/03/10/photo.jpg')).toBe(true);
+    // Nothing landed in the collection's own _exports/ this time.
+    expect(await fsAdapter.exists('_exports')).toBe(false);
+    await removeFixtureTree(elsewhere);
+  });
+
+  it('refuses an absolute export path in a run mode that cannot write outside the collection, rather than silently exporting elsewhere', async () => {
+    const fsAdapter = createNodeFsAdapter(currentRoot);
+    await setExportPathSetting(fsAdapter, '/somewhere/else');
+
+    const album = JSON.parse((await handleRequest({ method: 'POST', path: '/albums', body: { name: 'Road Trip 2025' } })).body);
+    await handleRequest({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/add`, body: { imageIds: ['2025/03/10/photo.jpg'] } });
+    const res = await handleRequest({ method: 'POST', path: `/albums/${encodeURIComponent(album.id)}/export` });
+
+    expect(res.status).toEqual(400);
+    expect(JSON.parse(res.body).error).toMatch(/rocphotos serve/);
+    expect(await fsAdapter.exists('_exports')).toBe(false);
   });
 });

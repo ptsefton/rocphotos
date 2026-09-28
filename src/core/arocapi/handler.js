@@ -39,7 +39,8 @@ import { loadEntityFromCrate, loadRawCrate } from '../entityCrate.js';
 import { moveToTrash } from '../trash.js';
 import { joinPath } from '../pathUtils.js';
 import { serializeWrites } from '../writeQueue.js';
-import { exportDirFor, exportFiles } from '../export.js';
+import { exportDirFor, exportFiles, resolveExportTarget } from '../export.js';
+import { loadExportPathSetting } from '../config.js';
 
 // The facets this deployment supports: camera and lens (from EXIF),
 // keyword (from IPTC/XMP, possibly several per image), rating (an XMP
@@ -148,9 +149,10 @@ async function persistStore(store) {
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver & {persist?: () => Promise<void>}} deps.store
  * @param {import('../fsAdapter.js').FsAdapter} deps.fsAdapter
  * @param {Map<string, import('ro-crate').ROCrate>} [deps.crateCache] - the long-lived read cache below; accepted rather than always created fresh so another writer of the same crate files (see faces/handler.js's /confirm route) can share and keep it in sync too. Defaults to a private one when not given (e.g. in tests, or the browser SW's per-request handler — see src/sw.js).
+ * @param {(absolutePath: string) => import('../fsAdapter.js').FsAdapter} [deps.createAbsoluteFsAdapter] - builds an adapter rooted at an absolute path anywhere on disk, for exporting an album outside the collection (Settings' "Export path" — see the /albums/{id}/export route). Supplied only by the Node-backed run modes, which have unrestricted filesystem access; absent in the browser SW, whose granted directory handle cannot reach outside itself.
  * @returns {(request: {method: string, path: string, query?: object, body?: object}) => Promise<{status: number, headers: object, body: string|Uint8Array}>}
  */
-export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
+export function createHandler({ store, fsAdapter, crateCache = new Map(), createAbsoluteFsAdapter = null }) {
 
   // A short-lived, per-edit-request cache of crates being written to —
   // deliberately not the same long-lived crateCache the read routes
@@ -634,28 +636,41 @@ export function createHandler({ store, fsAdapter, crateCache = new Map() }) {
     }
 
     // A first, deliberately minimal cut of Section 3's Albums export
-    // feature: copies each member's real file into `_exports/<album>/`
-    // (see export.js), preserving its own collection-relative path — a
-    // sparse mirror of just this album's files. No crate or other
-    // metadata is written alongside them yet (see Spec.md's Albums
-    // section for what's still to come). Uses this handler's own
-    // fsAdapter, the same one every other route here already writes
-    // through — in the browser Service-Worker run mode this is a
-    // subdirectory of the collection the user already granted access to,
-    // so exporting there needs no extra permission grant; exporting to a
-    // second, separate directory the user picks themselves is a possible
-    // future addition, not yet implemented.
+    // feature: copies each member's real file into the export
+    // destination (see export.js), preserving its own collection-relative
+    // path — a sparse mirror of just this album's files. No crate or
+    // other metadata is written alongside them yet (see Spec.md's Albums
+    // section for what's still to come).
+    //
+    // Two destinations: the built-in `_exports/<album>/`, written through
+    // this handler's own fsAdapter like every other route here (in the
+    // browser Service-Worker run mode a subdirectory of the collection
+    // the user already granted access to, so it needs no extra permission
+    // grant); or, if this collection configured one (Settings' "Export
+    // path"), an absolute path elsewhere on disk, written through a
+    // second adapter rooted there. The latter needs
+    // `createAbsoluteFsAdapter`, which only the Node-backed run modes
+    // supply — a browser tab's File System Access API handle cannot reach
+    // outside the granted directory at all, so rather than silently
+    // exporting somewhere other than where the setting says, it refuses
+    // and says why.
     if (method === 'POST' && parts[0] === 'albums' && parts.length === 3 && parts[2] === 'export') {
       const album = getAlbumById(store, decodeURIComponent(parts[1]));
       if (!album) return notFound();
+
+      const exportPath = await loadExportPathSetting(fsAdapter);
+      const { absoluteBase, destDir } = resolveExportTarget(album.name, exportPath);
+      if (absoluteBase && !createAbsoluteFsAdapter) {
+        return badRequest(`This collection's export path ("${exportPath}") is outside the collection, which this run mode cannot write to — export from \`rocphotos serve\` or the CLI, or clear the setting to export to ${exportDirFor(album.name)} instead.`);
+      }
 
       const rootCrate = await loadRawCrate(fsAdapter, crateCache, crateEntityId(''));
       const memberIds = albumMemberIds(rootCrate, album.id);
       const relativePaths = memberIds.map((id) => getFileById(store, id)?.relative_path).filter(Boolean);
 
-      const destDir = exportDirFor(album.name);
-      const { exported, errors } = await exportFiles(fsAdapter, destDir, relativePaths);
-      return json(200, { destDir, exported: exported.length, errors });
+      const destFsAdapter = absoluteBase ? createAbsoluteFsAdapter(absoluteBase) : fsAdapter;
+      const { exported, errors } = await exportFiles(fsAdapter, destDir, relativePaths, destFsAdapter);
+      return json(200, { destDir: absoluteBase ? joinPath(absoluteBase, destDir) : destDir, exported: exported.length, errors });
     }
 
     return notFound(`No route for ${method} ${path}`);

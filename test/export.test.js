@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createNodeFsAdapter } from '../src/adapters/nodeFs.js';
-import { exportDirFor, exportFiles, EXPORTS_DIR_NAME } from '../src/core/export.js';
+import { exportDirFor, exportFiles, resolveExportTarget, isAbsoluteExportPath, EXPORTS_DIR_NAME } from '../src/core/export.js';
 import { createFixtureTree, removeFixtureTree } from './helpers/tempDir.js';
 
 let currentRoot = null;
@@ -60,5 +60,45 @@ describe('exportFiles', () => {
     expect(result.exported).toEqual(['2025/03/10/photo.jpg']);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0].id).toEqual('2025/03/10/missing.jpg');
+  });
+
+  it('writes through a separate destination adapter when one is given, reading from the collection as usual', async () => {
+    currentRoot = await createFixtureTree({
+      collection: { '2025': { '03': { '10': { 'photo.jpg': 'photo bytes' } } } },
+      elsewhere: {},
+    });
+    const sourceFsAdapter = createNodeFsAdapter(`${currentRoot}/collection`);
+    const destFsAdapter = createNodeFsAdapter(`${currentRoot}/elsewhere`);
+
+    const result = await exportFiles(sourceFsAdapter, 'RoadTrip', ['2025/03/10/photo.jpg'], destFsAdapter);
+
+    expect(result.exported).toEqual(['2025/03/10/photo.jpg']);
+    expect(new TextDecoder().decode(await destFsAdapter.readFile('RoadTrip/2025/03/10/photo.jpg'))).toEqual('photo bytes');
+    // Nothing was written into the collection itself.
+    expect(await sourceFsAdapter.exists('RoadTrip')).toBe(false);
+  });
+});
+
+describe('isAbsoluteExportPath', () => {
+  it.each(['/srv/exports', '~/Pictures/Exports', 'C:\\Exports', 'D:/Exports'])('treats %s as outside the collection', (exportPath) => {
+    expect(isAbsoluteExportPath(exportPath)).toBe(true);
+  });
+
+  it.each(['exports', 'my/exports', '', null])('treats %s as not an absolute path', (exportPath) => {
+    expect(isAbsoluteExportPath(exportPath)).toBe(false);
+  });
+});
+
+describe('resolveExportTarget', () => {
+  it('falls back to the built-in _exports/<album>/ when no export path is configured', () => {
+    expect(resolveExportTarget('Road Trip', null)).toEqual({ absoluteBase: null, destDir: `${EXPORTS_DIR_NAME}/RoadTrip` });
+  });
+
+  it('puts the album directly under a configured absolute path, with no _exports level inside it', () => {
+    expect(resolveExportTarget('Road Trip', '~/Pictures/Exports')).toEqual({ absoluteBase: '~/Pictures/Exports', destDir: 'RoadTrip' });
+  });
+
+  it('ignores a relative configured path, which no run mode treats as outside the collection', () => {
+    expect(resolveExportTarget('Road Trip', 'somewhere')).toEqual({ absoluteBase: null, destDir: `${EXPORTS_DIR_NAME}/RoadTrip` });
   });
 });

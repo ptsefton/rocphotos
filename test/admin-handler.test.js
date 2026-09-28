@@ -106,6 +106,7 @@ describe('GET/POST /config', () => {
       excludeDirectories: ['^\\.'],
       excludeFiles: [],
       writeMetadataToFiles: false,
+      exportPath: null,
     });
   });
 
@@ -113,12 +114,13 @@ describe('GET/POST /config', () => {
     const saveRes = await handleRequest({
       method: 'POST',
       path: '/config',
-      body: { excludeDirectories: ['^\\.', '^HTML'], excludeFiles: ['^Thumbs\\.db$'], writeMetadataToFiles: true },
+      body: { excludeDirectories: ['^\\.', '^HTML'], excludeFiles: ['^Thumbs\\.db$'], writeMetadataToFiles: true, exportPath: '~/Pictures/Exports' },
     });
     expect(JSON.parse(saveRes.body)).toEqual({
       excludeDirectories: ['^\\.', '^HTML'],
       excludeFiles: ['^Thumbs\\.db$'],
       writeMetadataToFiles: true,
+      exportPath: '~/Pictures/Exports',
     });
 
     const getRes = await handleRequest({ method: 'GET', path: '/config' });
@@ -126,6 +128,7 @@ describe('GET/POST /config', () => {
       excludeDirectories: ['^\\.', '^HTML'],
       excludeFiles: ['^Thumbs\\.db$'],
       writeMetadataToFiles: true,
+      exportPath: '~/Pictures/Exports',
     });
   });
 
@@ -138,6 +141,24 @@ describe('GET/POST /config', () => {
       excludeDirectories: ['^\\.', '^HTML'],
       excludeFiles: [],
       writeMetadataToFiles: true,
+      exportPath: null,
     });
+  });
+
+  it('rejects a relative export path, rather than saving one that would then be ignored at export time', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/config', body: { exportPath: 'somewhere/else' } });
+    expect(res.status).toEqual(400);
+    expect(JSON.parse(res.body).error).toMatch(/absolute path/);
+
+    const getRes = await handleRequest({ method: 'GET', path: '/config' });
+    expect(JSON.parse(getRes.body).exportPath).toBeNull();
+  });
+
+  it('clears the export path back to the default when saved blank', async () => {
+    await handleRequest({ method: 'POST', path: '/config', body: { exportPath: '/tmp/exports' } });
+    await handleRequest({ method: 'POST', path: '/config', body: { exportPath: '  ' } });
+
+    const res = await handleRequest({ method: 'GET', path: '/config' });
+    expect(JSON.parse(res.body).exportPath).toBeNull();
   });
 });

@@ -46,6 +46,7 @@ const overviewProcessButtonEl = document.querySelector('#overview-process');
 const settingsStatusEl = document.querySelector('#settings-status');
 const settingsFormEl = document.querySelector('#settings-form');
 const settingsWriteMetadataCheckbox = document.querySelector('#settings-write-metadata');
+const settingsExportPathEl = document.querySelector('#settings-export-path');
 const settingsExcludeDirsEl = document.querySelector('#settings-exclude-dirs');
 const settingsExcludeFilesEl = document.querySelector('#settings-exclude-files');
 
@@ -2526,6 +2527,7 @@ async function loadSettings() {
     if (!response.ok) throw new Error(`Failed to load settings: ${response.status}`);
     const config = await response.json();
     settingsWriteMetadataCheckbox.checked = config.writeMetadataToFiles;
+    settingsExportPathEl.value = config.exportPath ?? '';
     settingsExcludeDirsEl.value = config.excludeDirectories.join('\n');
     settingsExcludeFilesEl.value = config.excludeFiles.join('\n');
     settingsStatusEl.textContent = '';
@@ -2544,11 +2546,15 @@ settingsFormEl.addEventListener('submit', async (event) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         writeMetadataToFiles: settingsWriteMetadataCheckbox.checked,
+        exportPath: settingsExportPathEl.value,
         excludeDirectories: settingsExcludeDirsEl.value.split('\n').map((line) => line.trim()).filter(Boolean),
         excludeFiles: settingsExcludeFilesEl.value.split('\n').map((line) => line.trim()).filter(Boolean),
       }),
     });
-    if (!response.ok) throw new Error(`Save failed: ${response.status}`);
+    // The server's own message, when it has one — a rejected export
+    // path (see admin/handler.js) says exactly what is wrong with it,
+    // which a bare status code would throw away.
+    if (!response.ok) throw new Error((await response.json().catch(() => null))?.error ?? `Save failed: ${response.status}`);
     settingsStatusEl.textContent = 'Saved. Restart rocphotos serve for the write-back setting to take effect; exclude patterns apply from the next scan.';
   } catch (err) {
     settingsStatusEl.textContent = `Error: ${err.message}`;

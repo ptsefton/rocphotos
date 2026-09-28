@@ -5,8 +5,10 @@ import {
   loadExcludedFilePatterns,
   compileNamePatternMatcher,
   loadWriteMetadataToFilesSetting,
+  loadExportPathSetting,
   saveConfig,
 } from '../config.js';
+import { isAbsoluteExportPath, EXPORTS_DIR_NAME } from '../export.js';
 import { serializeWrites } from '../writeQueue.js';
 
 function json(status, body) {
@@ -116,19 +118,32 @@ export function createAdminHandler({ db, fsAdapter, rootName, crateCache = new M
         excludeDirectories: await loadExcludedDirectoryPatterns(fsAdapter),
         excludeFiles: await loadExcludedFilePatterns(fsAdapter),
         writeMetadataToFiles: await loadWriteMetadataToFilesSetting(fsAdapter),
+        exportPath: await loadExportPathSetting(fsAdapter),
       });
     }
 
     if (method === 'POST' && path === '/config') {
+      // An export path outside the collection is the whole point of the
+      // setting (see config.js's loadExportPathSetting), so a relative
+      // one is rejected here rather than quietly saved and then ignored
+      // at export time, which would look like the setting simply not
+      // working. Blank clears it back to the built-in `_exports/`.
+      const exportPath = typeof body?.exportPath === 'string' ? body.exportPath.trim() : null;
+      if (exportPath && !isAbsoluteExportPath(exportPath)) {
+        return badRequest(`Export path must be an absolute path (or start with ~), not "${exportPath}" — leave it blank to export to ${EXPORTS_DIR_NAME}/ inside the collection instead.`);
+      }
+
       const updates = {};
       if (Array.isArray(body?.excludeDirectories)) updates.excludeDirectories = body.excludeDirectories;
       if (Array.isArray(body?.excludeFiles)) updates.excludeFiles = body.excludeFiles;
       if (typeof body?.writeMetadataToFiles === 'boolean') updates.writeMetadataToFiles = body.writeMetadataToFiles;
+      if (typeof body?.exportPath === 'string') updates.exportPath = exportPath || null;
       const updated = await saveConfig(fsAdapter, updates);
       return json(200, {
         excludeDirectories: Array.isArray(updated.excludeDirectories) ? updated.excludeDirectories : await loadExcludedDirectoryPatterns(fsAdapter),
         excludeFiles: Array.isArray(updated.excludeFiles) ? updated.excludeFiles : await loadExcludedFilePatterns(fsAdapter),
         writeMetadataToFiles: updated.writeMetadataToFiles === true,
+        exportPath: updated.exportPath ?? null,
       });
     }
 

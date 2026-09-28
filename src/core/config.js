@@ -148,6 +148,41 @@ export async function setWriteMetadataToFilesSetting(fsAdapter, enabled) {
 }
 
 /**
+ * Where an album export (Section 3's Albums, `src/core/export.js`) lands,
+ * beyond the built-in default of `_exports/<album>/` inside the
+ * collection itself — an absolute path (or `~/...`) elsewhere on disk,
+ * for whoever wants exports to go straight to a Dropbox folder, an
+ * external drive, or similar, rather than being manually moved out of
+ * the collection afterwards. Travels with the collection (same config
+ * file as every other setting here), so it is honoured the same way
+ * from the CLI and from `rocphotos serve`'s web UI alike — but an
+ * absolute path is fundamentally unreachable from the browser-tab SPA's
+ * File System Access API handle (see export.js's isAbsoluteExportPath),
+ * which can only ever write inside the directory the user granted it;
+ * exporting there still succeeds, just always to the built-in default,
+ * ignoring this setting.
+ *
+ * @param {import('./fsAdapter.js').FsAdapter} fsAdapter
+ * @returns {Promise<string|null>}
+ */
+export async function loadExportPathSetting(fsAdapter) {
+  const config = await loadConfig(fsAdapter);
+  return typeof config.exportPath === 'string' && config.exportPath.trim() ? config.exportPath.trim() : null;
+}
+
+/**
+ * Sets this collection's custom export path (see loadExportPathSetting
+ * above) — null/blank clears it back to the built-in default.
+ *
+ * @param {import('./fsAdapter.js').FsAdapter} fsAdapter
+ * @param {string|null} exportPath
+ */
+export async function setExportPathSetting(fsAdapter, exportPath) {
+  const trimmed = typeof exportPath === 'string' ? exportPath.trim() : '';
+  await saveConfig(fsAdapter, { exportPath: trimmed || null });
+}
+
+/**
  * Adds one or more exact filenames to the config's excludeFiles list,
  * merging with (rather than overwriting) whatever is already there —
  * including other config fields such as excludeDirectories. Used to

@@ -44,9 +44,9 @@ Processing a selection creates/updates the root and sub-collection crates, adds 
 
 This screen — Scan, in `rocphotos serve`'s web view (Section 4.1) — is shared, unchanged, with the browser SPA: `webview/overviewUI.js` for the tree UI, `scanCollection.js` for the scan itself (also what the CLI's `scan` command uses). `rocphotos serve` bootstraps an empty root crate and config on first run rather than requiring a prior CLI scan, and switches to Scan automatically, once, on a fully-unscanned collection. A selection is scanned one sub-collection at a time, reporting progress ("Scanning 2006/01/03… (3 of 7)"). The "Always process everything on open" checkbox (browser SPA only) bypasses this screen entirely.
 
-`rocphotos serve`'s web view is a single page with three switchable modes — **Explore** (facets/grid/viewer), **Scan** (above), **Settings** (below) — via a `#mode-bar` at the top, no reload. Explore is the default.
+`rocphotos serve`'s web view is a single page with four switchable modes — **Explore** (facets/grid/viewer), **People** (below), **Scan** (above), **Settings** (below) — via a `#mode-bar` at the top, no reload. Explore is the default.
 
-**Settings screen** edits `rocphotos.config.json`: the write-back checkbox (see Face Recognition, below), and `excludeDirectories`/`excludeFiles` as one-pattern-per-line lists — the same settings the browser SPA's own Settings section has always had, now editable from `rocphotos serve` too. Backed by `GET`/`POST /api/admin/config`. The write-back setting takes effect on the next `rocphotos serve` restart; exclude patterns apply from the next scan.
+**Settings screen** edits `rocphotos.config.json`: the write-back checkbox (see Face Recognition, below), the export path (see Albums, below), and `excludeDirectories`/`excludeFiles` as one-pattern-per-line lists — the same settings the browser SPA's own Settings section has always had, now editable from `rocphotos serve` too. Backed by `GET`/`POST /api/admin/config`. The write-back setting takes effect on the next `rocphotos serve` restart; exclude patterns apply from the next scan; the export path applies to the next export.
 
 A file is only re-read (EXIF + thumbnail) if its modification time has changed since last processed, whether or not that attempt succeeded — so a failed file is not retried until it changes, and a new extraction field does not retroactively apply to unchanged files. `--reprocess` forces re-extraction of everything regardless of mtime.
 
@@ -70,7 +70,7 @@ Beyond that, a collection may contain directories or files that should never be 
 
 Each is a list of regular expressions matched against a directory's or file's own name, at any depth. An excluded file is treated as if it did not exist. `excludeDirectories`, if present, replaces the `.*` default rather than adding to it; `excludeFiles` has no default. Read through the same filesystem interface as everything else, so it's honoured identically by the CLI and the browser SPA.
 
-The same file holds `writeMetadataToFiles` (boolean, default `false`) — the opt-in for writing confirmed faces back to photo files (Face Recognition, below) — editable via the Settings screen (Section 4.1) as well as by hand.
+The same file holds `writeMetadataToFiles` (boolean, default `false`) — the opt-in for writing confirmed faces back to photo files (Face Recognition, below) — and `exportPath` (string, default none) — where album exports land (Albums, below). Both are editable via the Settings screen (Section 4.1) as well as by hand.
 
 #### Loose Images in the Collection Root
 
@@ -110,7 +110,9 @@ Status:
 
 Routes (not AROCAPI): `POST /albums` (create/update), `GET /albums` (list, `?q=` to search), `GET /albums/{id}` (members, ordered), `POST /albums/{id}/add`. `albums` is also a real facet (`STORED_FACETS`), populated by the add route rather than derived from EXIF, so an album composes with every other filter and appears in the sidebar's Albums panel and the generic facets list alike (`toggleFilter('albums', name)` either way).
 
-**Export** (`src/core/export.js`) copies an album's member files into `_exports/<album-name-slug>/`, preserving each file's collection-relative path — files only, no crate/metadata yet. `_exports/` is excluded from the scan walk. Re-exporting overwrites. Reachable via `rocphotos export-album <directory> <album name>` (CLI) or the web view's "Export \<name\> Album" button (shown only while that album is the active filter). Lands under wherever `rocphotos serve` was pointed at, or under the browser SPA's granted directory — never an arbitrary user-picked location (not yet implemented).
+**Export** (`src/core/export.js`) copies an album's member files into `_exports/<album-name-slug>/`, preserving each file's collection-relative path — files only, no crate/metadata yet. `_exports/` is excluded from the scan walk. Re-exporting overwrites. Reachable via `rocphotos export-album <directory> <album name>` (CLI) or the web view's "Export \<name\> Album" button (shown only while that album is the active filter).
+
+**Export path.** Settings' "Export path" (`exportPath` in `rocphotos.config.json`) sends exports somewhere else entirely — an absolute path, or one starting with `~`, anywhere on disk; blank keeps the built-in `_exports/`. A configured path *is* the export root (the album's slug directory sits directly under it, with no `_exports/` level inside). Files are read through the collection's own adapter and written through a second one rooted at the configured path (`resolveExportTarget`, `exportFiles`'s `destFsAdapter`), built by the Node run modes only (`createAbsoluteFsAdapter`, which also expands `~`) — the browser tab's File System Access API handle cannot reach outside the granted directory at all, so exporting there with a path set refuses, saying so, rather than silently landing the files somewhere the setting didn't ask for. A relative path is rejected at save time for the same reason: it would save cleanly and then be ignored.
 
 ### Face Recognition
 

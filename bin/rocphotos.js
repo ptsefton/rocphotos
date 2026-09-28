@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +26,7 @@ import {
   compileNamePatternMatcher,
   addExcludedFiles,
   loadWriteMetadataToFilesSetting,
+  loadExportPathSetting,
 } from '../src/core/config.js';
 import {
   INDEX_FILE_NAME,
@@ -37,7 +39,7 @@ import {
   albumEntityId,
 } from '../src/core/db/store.js';
 import { joinPath } from '../src/core/pathUtils.js';
-import { exportDirFor, exportFiles } from '../src/core/export.js';
+import { exportFiles, resolveExportTarget } from '../src/core/export.js';
 import { scanCollection, bootstrapCollection, readExistingCrateJson } from '../src/core/scanCollection.js';
 
 // Attempts to generate a thumbnail from freshly-read image bytes. Only
@@ -296,10 +298,30 @@ async function exportExcel(rootDir, outputPath, { includeEntityCrates = false } 
   console.log(`Wrote ${roCrates.length} RO-Crate(s), ${entities.length} entities, ${files.length} files to ${outputPath}`);
 }
 
+// Builds an FsAdapter rooted anywhere on disk, for an export path
+// configured outside the collection (Settings' "Export path" — see
+// config.js's loadExportPathSetting). `~` is expanded here rather than
+// in core: only Node knows the OS home directory, and core stays
+// runnable unmodified in the browser, which has no such concept (nor
+// any way to reach an absolute path at all). Relative to the
+// collection root if the configured path somehow is not absolute
+// after all, so this can never silently write to the process's own
+// working directory.
+function resolveConfiguredExportPath(rootDir, configuredPath) {
+  const expanded = configuredPath.startsWith('~')
+    ? path.join(os.homedir(), configuredPath.slice(1))
+    : configuredPath;
+  return path.resolve(rootDir, expanded);
+}
+
+function createAbsoluteFsAdapterFor(rootDir) {
+  return (configuredPath) => createNodeFsAdapter(resolveConfiguredExportPath(rootDir, configuredPath));
+}
+
 // A first, deliberately minimal cut of Section 3's Albums export feature
 // (see the same route in arocapi/handler.js, which the CLI here mirrors
 // rather than calling over HTTP, since this needs no running server) —
-// copies each of an album's member files into `_exports/<album>/`,
+// copies each of an album's member files into the export destination,
 // preserving each one's own collection-relative path. No crate or other
 // metadata is written alongside them yet.
 async function exportAlbum(rootDir, albumName) {
@@ -323,10 +345,15 @@ async function exportAlbum(rootDir, albumName) {
   const relativePaths = memberIds.map((id) => getFileById(db, id)?.relative_path).filter(Boolean);
   db.close();
 
-  const destDir = exportDirFor(album.name);
-  const { exported, errors } = await exportFiles(fsAdapter, destDir, relativePaths);
+  const exportPath = await loadExportPathSetting(fsAdapter);
+  const { absoluteBase, destDir } = resolveExportTarget(album.name, exportPath);
+  const destFsAdapter = absoluteBase ? createAbsoluteFsAdapterFor(rootDir)(absoluteBase) : fsAdapter;
+  const { exported, errors } = await exportFiles(fsAdapter, destDir, relativePaths, destFsAdapter);
 
-  console.log(`Exported ${exported.length} file(s) from "${album.name}" to ${path.join(rootDir, destDir)}`);
+  const reportedDest = absoluteBase
+    ? path.join(resolveConfiguredExportPath(rootDir, absoluteBase), destDir)
+    : path.join(rootDir, destDir);
+  console.log(`Exported ${exported.length} file(s) from "${album.name}" to ${reportedDest}`);
   if (errors.length > 0) {
     console.error(`${errors.length} file(s) could not be exported:`);
     for (const { relativePath, message } of errors) {
@@ -413,7 +440,7 @@ async function serve(rootDir, { port = 8420 } = {}) {
   // would keep serving whichever version of that crate it last read
   // until restarted.
   const crateCache = new Map();
-  const handleRequest = createHandler({ store, fsAdapter, crateCache });
+  const handleRequest = createHandler({ store, fsAdapter, crateCache, createAbsoluteFsAdapter: createAbsoluteFsAdapterFor(rootDir) });
   const handleAdminRequest = createAdminHandler({
     db: store,
     fsAdapter,
