@@ -5,6 +5,7 @@ import { ensureSchema, searchEntities, ENTITY_TYPE_IMAGE } from '../src/core/db/
 import { bootstrapCollection } from '../src/core/scanCollection.js';
 import { createAdminHandler } from '../src/core/admin/handler.js';
 import { createFixtureTree, removeFixtureTree } from './helpers/tempDir.js';
+import { PREVIEW_FILE_NAME } from '../src/core/htmlPreview.js';
 
 vi.mock('../src/core/exif.js', async (importOriginal) => {
   const actual = await importOriginal();
@@ -95,6 +96,21 @@ describe('POST /scan', () => {
     const body = JSON.parse(res.body);
     expect(body.scanned).toEqual(1);
     expect(body.failedToLoad).toEqual([{ path: '2025/02', message: expect.stringContaining('root dataset') }]);
+  });
+});
+
+describe('POST /regenerate-previews', () => {
+  it('rewrites every preview page from what is already indexed, without a rescan', async () => {
+    await handleRequest({ method: 'POST', path: '/scan', body: { subdirs: ['2024'] } });
+    await fsAdapter.deleteFile(`2024/01/${PREVIEW_FILE_NAME}`);
+
+    const res = await handleRequest({ method: 'POST', path: '/regenerate-previews' });
+
+    expect(res.status).toEqual(200);
+    const body = JSON.parse(res.body);
+    expect(body.written).toBeGreaterThanOrEqual(2); // the scanned sub-collection's, plus the root's
+    expect(body.skipped).toEqual([]);
+    expect(await fsAdapter.exists(`2024/01/${PREVIEW_FILE_NAME}`)).toBe(true);
   });
 });
 

@@ -2468,6 +2468,31 @@ peopleRefreshButtonEl.addEventListener('click', () => {
 });
 peopleFilterInputEl.addEventListener('input', renderFilteredPeopleList);
 
+// Settings' "Regenerate Preview HTML" (src/core/previews.js): rewrites
+// every static preview page from the crates and index as they currently
+// stand. Separate from Save above — it changes files on disk rather than
+// a setting, so it is its own button with its own status line.
+const regeneratePreviewsButtonEl = document.querySelector('#settings-regenerate-previews');
+const previewsStatusEl = document.querySelector('#settings-previews-status');
+
+regeneratePreviewsButtonEl.addEventListener('click', async () => {
+  regeneratePreviewsButtonEl.disabled = true;
+  previewsStatusEl.textContent = 'Regenerating…';
+  try {
+    const response = await fetch('/api/admin/regenerate-previews', { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? `Failed: ${response.status}`);
+    const skippedNote = result.skipped.length > 0
+      ? ` ${result.skipped.length} skipped: ${result.skipped.map((entry) => `${entry.path} (${entry.message})`).join('; ')}`
+      : '';
+    previewsStatusEl.textContent = `Wrote ${result.written} preview page${result.written === 1 ? '' : 's'}.${skippedNote}`;
+  } catch (err) {
+    previewsStatusEl.textContent = `Error: ${err.message}`;
+  } finally {
+    regeneratePreviewsButtonEl.disabled = false;
+  }
+});
+
 // The "Sub-collections" scan screen — letting a large, decades-spanning
 // collection be scanned a few sub-collections at a time from here, the
 // same way the browser-tab SPA's own identical screen (index.html/

@@ -158,7 +158,10 @@
     #settings-export-with-metadata-note { color: #555; font-size: 0.82rem; margin: 0.2rem 0 1.2rem; }
     #settings-form label.field-label { display: block; font-size: 0.85rem; color: #555; margin: 0 0 0.3rem; }
     #settings-form textarea, #settings-form input[type="text"] { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 0.82rem; padding: 0.4rem 0.5rem; border: 1px solid #bbb; border-radius: 4px; margin-bottom: 1rem; resize: vertical; }
-    #settings-save { background: #1a5fb4; color: #fff; border: none; border-radius: 4px; padding: 0.4rem 1rem; font-size: 0.85rem; cursor: pointer; }
+    #settings-save, #settings-regenerate-previews { background: #1a5fb4; color: #fff; border: none; border-radius: 4px; padding: 0.4rem 1rem; font-size: 0.85rem; cursor: pointer; }
+    #settings-regenerate-previews:disabled { opacity: 0.5; cursor: default; }
+    #settings-previews-note { color: #555; font-size: 0.82rem; margin: 0.2rem 0 0.6rem; max-width: 40rem; }
+    #settings-previews-status { color: #555; font-size: 0.85rem; margin-top: 0.5rem; }
 
     #selection-bar { display: none; align-items: center; gap: 0.6rem; background: #eef4fc; border: 1px solid #bcd6f2; border-radius: 4px; padding: 0.5rem 0.7rem; margin-bottom: 1rem; font-size: 0.85rem; flex-wrap: wrap; }
     #selection-bar.visible { display: flex; }
@@ -358,6 +361,10 @@
       <textarea id="settings-exclude-files" rows="4"></textarea>
       <button type="submit" id="settings-save">Save</button>
     </form>
+    <h2>Preview pages</h2>
+    <p id="settings-previews-note">Rewrites every <code>ro-crate-preview.html</code> from the crates and index as they stand — including the People list on each page — without re-reading any photos.</p>
+    <button type="button" id="settings-regenerate-previews">Regenerate Preview HTML</button>
+    <div id="settings-previews-status"></div>
   </div>
 
   <div id="viewer">

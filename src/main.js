@@ -18,6 +18,7 @@ import {
   renderRootCratePreview,
   earliestDate,
 } from './core/htmlPreview.js';
+import { collectPeopleForRootPreview } from './core/previews.js';
 import { thumbnailPathFor } from './core/thumbnails.js';
 import {
   loadExcludedDirectoryPatterns,
@@ -323,7 +324,7 @@ async function scanAndBuild(selectedPaths) {
   await fsAdapter.writeFile(CRATE_FILE_NAME, serializeCrate(rootCrate));
   const rootHtml = rootImageRecords
     ? renderSubCratePreview({ name: 'Photo Collection', images: rootImageRecords })
-    : renderRootCratePreview({ name: 'Photo Collection', subCrates: subCrateSummaries });
+    : renderRootCratePreview({ name: 'Photo Collection', subCrates: subCrateSummaries, people: collectPeopleForRootPreview(indexDb) });
   await fsAdapter.writeFile(PREVIEW_FILE_NAME, rootHtml);
 
   await fsAdapter.writeFile(INDEX_FILE_NAME, exportIndex());

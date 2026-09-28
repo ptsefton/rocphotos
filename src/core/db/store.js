@@ -345,6 +345,40 @@ export function listEntitiesForRoCrate(driver, roCrateId) {
   return driver.all('SELECT * FROM entities WHERE ro_crate_id = ? ORDER BY id', [roCrateId]);
 }
 
+/**
+ * Every image depicting each person, across the whole collection, most
+ * recent first within each person and people in name order — backing the
+ * root preview page's people browser (see previews.js), which needs the
+ * complete picture regardless of which sub-collections a given scan run
+ * happened to touch.
+ *
+ * Read from `entity_facets` rather than from each crate in turn, for the
+ * same reason the root preview's own navigation falls back to the index
+ * for a sub-collection this run skipped: the index is the only place
+ * that already knows about all of them at once.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @returns {Array<{name: string, images: Array<{id: string, roCrateId: string, processingError: string|null}>}>}
+ */
+export function listImagesByPerson(driver) {
+  const rows = driver.all(
+    `SELECT f.value AS person_name, e.id, e.ro_crate_id, e.processing_error
+     FROM entity_facets f
+     JOIN entities e ON e.id = f.entity_id
+     WHERE f.facet_name = 'people'
+     ORDER BY f.value, e.date_created DESC, e.id ASC`,
+  );
+
+  const byPerson = new Map();
+  for (const row of rows) {
+    if (!byPerson.has(row.person_name)) byPerson.set(row.person_name, []);
+    byPerson.get(row.person_name).push({ id: row.id, roCrateId: row.ro_crate_id, processingError: row.processing_error });
+  }
+  return [...byPerson.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, images]) => ({ name, images }));
+}
+
 /** @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver */
 export function getRoCrateById(driver, id) {
   return driver.get('SELECT * FROM ro_crates WHERE id = ?', [id]);

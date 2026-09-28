@@ -10,6 +10,7 @@ import {
   saveConfig,
 } from '../config.js';
 import { isAbsoluteExportPath, EXPORTS_DIR_NAME } from '../export.js';
+import { regeneratePreviews } from '../previews.js';
 import { serializeWrites } from '../writeQueue.js';
 
 function json(status, body) {
@@ -111,6 +112,19 @@ export function createAdminHandler({ db, fsAdapter, rootName, crateCache = new M
           failedToLoad: result.failedToLoad,
           overview,
         });
+      });
+    }
+
+    // Rewrites every preview page from what the index and crates
+    // already hold (see previews.js) — no photo is re-read, so this is
+    // the quick way to pick up a change to the page template, or to see
+    // a rename or merge reflected in the static HTML, without the EXIF
+    // and thumbnail work a real rescan repeats. Serialized like /scan
+    // for the same reason: it writes files across the whole collection.
+    if (method === 'POST' && path === '/regenerate-previews') {
+      return serializeWrites(async () => {
+        const { written, skipped } = await regeneratePreviews({ fsAdapter, db, rootName });
+        return json(200, { written: written.length, skipped });
       });
     }
 

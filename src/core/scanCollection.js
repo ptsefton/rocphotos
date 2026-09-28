@@ -14,6 +14,7 @@ import {
   readImageRecord,
 } from './crateBuilder.js';
 import { PREVIEW_FILE_NAME, renderSubCratePreview, renderRootCratePreview, earliestDate } from './htmlPreview.js';
+import { collectPeopleForRootPreview } from './previews.js';
 import { CONFIG_FILE_NAME, loadExcludedDirectoryPatterns, loadExcludedFilePatterns, compileNamePatternMatcher } from './config.js';
 import {
   ENTITY_TYPE_COLLECTION,
@@ -285,7 +286,7 @@ export async function scanCollection({ fsAdapter, db, rootName, subdirs = [], re
   await fsAdapter.writeFile(CRATE_FILE_NAME, serializeCrate(rootCrate));
   const rootHtml = rootImageRecords
     ? renderSubCratePreview({ name: rootName, images: rootImageRecords })
-    : renderRootCratePreview({ name: rootName, subCrates: subCrateSummaries });
+    : renderRootCratePreview({ name: rootName, subCrates: subCrateSummaries, people: collectPeopleForRootPreview(db) });
   await fsAdapter.writeFile(PREVIEW_FILE_NAME, rootHtml);
 
   return { crateDirs, skippedForSubdir, failedToLoad };

@@ -163,3 +163,84 @@ describe('renderRootCratePreview', () => {
     expect(html).toContain('href="misc/ro-crate-preview.html"');
   });
 });
+
+describe('people browser', () => {
+  const twoPeopleCrate = () => renderSubCratePreview({
+    name: '2025-03-10',
+    images: [
+      { path: 'a.jpg', name: 'a.jpg', dateCreated: '2025-03-10T00:00:00.000Z', processingError: null, thumbnailPath: 'thumbnails/a.jpg.thumb.jpg', people: ['Jane Smith', 'Bob Jones'] },
+      { path: 'b.jpg', name: 'b.jpg', dateCreated: null, processingError: null, thumbnailPath: 'thumbnails/b.jpg.thumb.jpg', people: ['Jane Smith'] },
+      { path: 'c.jpg', name: 'c.jpg', dateCreated: null, processingError: null, thumbnailPath: null, people: [] },
+    ],
+  });
+
+  it('lists everyone depicted, in name order, with their own photo count', () => {
+    const html = twoPeopleCrate();
+    expect(html).toContain('<h2>People</h2>');
+    expect(html.indexOf('data-name="Bob Jones"')).toBeLessThan(html.indexOf('data-name="Jane Smith"'));
+    expect(html).toMatch(/data-name="Jane Smith"><span>Jane Smith<\/span><span class="count">2<\/span>/);
+    expect(html).toMatch(/data-name="Bob Jones"><span>Bob Jones<\/span><span class="count">1<\/span>/);
+  });
+
+  it('gives each person a panel of their own photos, opened by a radio the list label checks', () => {
+    const html = twoPeopleCrate();
+    // Bob Jones sorts first, so he is person-0.
+    expect(html).toContain('<input type="radio" name="person-panel" id="person-0" class="person-radio" />');
+    expect(html).toContain('<label for="person-0"');
+    expect(html).toContain('<div class="person-panel" id="person-photos-0">');
+    expect(html).toContain('#person-0:checked ~ .person-panels > #person-photos-0 { display: block; }');
+    // Closing is a label for the always-present "nobody" radio.
+    expect(html).toContain('<input type="radio" name="person-panel" id="person-none" class="person-radio" checked />');
+    expect(html).toContain('<label for="person-none" class="person-panel-close"');
+  });
+
+  it('points a person\'s photos at the same in-page viewers the main grid already uses', () => {
+    const html = twoPeopleCrate();
+    const panelStart = html.indexOf('id="person-photos-1"'); // Jane Smith
+    const panel = html.slice(panelStart, html.indexOf('</div>', html.indexOf('</figure>', panelStart)));
+    expect(panel).toContain('href="#viewer-0"'); // a.jpg
+    expect(panel).toContain('href="#viewer-1"'); // b.jpg
+    expect(panel).not.toContain('href="#viewer-2"'); // c.jpg depicts nobody
+  });
+
+  it('leaves the browser out entirely when nobody is depicted', () => {
+    const html = renderSubCratePreview({
+      name: 'Album',
+      images: [{ path: 'a.jpg', name: 'a.jpg', dateCreated: null, processingError: null, thumbnailPath: null }],
+    });
+    // The shared stylesheet always carries the rules; what must be
+    // absent is any of the markup they would style.
+    expect(html).not.toContain('<div class="people-browser">');
+    expect(html).not.toContain('<input type="radio" name="person-panel"');
+    expect(html).not.toContain('<div class="person-panel"');
+    expect(html).not.toContain('<script>');
+  });
+
+  it('renders the collection-wide browser on the root page, linking each photo to its file', () => {
+    const html = renderRootCratePreview({
+      name: 'Photo Collection',
+      subCrates: [{ path: '2025/03/10', imageCount: 2, representativeDate: '2025-03-10T00:00:00.000Z' }],
+      people: [{
+        name: 'Jane Smith',
+        total: 2,
+        images: [{ path: '2025/03/10/a.jpg', thumbnailPath: '2025/03/10/thumbnails/a.jpg.thumb.jpg', name: 'a.jpg', subCollection: '2025/03/10' }],
+      }],
+    });
+
+    expect(html).toContain('data-name="Jane Smith"');
+    expect(html).toContain('<img src="2025/03/10/thumbnails/a.jpg.thumb.jpg"');
+    expect(html).toContain('href="2025/03/10/a.jpg"');
+    expect(html).toContain('2025/03/10'); // the sub-collection each photo came from
+    // Says what it is not showing, since the root page caps each person.
+    expect(html).toContain('showing 1 of 2');
+  });
+
+  it('escapes a person name everywhere it is used', () => {
+    const html = renderSubCratePreview({
+      name: 'Album',
+      images: [{ path: 'a.jpg', name: 'a.jpg', dateCreated: null, processingError: null, thumbnailPath: null, people: ['<script>x</script>'] }],
+    });
+    expect(html).not.toContain('<script>x</script>');
+    expect(html).toContain('&lt;script&gt;x&lt;/script&gt;');
+  });
+});

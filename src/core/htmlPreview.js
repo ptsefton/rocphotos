@@ -44,6 +44,37 @@ const SHARED_STYLE = `
   details.month { margin: 0.4rem 0 0.4rem 1.5rem; }
   details.month > summary { cursor: pointer; font-weight: 600; }
 
+  /* People browser: a scrollable, searchable list of everyone depicted,
+     each opening a panel of their own photos. Driven by a hidden radio
+     per person (checked by a <label> in the list) rather than :target,
+     deliberately: the image viewer below already owns the URL fragment,
+     and radio state is independent of it, so opening a photo from
+     someone's panel leaves that panel open underneath to come back to.
+     A radio sits at the top of <body>, before everything it controls, so
+     both the list and the panels are later siblings it can select. */
+  .person-radio { display: none; }
+  .people-browser { margin-bottom: 1.5rem; max-width: 26rem; }
+  .people-browser h2 { border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
+  .person-search { width: 100%; box-sizing: border-box; padding: 0.35rem 0.5rem; font: inherit; font-size: 0.9rem; border: 1px solid #bbb; border-radius: 4px; margin-bottom: 0.4rem; }
+  .person-list { max-height: 15rem; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; }
+  .person-list label { display: flex; justify-content: space-between; gap: 0.6rem; padding: 0.3rem 0.6rem; cursor: pointer; border-bottom: 1px solid #f0f0f0; font-size: 0.9rem; }
+  .person-list label:last-child { border-bottom: none; }
+  .person-list label:hover { background: #f5f5f5; }
+  .person-list .count { color: #888; font-size: 0.85em; white-space: nowrap; }
+  .person-list .empty { padding: 0.4rem 0.6rem; color: #888; font-size: 0.85rem; }
+
+  /* Opens inline, directly under the list, rather than as a full-screen
+     overlay: an overlay covers the very list it was opened from, so
+     looking at several people in turn would mean closing each one first.
+     Being in the page flow also keeps it clear of the image viewer
+     below, which is the one thing here that does take over the screen. */
+  .person-panel { display: none; position: relative; border: 1px solid #ddd; border-radius: 4px; padding: 0.8rem; margin-bottom: 1.5rem; }
+  .person-panel h3 { margin: 0 0 0.8rem; }
+  .person-panel .person-panel-count { color: #888; font-weight: normal; font-size: 0.8em; }
+  .person-panel-close { position: absolute; top: 0.3rem; right: 0.7rem; color: #555; font-size: 1.5rem; line-height: 1; cursor: pointer; }
+  .person-panel-close:hover { color: #000; }
+  .person-panel figcaption .path { color: #888; }
+
   /* Full-screen image viewer: a pure-CSS, JavaScript-free lightbox. Each
      image gets a #viewer-N target; the thumbnail links to it and the
      overlay is shown only while its id matches the URL fragment, which
@@ -92,21 +123,129 @@ ${rows}
 </table>`;
 }
 
-function page(title, backLink, body) {
+// How many of one person's photos the root-level preview embeds. A
+// sub-collection's own page shows all of theirs (it is bounded by the
+// directory's size anyway); the root page would otherwise carry every
+// thumbnail of everyone across the whole collection, which for a
+// decades-spanning one is megabytes of HTML nobody asked to load.
+export const ROOT_PERSON_THUMBNAIL_LIMIT = 24;
+
+// The one thing here CSS genuinely cannot do: narrow a list by typed
+// text. Kept to this — everything else (opening a person, closing them,
+// highlighting the current one) is plain CSS, and the list is complete
+// and usable with the script absent or blocked, which is why the search
+// box starts hidden and is revealed here rather than being hidden on
+// failure. Inline, like the stylesheet, so a preview page stays a
+// single self-contained file that works over file://.
+const PERSON_SEARCH_SCRIPT = `
+for (const browser of document.querySelectorAll('.people-browser')) {
+  const input = browser.querySelector('.person-search');
+  const labels = [...browser.querySelectorAll('.person-list label')];
+  const empty = browser.querySelector('.person-list .empty');
+  input.hidden = false;
+  input.addEventListener('input', () => {
+    const typed = input.value.trim().toLowerCase();
+    let shown = 0;
+    for (const label of labels) {
+      const match = !typed || label.dataset.name.toLowerCase().includes(typed);
+      label.style.display = match ? '' : 'none';
+      if (match) shown++;
+    }
+    empty.hidden = shown > 0;
+  });
+}
+`;
+
+/**
+ * The searchable, scrollable people box plus one hidden panel of photos
+ * per person — shared by both preview levels, which differ only in what
+ * each thumbnail links to (see their own callers).
+ *
+ * Returns the three pieces separately because they belong at different
+ * places in the document: the radios must come first (everything they
+ * control is selected as a later sibling), the box sits in the page
+ * body, and the panels are overlays that go last.
+ *
+ * @param {Array<{name: string, total: number, thumbs: Array<{src: string, href: string, alt: string, caption: string, sub?: string|null}>}>} people
+ * @returns {{radios: string, box: string, panels: string}} empty strings when nobody is depicted
+ */
+function renderPeopleBrowser(people) {
+  if (people.length === 0) return { radios: '', box: '', panels: '' };
+
+  const radios = [`<input type="radio" name="person-panel" id="person-none" class="person-radio" checked />`]
+    .concat(people.map((_, index) => `<input type="radio" name="person-panel" id="person-${index}" class="person-radio" />`))
+    .join('\n');
+
+  const listItems = people
+    .map((person, index) => `  <label for="person-${index}" data-name="${escapeHtml(person.name)}"><span>${escapeHtml(person.name)}</span><span class="count">${person.total}</span></label>`)
+    .join('\n');
+
+  const box = `<div class="people-browser">
+  <h2>People</h2>
+  <input type="search" class="person-search" placeholder="Search people" autocomplete="off" hidden />
+  <div class="person-list">
+${listItems}
+  <div class="empty" hidden>No matching people.</div>
+  </div>
+</div>`;
+
+  const panels = `<div class="person-panels">
+${people.map((person, index) => {
+    const shownCount = person.thumbs.length < person.total
+      ? ` <span class="person-panel-count">showing ${person.thumbs.length} of ${person.total}</span>`
+      : '';
+    const figures = person.thumbs.map((thumb) => `    <figure>
+      <a href="${thumb.href}"><img src="${thumb.src}" alt="${escapeHtml(thumb.alt)}" loading="lazy" /></a>
+      <figcaption>
+        <div class="name">${escapeHtml(thumb.caption)}</div>
+        ${thumb.sub ? `<div class="path">${escapeHtml(thumb.sub)}</div>` : ''}
+      </figcaption>
+    </figure>`).join('\n');
+
+    return `  <div class="person-panel" id="person-photos-${index}">
+    <label for="person-none" class="person-panel-close" title="Close" role="button" aria-label="Close">&times;</label>
+    <h3>${escapeHtml(person.name)}${shownCount}</h3>
+    <div class="grid">
+${figures}
+    </div>
+  </div>`;
+  }).join('\n')}
+</div>`;
+
+  return { radios, box, panels };
+}
+
+// One pair of rules per person: show their panel, and mark them as the
+// current one in the list. Generated rather than written by hand because
+// CSS cannot correlate a checked input with an arbitrary other element
+// without naming both.
+function personBrowserStyle(peopleCount) {
+  if (peopleCount === 0) return '';
+  const rules = [];
+  for (let index = 0; index < peopleCount; index++) {
+    rules.push(`#person-${index}:checked ~ .person-panels > #person-photos-${index} { display: block; }`);
+    rules.push(`#person-${index}:checked ~ .people-browser .person-list label[for="person-${index}"] { background: #eef4fc; font-weight: 600; }`);
+  }
+  return `\n${rules.join('\n')}\n`;
+}
+
+function page(title, backLink, body, { peopleCount = 0 } = {}) {
   const backHtml = backLink
     ? `<p><a href="${encodePath(backLink)}">&larr; Back to collection</a></p>`
     : '';
+  const scriptHtml = peopleCount > 0 ? `<script>${PERSON_SEARCH_SCRIPT}</script>` : '';
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>${escapeHtml(title)}</title>
-<style>${SHARED_STYLE}</style>
+<style>${SHARED_STYLE}${personBrowserStyle(peopleCount)}</style>
 </head>
 <body>
 ${backHtml}
 ${body}
+${scriptHtml}
 </body>
 </html>
 `;
@@ -166,16 +305,41 @@ export function renderSubCratePreview({ name, images, backLink = null }) {
 </div>`);
   });
 
-  const body = `<header>
+  // Everyone depicted here, each of their photos pointing at the very
+  // same in-page viewer the main grid above uses — no second copy of
+  // anything, and closing a photo drops back to the person's panel,
+  // still open behind it.
+  const byPerson = new Map();
+  images.forEach((image, index) => {
+    for (const person of image.people ?? []) {
+      if (!byPerson.has(person)) byPerson.set(person, []);
+      byPerson.get(person).push({
+        src: encodePath(image.thumbnailPath ?? image.path),
+        href: `#viewer-${index}`,
+        alt: image.name,
+        caption: image.name,
+        sub: formatDate(image.dateCreated),
+      });
+    }
+  });
+  const people = [...byPerson.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([personName, thumbs]) => ({ name: personName, total: thumbs.length, thumbs }));
+  const { radios, box, panels } = renderPeopleBrowser(people);
+
+  const body = `${radios}
+<header>
   <h1>${escapeHtml(name)}</h1>
   <p>${images.length} image${images.length === 1 ? '' : 's'}</p>
 </header>
+${box}
+${panels}
 <div class="grid">
 ${figures.join('\n')}
 </div>
 ${viewers.join('\n')}`;
 
-  return page(name, backLink, body);
+  return page(name, backLink, body, { peopleCount: people.length });
 }
 
 /**
@@ -186,12 +350,21 @@ ${viewers.join('\n')}`;
  * most recent year, and its most recent month, are expanded by default.
  * Sub-collections with no dated images are listed separately as undated.
  *
+ * Also carries a people browser covering the whole collection (see
+ * renderPeopleBrowser). Unlike a sub-collection's own page, its
+ * thumbnails link straight to the image file rather than to an in-page
+ * viewer: the root page holds no images of its own, so every viewer
+ * would be a second copy of markup that only exists to be opened once,
+ * and a collection-wide set of them is exactly what
+ * ROOT_PERSON_THUMBNAIL_LIMIT exists to keep in check.
+ *
  * @param {object} options
  * @param {string} options.name - root dataset name
  * @param {Array<{path: string, imageCount: number, representativeDate: string|null}>} options.subCrates
+ * @param {Array<{name: string, total: number, images: Array<{path: string, thumbnailPath: string, name: string, subCollection: string}>}>} [options.people] - collection-wide, already capped and ordered by the caller (see previews.js)
  * @returns {string} HTML document
  */
-export function renderRootCratePreview({ name, subCrates }) {
+export function renderRootCratePreview({ name, subCrates, people = [] }) {
   const dated = subCrates.filter((sc) => sc.representativeDate);
   const undated = subCrates.filter((sc) => !sc.representativeDate);
 
@@ -251,12 +424,27 @@ ${undated.map(renderLink).join('\n')}
 </section>`
     : '';
 
-  const body = `<header>
+  const { radios, box, panels } = renderPeopleBrowser(people.map((person) => ({
+    name: person.name,
+    total: person.total,
+    thumbs: person.images.map((image) => ({
+      src: encodePath(image.thumbnailPath),
+      href: encodePath(image.path),
+      alt: image.name,
+      caption: image.name,
+      sub: image.subCollection,
+    })),
+  })));
+
+  const body = `${radios}
+<header>
   <h1>${escapeHtml(name)}</h1>
   <p>${subCrates.length} sub-collection${subCrates.length === 1 ? '' : 's'}</p>
 </header>
+${box}
+${panels}
 ${yearSections}
 ${undatedSection}`;
 
-  return page(name, null, body);
+  return page(name, null, body, { peopleCount: people.length });
 }
