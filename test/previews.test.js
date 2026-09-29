@@ -177,6 +177,40 @@ describe('regeneratePreviews', () => {
     expect(subHtml).not.toContain('data-name="Jane Smith"');
   });
 
+  it('lists sub-collections in index order however the concurrent runs finish', async () => {
+    // Enough crates that the workers interleave, each answering at a
+    // different speed so completion order cannot match index order.
+    const rootId = crateEntityId('');
+    const paths = Array.from({ length: 12 }, (_, i) => `2025/${String(i + 1).padStart(2, '0')}`);
+    for (const path of paths.slice(1)) {
+      const id = crateEntityId(path);
+      upsertRoCrate(db, { id, path, name: path });
+      upsertEntity(db, { id, roCrateId: id, entityType: ENTITY_TYPE_COLLECTION, name: path, memberOf: rootId });
+      const crate = loadOrCreateCrate(null);
+      crate.rootDataset.name = path;
+      addImageEntity(crate, { path: 'a.jpg', exif: {}, thumbnailPath: 'thumbnails/a.jpg.thumb.jpg', sourceModifiedAt: Date.now() });
+      await fsAdapter.writeFile(`${path}/${CRATE_FILE_NAME}`, serializeCrate(crate));
+      const imageId = imageEntityId(path, 'a.jpg');
+      upsertEntity(db, { id: imageId, roCrateId: id, entityType: ENTITY_TYPE_IMAGE, name: 'a.jpg', memberOf: id });
+    }
+
+    const slowReads = {
+      ...fsAdapter,
+      async readFile(relPath) {
+        // Later crates come back sooner, so finishing order is reversed.
+        const month = Number(relPath.match(/2025\/(\d+)/)?.[1] ?? 0);
+        await new Promise((resolve) => setTimeout(resolve, (13 - month) * 2));
+        return fsAdapter.readFile(relPath);
+      },
+    };
+
+    await regeneratePreviews({ fsAdapter: slowReads, db, rootName: 'Photo Collection', concurrency: 4 });
+
+    const rootHtml = new TextDecoder().decode(await fsAdapter.readFile(PREVIEW_FILE_NAME));
+    const listed = [...rootHtml.matchAll(/2025\/(\d\d)\/ro-crate-preview\.html/g)].map((m) => m[1]);
+    expect([...new Set(listed)]).toEqual(paths.slice(1).map((path) => path.slice(-2)));
+  });
+
   it('skips, and reports, a sub-collection whose crate file has gone, rather than failing the whole run', async () => {
     await fsAdapter.deleteFile(`2025/03/${CRATE_FILE_NAME}`);
 

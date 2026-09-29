@@ -59,6 +59,39 @@ export function collectPeopleForRootPreview(db) {
   }));
 }
 
+// How many crates are in flight at once. The ceiling is the browser's,
+// not ours: the File System Access API overlaps requests happily, but a
+// higher number mostly queues more work inside the browser process
+// while holding more parsed crates in memory at once.
+const CRATE_CONCURRENCY = 8;
+
+/**
+ * Runs `worker` over `items` with at most `limit` in flight, returning
+ * the results in the order of `items` rather than the order they
+ * finished. Rejections propagate, as Promise.all does.
+ */
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  const runner = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await worker(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runner));
+  return results;
+}
+
+/**
+ * Whether a failed read means the file is not there, as opposed to
+ * something being wrong with it: Node reports ENOENT, the File System
+ * Access API a NotFoundError DOMException.
+ */
+function isNotFound(err) {
+  return err?.code === 'ENOENT' || err?.name === 'NotFoundError';
+}
+
 /**
  * Rewrites every preview page — each sub-collection's and the root's —
  * from what the index and the crates already say, without re-reading a
@@ -76,28 +109,33 @@ export function collectPeopleForRootPreview(db) {
  * @param {import('./fsAdapter.js').FsAdapter} options.fsAdapter
  * @param {import('../adapters/nodeSqlite.js').SqliteDriver} options.db
  * @param {string} options.rootName
+ * @param {number} [options.concurrency] how many crates to process at
+ *   once; the default suits the browser, and tests use it to pin the
+ *   scheduling.
  * @returns {Promise<{written: string[], skipped: Array<{path: string, message: string}>}>}
  */
-export async function regeneratePreviews({ fsAdapter, db, rootName }) {
-  const written = [];
-  const skipped = [];
-  const subCrateSummaries = [];
-  let rootImageRecords = null;
+export async function regeneratePreviews({ fsAdapter, db, rootName, concurrency = CRATE_CONCURRENCY }) {
+  const roCrates = listRoCrates(db);
 
-  for (const roCrate of listRoCrates(db)) {
+  // Each crate is independent of the others: it reads its own crate
+  // file, queries its own rows and writes its own page. Running several
+  // at once costs little in Node, where a file operation is cheap, and
+  // is what makes this bearable in the browser, where every one is a
+  // round trip to the browser process (see browserFs.js) and the run is
+  // almost entirely spent waiting on them.
+  const outcomes = await mapWithConcurrency(roCrates, concurrency, async (roCrate) => {
     const crateDirPath = crateDirPathFromEntityId(roCrate.id);
     const cratePath = joinPath(crateDirPath, CRATE_FILE_NAME);
-    if (!(await fsAdapter.exists(cratePath))) {
-      skipped.push({ path: crateDirPath || '.', message: `No ${CRATE_FILE_NAME} on disk any more` });
-      continue;
-    }
 
     let crate;
     try {
       crate = loadOrCreateCrate(new TextDecoder().decode(await fsAdapter.readFile(cratePath)));
     } catch (err) {
-      skipped.push({ path: crateDirPath || '.', message: err.message });
-      continue;
+      // Reading and asking whether it exists first would double the
+      // round trips for every crate, so a missing file is recognised
+      // from the failure instead.
+      const message = isNotFound(err) ? `No ${CRATE_FILE_NAME} on disk any more` : err.message;
+      return { skipped: { path: crateDirPath || '.', message } };
     }
 
     const imageRecords = listEntitiesForRoCrate(db, roCrate.id)
@@ -109,17 +147,33 @@ export async function regeneratePreviews({ fsAdapter, db, rootName }) {
       // The root directory holding images directly makes it the only
       // crate, and its preview a gallery rather than navigation — the
       // same fork scanning itself makes.
-      if (imageRecords.length > 0) rootImageRecords = imageRecords;
-      continue;
+      return { rootImageRecords: imageRecords.length > 0 ? imageRecords : null };
     }
 
     const depth = crateDirPath.split('/').length;
     const backLink = '../'.repeat(depth) + PREVIEW_FILE_NAME;
     const html = renderSubCratePreview({ name: roCrate.name, images: imageRecords, backLink });
-    await fsAdapter.writeFile(joinPath(crateDirPath, PREVIEW_FILE_NAME), html);
-    written.push(joinPath(crateDirPath, PREVIEW_FILE_NAME));
+    const previewPath = joinPath(crateDirPath, PREVIEW_FILE_NAME);
+    await fsAdapter.writeFile(previewPath, html);
 
-    subCrateSummaries.push({ path: crateDirPath, imageCount: imageRecords.length, representativeDate: earliestDate(imageRecords) });
+    return {
+      written: previewPath,
+      summary: { path: crateDirPath, imageCount: imageRecords.length, representativeDate: earliestDate(imageRecords) },
+    };
+  });
+
+  // Reassembled in the order listRoCrates gave, not the order the
+  // workers happened to finish in, so the root page lists its
+  // sub-collections the same way however the run was scheduled.
+  const written = [];
+  const skipped = [];
+  const subCrateSummaries = [];
+  let rootImageRecords = null;
+  for (const outcome of outcomes) {
+    if (outcome.skipped) skipped.push(outcome.skipped);
+    if (outcome.written) written.push(outcome.written);
+    if (outcome.summary) subCrateSummaries.push(outcome.summary);
+    if (outcome.rootImageRecords) rootImageRecords = outcome.rootImageRecords;
   }
 
   const rootHtml = rootImageRecords
