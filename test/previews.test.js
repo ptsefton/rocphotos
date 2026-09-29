@@ -149,12 +149,19 @@ describe('regeneratePreviews', () => {
     expect(viewer.slice(0, viewer.indexOf('</div>'))).toContain('<img src="a.jpg"');
   });
 
-  it('offers a way back to the list from a photo', async () => {
+  it('names each page and every link to it the same way', async () => {
     await regeneratePreviews({ fsAdapter, db, rootName: 'Photo Collection' });
     const rootHtml = new TextDecoder().decode(await fsAdapter.readFile(PREVIEW_FILE_NAME));
+    const subHtml = new TextDecoder().decode(await fsAdapter.readFile(`2025/03/${PREVIEW_FILE_NAME}`));
 
+    // Each page says which kind it is...
+    expect(rootHtml).toContain('<p class="page-kind">Main collection</p>');
+    expect(subHtml).toContain('<p class="page-kind">Folder collection</p>');
+
+    // ...and a link uses the name of the page it opens.
+    expect(subHtml).toMatch(/<a href="[^"]*ro-crate-preview\.html">&larr; Main collection<\/a>/);
+    expect(rootHtml).toMatch(/<a class="viewer-action" href="2025\/03\/ro-crate-preview\.html#viewer-\d+">Folder collection &rsaquo;<\/a>/);
     expect(rootHtml).toContain('Back to the list');
-    expect(rootHtml).toContain('View folder collection');
   });
 
   it('reflects a rename already made in the crates, without re-reading any photo', async () => {

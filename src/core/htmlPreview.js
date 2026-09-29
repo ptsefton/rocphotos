@@ -1,5 +1,11 @@
 export const PREVIEW_FILE_NAME = 'ro-crate-preview.html';
 
+// The two kinds of page, named once. Each page says which kind it is,
+// and every link to a page uses that same wording, so "Folder
+// collection" always means the same thing wherever a reader meets it.
+const MAIN_COLLECTION_LABEL = 'Main collection';
+const FOLDER_COLLECTION_LABEL = 'Folder collection';
+
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
@@ -62,8 +68,13 @@ const SHARED_STYLE = `
   }
   a { color: var(--accent); }
   header { margin-bottom: 1.75rem; }
-  header h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; }
+  header h1 { margin: 2px 0 0; font-size: 1.6rem; letter-spacing: -0.01em; }
   header p { color: var(--muted); margin: 6px 0 0; }
+  header .page-kind {
+    margin: 0; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .up-link { margin: 0 0 1.25rem; font-size: 0.9rem; font-weight: 600; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 1rem; }
   figure {
     margin: 0; background: var(--panel); border: 1px solid var(--border);
@@ -339,7 +350,7 @@ function personBrowserStyle(peopleCount) {
 
 function page(title, backLink, body, { peopleCount = 0 } = {}) {
   const backHtml = backLink
-    ? `<p><a href="${encodePath(backLink)}">&larr; Back to collection</a></p>`
+    ? `<p class="up-link"><a href="${encodePath(backLink)}">&larr; ${MAIN_COLLECTION_LABEL}</a></p>`
     : '';
   const scriptHtml = peopleCount > 0 ? `<script>${PERSON_SEARCH_SCRIPT}</script>` : '';
   return `<!doctype html>
@@ -452,6 +463,7 @@ export function renderSubCratePreview({ name, images: unorderedImages, backLink 
 
   const body = `${radios}
 <header>
+  <p class="page-kind">${FOLDER_COLLECTION_LABEL}</p>
   <h1>${escapeHtml(name)}</h1>
   <p>${images.length} image${images.length === 1 ? '' : 's'}</p>
 </header>
@@ -564,7 +576,7 @@ ${undated.map(renderLink).join('\n')}
       // to the list of this person's photos, which is where the reader
       // came from.
       const folderLink = image.subCollectionPreview
-        ? `<a class="viewer-action" href="${encodePath(image.subCollectionPreview)}#viewer-${image.indexInSubCollection}">View folder collection &rsaquo;</a>`
+        ? `<a class="viewer-action" href="${encodePath(image.subCollectionPreview)}#viewer-${image.indexInSubCollection}">${FOLDER_COLLECTION_LABEL} &rsaquo;</a>`
         : '';
       const actions = `    <p class="viewer-actions">
       <a class="viewer-action" href="#">&lsaquo; Back to the list</a>
@@ -594,8 +606,9 @@ ${undated.map(renderLink).join('\n')}
 
   const body = `${radios}
 <header>
+  <p class="page-kind">${MAIN_COLLECTION_LABEL}</p>
   <h1>${escapeHtml(name)}</h1>
-  <p>${subCrates.length} sub-collection${subCrates.length === 1 ? '' : 's'}</p>
+  <p>${subCrates.length} folder collection${subCrates.length === 1 ? '' : 's'}</p>
 </header>
 ${box}
 ${panels}
