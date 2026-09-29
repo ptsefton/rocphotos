@@ -79,7 +79,7 @@ let fsAdapter = null;
 // a fixed /sw.js in the production build, but Vite's dev server serves
 // unbundled source at its real path instead.
 // BASE_URL is "/" in dev and whatever Vite was built with otherwise —
-// "/irocrate/" for the GitHub Pages build, since a project site is
+// "/rocphotos/" for the GitHub Pages build, since a project site is
 // served under its repo name. The worker must be registered from, and
 // scoped to, that path: a Service Worker's scope can never be broader
 // than its own script's location.

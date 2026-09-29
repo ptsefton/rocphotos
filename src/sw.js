@@ -132,7 +132,7 @@ function jsonResponse(status, body) {
 }
 
 // This worker's own mount point: "/" when the app is served from the
-// root, "/irocrate/" when published under a project path on GitHub
+// root, "/rocphotos/" when published under a project path on GitHub
 // Pages. Every /api match below is made against the path *after* it, so
 // one build works either way — and so it agrees with how webview/app.js
 // derives the same prefix from its own location.

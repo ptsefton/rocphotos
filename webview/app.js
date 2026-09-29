@@ -4,8 +4,8 @@ import { DETECTION_MIN_CONFIDENCE, isReliableForMatching } from './faceQuality.j
 // Where this app's own API lives, relative to wherever this page is
 // being served from. `rocphotos serve` puts the page at / and the API
 // at /api; the published static build sits under a project path
-// (.../irocrate/webview/), with the Service Worker answering
-// .../irocrate/api. Derived from the location rather than baked in at
+// (.../rocphotos/webview/), with the Service Worker answering
+// .../rocphotos/api. Derived from the location rather than baked in at
 // build time, so one built copy works under any path — and so the
 // served and published copies of this file stay byte-identical.
 const API = location.pathname.replace(/\/webview\/[^/]*$/, '').replace(/\/$/, '');
