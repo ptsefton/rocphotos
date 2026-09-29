@@ -28,13 +28,136 @@ Coming soon:
 
 ### 2.2 RO-Crate data
 
-Each crate is its own standalone `ro-crate-metadata.json`:
+Each crate is its own standalone `ro-crate-metadata.json`, with the usual RO-Crate root `Dataset` (`./`) and descriptor:
 
-- **The root crate**, one per collection: a PCDM `Collection` entity anchoring the collection and listing its sub-collections; also holds `ImageGallery` entities (Albums, Section 3). If the root directory holds images directly (Section 3.1), it holds `Object` entities too and is the collection's only crate.
-- **Sub-collection crates**, one per sub-collection directory: a PCDM `Collection`, `memberOf` the root, holding an `Object` entity per photo (EXIF-derived camera/lens/date/keywords/rating) and an `ImageRegion` per tagged face/pet, pointing to a shared `Person`/`Pet` entity (Section 3.2). A Person/Pet depicted across several sub-collections is duplicated into each, per RO-Crate convention, rather than referenced from one place.
+- **The root crate**, one per collection: lists each sub-collection as a `Dataset` in `hasPart`, and holds `ImageGallery` entities (Albums, Section 3). If the root directory holds images directly (Section 3.1), it holds their `ImageObject` entities too and is the collection's only crate.
+- **Sub-collection crates**, one per sub-collection directory: an `ImageObject` per photo, an `ImageRegion` per tagged face/pet, and the `Person`/`Pet` entity each region points at. A Person/Pet depicted across several sub-collections is duplicated into each, per RO-Crate convention, rather than referenced from one place.
 - **The faces crate** (`_rocphotos/faces/ro-crate-metadata.json`): one `FaceEmbedding` entity per confirmed face-recognition reference, linking back to its source `ImageRegion`/Person rather than duplicating image data — a mirror for inspection only. Matching and review query its companion `_rocphotos/faces/faces-index.sqlite` instead. Similar standalone crates may hold other kinds of reference data in future.
 
-`rocphotos-index.sqlite` (Section 3.2) is a read-only, queryable index of the root and sub-collection crates combined. The faces crate and its SQLite file are separate and not folded into it.
+`rocphotos-index.sqlite` (Section 3.2) is a read-only, queryable index of the root and sub-collection crates combined; the PCDM `Collection`/`Object` typing lives there, not in the crates. The faces crate and its SQLite file are separate and not folded into it.
+
+#### A photo, in a sub-collection crate
+
+One photo carrying everything this app records: EXIF, keywords, a rating, a title and caption, a face tagged in the file itself, and a face confirmed here but not (yet) written back. `@graph` order is not significant; entries are ordered here for reading.
+
+```json
+{ "@id": "./", "@type": "Dataset", "name": "2025/03/10",
+  "hasPart": { "@id": "IMG_0042.jpg" } }
+
+{ "@id": "IMG_0042.jpg", "@type": "ImageObject",
+  "name": "IMG_0042.jpg",
+  "title": "Afternoon at the beach",
+  "description": "Low tide, just before the rain came in.",
+  "dateCreated": "2025-03-10T14:32:05.000Z",
+  "dateModified": "2025-03-11T09:00:00.000Z",
+  "keywords": ["Beach", "Holiday"],
+  "rating": 4,
+  "exifData": [{ "@id": "IMG_0042.jpg#exif-Make" }, { "@id": "IMG_0042.jpg#exif-Model" }],
+  "about": [
+    { "@id": "arcp://name,rocphoto/person/JaneSmith" },
+    { "@id": "arcp://name,rocphoto/pet/Rex" },
+    { "@id": "arcp://name,rocphoto/person/BobJones" }
+  ],
+  "regions": [
+    { "@id": "IMG_0042.jpg#region-0" },
+    { "@id": "IMG_0042.jpg#region-1" },
+    { "@id": "IMG_0042.jpg#region-standoff-0" }
+  ],
+  "thumbnail": { "@id": "thumbnails/IMG_0042.jpg.thumb.jpg" } }
+
+{ "@id": "thumbnails/IMG_0042.jpg.thumb.jpg", "@type": "ImageObject",
+  "name": "Thumbnail of IMG_0042.jpg" }
+
+{ "@id": "IMG_0042.jpg#exif-Make", "@type": "PropertyValue",
+  "name": "Make", "value": "Google" }
+```
+
+- `name` is the filename; `title` always has a value (IPTC/XMP title, else the filename), `description` only when the file has a caption.
+- `dateCreated` is EXIF `DateTimeOriginal`. `dateModified` is the *source file's* mtime as of the last time it was processed — what a rescan compares against to decide whether to re-read the file at all.
+- `keywords` excludes any name also recorded as a region (tagging tools commonly write both).
+- `exifData` holds only the handful of fields shown in the preview's EXIF table, each as its own `PropertyValue` with a stable `#exif-<Field>` id so a rescan overwrites it rather than accumulating a new one.
+- `about` lists every Person/Pet depicted, `regions` every region, whichever kind.
+- `processingError` (not shown) carries the EXIF and/or thumbnail failure for a file that could not be fully processed; it is removed once the file processes cleanly.
+
+#### Faces and pets
+
+A Person/Pet id is derived from the name (`arcp://name,rocphoto/person/<NameSlug>`, letters and digits only, case-sensitive — see Section 3.2's People), so the same name is the same entity everywhere, and the node itself is only ever `@id`/`@type`/`name`:
+
+```json
+{ "@id": "arcp://name,rocphoto/person/JaneSmith", "@type": "Person", "name": "Jane Smith" }
+{ "@id": "arcp://name,rocphoto/pet/Rex", "@type": "Pet", "name": "Rex" }
+```
+
+A region tagged in the photo file itself (MWG, from digiKam/Lightroom/Photos) is rebuilt from EXIF on every rescan, with a stable `#region-N` id. Its area is MWG's own convention: the **centre** point plus width/height, as fractions of the image.
+
+```json
+{ "@id": "IMG_0042.jpg#region-0", "@type": "ImageRegion",
+  "name": "Jane Smith",
+  "regionType": "Face",
+  "about": { "@id": "arcp://name,rocphoto/person/JaneSmith" },
+  "xPosition": 0.35, "yPosition": 0.28, "width": 0.12, "height": 0.16 }
+```
+
+A region confirmed in this app is a *standoff* annotation instead — recorded whether or not it is ever written into the photo file (Section 3's Face Recognition), in its own `#region-standoff-N` id space so a rescan's renumbering of the EXIF-derived regions can never collide with it. Modelled on the W3C Web Annotation vocabulary, with the subject reached through a per-region body proxy — the same indirection Albums use, so this one sighting could later carry its own properties without touching the shared Person. Its target is a W3C Media Fragment, whose `xywh` is a **top-left** corner and size (as a percentage), not MWG's centre point.
+
+```json
+{ "@id": "IMG_0042.jpg#region-standoff-0",
+  "@type": ["ImageRegion", "oa:Annotation"],
+  "name": "Bob Jones",
+  "regionType": "Face",
+  "oa:motivatedBy": { "@id": "oa:identifying" },
+  "oa:hasTarget": { "@id": "IMG_0042.jpg#xywh=percent:55,30,10,14" },
+  "oa:hasBody": { "@id": "IMG_0042.jpg#region-standoff-0-body" },
+  "writtenToFile": false }
+
+{ "@id": "IMG_0042.jpg#region-standoff-0-body", "@type": "Person",
+  "prov:specializationOf": { "@id": "arcp://name,rocphoto/person/BobJones" } }
+```
+
+`writtenToFile` records whether this region has made it into the photo file's own XMP. Once a rescan finds the same name among the file's real EXIF regions, the standoff region and its body proxy are deleted and the EXIF-derived one takes over.
+
+#### The root crate
+
+Sub-collections and albums, both under the root `Dataset`'s `hasPart`. An album's membership *is* its `hasPart`, in display order, each entry a proxy rather than a direct reference to the image, so an image's appearance in this album could later carry its own caption:
+
+```json
+{ "@id": "./", "@type": "Dataset", "name": "Photo Collection",
+  "hasPart": [
+    { "@id": "2025/03/10/" },
+    { "@id": "arcp://name,rocphoto/album/BeachTrip" }
+  ] }
+
+{ "@id": "2025/03/10/", "@type": "Dataset", "name": "2025/03/10" }
+
+{ "@id": "arcp://name,rocphoto/album/BeachTrip", "@type": "ImageGallery",
+  "name": "Beach Trip",
+  "description": "Best of the March long weekend.",
+  "hasPart": [{ "@id": "arcp://name,rocphoto/album/BeachTrip#item-0" }] }
+
+{ "@id": "arcp://name,rocphoto/album/BeachTrip#item-0", "@type": "ImageObject",
+  "prov:specializationOf": { "@id": "2025/03/10/IMG_0042.jpg" } }
+```
+
+#### The faces crate
+
+One entity per reference embedding, `about` the Person it belongs to (absent entirely for a permanently-ignored stranger), and pointing back at the region it was computed from rather than holding any image data:
+
+```json
+{ "@id": "b7c1f6e2-3a4d-4f1b-9c2e-8d5a0f3b1c77", "@type": "FaceEmbedding",
+  "name": "Jane Smith",
+  "about": { "@id": "arcp://name,rocphoto/person/JaneSmith" },
+  "sourceImage": "2025/03/10/IMG_0042.jpg",
+  "sourceRegion": "2025/03/10/IMG_0042.jpg#region-0",
+  "embedding": [-0.0731, 0.1042, 0.0356],
+  "embeddingModel": "face-api.js",
+  "embeddingModelVersion": "0.22.2" }
+```
+
+`embedding` is the model's full 128-d vector (truncated above). A model version bump makes every reference obsolete, which is why the model is recorded per entity.
+
+#### Vocabulary status
+
+The context is RO-Crate 1.2 plus `@vocab: http://schema.org/`. The terms coined here — `regionType`, `xPosition`/`yPosition`, `writtenToFile`, `rating`, `processingError`, `ImageRegion`, `Pet`, `FaceEmbedding`, `embedding`/`embeddingModel`/`sourceImage`/`sourceRegion` — resolve under that fallback rather than being properly defined, and `oa:` is used as a prefix without being bound in the context (unlike `prov:`, which RO-Crate's own context defines). Both are to be settled by the profile in Section 3.5, not by ad-hoc additions.
 
 ## 3. Application Behaviour
 
@@ -92,6 +215,15 @@ Grid tiles are checkable ("Select All" selects everything the current search sho
 - **Set rating** — bulk 1-5 stars from the selection bar, or clears it if left blank. A single image's rating is set directly via a star row on its thumbnail/viewer.
 - **Edit title** / **Edit description** — single-image only, from the viewer. Title falls back to the filename when blank; description just clears.
 
+A cleared value is removed from the entity rather than written as an empty one, so a rescan cannot resurrect it and a reader never has to treat `""`/`[]` as "none":
+
+```json
+{ "@id": "IMG_0042.jpg", "@type": "ImageObject", "name": "IMG_0042.jpg",
+  "title": "IMG_0042.jpg" }
+```
+
+(the same photo as Section 2.2, with its keywords, rating and caption all cleared; `title` falls back to the filename rather than disappearing.)
+
 An edit writes directly to the crate and the index, reflected immediately (no rescan needed) — the read routes' crate cache is updated in the same step. A rescan of an unchanged file leaves an edit alone; `--reprocess` overwrites it from EXIF. Writing an edit back to the original file itself is not yet implemented (Section 2's backup mechanism is still undecided).
 
 Face recognition (below) finds and confirms people automatically, instead of relying only on manual tagging in another tool.
@@ -108,11 +240,40 @@ Status:
 
 **Implementation.** An album is an entity (`ENTITY_TYPE_ALBUM`, `schema:ImageGallery`), keyed by name (`albumEntityId`, its own `.../album/` id space), living only in the root crate. `date_created` doubles as "last used". Membership is the album's own `hasPart`, in display order, each entry a small proxy (`<albumId>#item-<n>`) `prov:specializationOf` the real image — the same indirection `ImageRegion` uses — so a member's appearance *in this album* could later carry its own caption without touching the shared image entity.
 
+Two photos in order (see Section 2.2's root-crate example for the album entity itself) — the proxy ids carry the position, so reordering is a rewrite of `hasPart`, and neither image's own entity is touched:
+
+```json
+{ "@id": "arcp://name,rocphoto/album/BeachTrip#item-0", "@type": "ImageObject",
+  "prov:specializationOf": { "@id": "2025/03/10/IMG_0042.jpg" } }
+
+{ "@id": "arcp://name,rocphoto/album/BeachTrip#item-1", "@type": "ImageObject",
+  "prov:specializationOf": { "@id": "2025/03/11/IMG_0067.jpg" } }
+```
+
 Routes (not AROCAPI): `POST /albums` (create/update), `GET /albums` (list, `?q=` to search), `GET /albums/{id}` (members, ordered), `POST /albums/{id}/add`. `albums` is also a real facet (`STORED_FACETS`), populated by the add route rather than derived from EXIF, so an album composes with every other filter and appears in the sidebar's Albums panel and the generic facets list alike (`toggleFilter('albums', name)` either way).
 
 **Export** (`src/core/export.js`) copies an album's member files into `_exports/<album-name-slug>/`, preserving each file's collection-relative path — files only, no crate/metadata yet. `_exports/` is excluded from the scan walk. Re-exporting overwrites. Reachable via `rocphotos export-album <directory> <album name>` (CLI) or the web view's "Export \<name\> Album" button (shown only while that album is the active filter).
 
-**Metadata in exported files.** Settings' "Copy metadata into exported files" (`exportWithMetadata`, default off) writes what this app knows — confirmed face/pet regions, keywords, title, caption, rating, as `readImageRecord` has them — into each exported copy via `exiftool` (`writeImageMetadata`), so an export stands on its own in any other photo tool rather than only making sense beside this collection's crates. Copying already carries the original's own EXIF along with the bytes; this adds everything since recorded here but never written into the file. Each value goes to both its XMP and its IPTC home (keywords also to Lightroom's hierarchical extension), since a reader may prefer any one of them and a half-written set would leave a stale value in whichever field wins — confirmed by round-tripping an export back through `scan`. Unlike `writeMetadataToFiles`, this needs no warning and no separate opt-in beyond the checkbox: it only ever touches copies the export just made. Needs `exiftool` and a destination the run mode can name on disk (`absolutePathFor`, Node only); without either, the copies still export and the response says what was skipped (`metadata.unsupported`) rather than failing.
+**Metadata in exported files.** Settings' "Copy metadata into exported files" (`exportWithMetadata`, default off) writes what this app knows — confirmed face/pet regions, keywords, title, caption, rating, as `readImageRecord` has them — into each exported copy via `exiftool` (`writeImageMetadata`), so an export stands on its own in any other photo tool rather than only making sense beside this collection's crates. Copying already carries the original's own EXIF along with the bytes; this adds everything since recorded here but never written into the file. Each value goes to both its XMP and its IPTC home (keywords also to Lightroom's hierarchical extension), since a reader may prefer any one of them and a half-written set would leave a stale value in whichever field wins — confirmed by round-tripping an export back through `scan`. This is the one place the crate's model is written back out as file metadata. Every region goes out in MWG's centre-based form regardless of which shape it had in the crate: Jane Smith's EXIF-derived `xPosition`/`yPosition` pass straight through, while Bob Jones's standoff `xywh=percent:55,30,10,14` (a top-left corner) becomes the centre `0.6, 0.37` — the same normalisation `readImageRecord` does for every other consumer (Section 2.2):
+
+```json
+{ "XMP-mwg-rs:RegionInfo": {
+    "AppliedToDimensions": { "W": 4080, "H": 3072, "Unit": "pixel" },
+    "RegionList": [
+      { "Type": "Face", "Name": "Jane Smith",
+        "Area": { "X": 0.35, "Y": 0.28, "W": 0.12, "H": 0.16 } },
+      { "Type": "Face", "Name": "Bob Jones",
+        "Area": { "X": 0.6, "Y": 0.37, "W": 0.1, "H": 0.14 } }
+    ] },
+  "XMP-dc:Subject": ["Beach", "Holiday"],
+  "XMP-lr:HierarchicalSubject": ["Beach", "Holiday"],
+  "IPTC:Keywords": ["Beach", "Holiday"],
+  "XMP-dc:Title": "Afternoon at the beach",
+  "XMP-dc:Description": "Low tide, just before the rain came in.",
+  "XMP:Rating": 4 }
+```
+
+Unlike `writeMetadataToFiles`, this needs no warning and no separate opt-in beyond the checkbox: it only ever touches copies the export just made. Needs `exiftool` and a destination the run mode can name on disk (`absolutePathFor`, Node only); without either, the copies still export and the response says what was skipped (`metadata.unsupported`) rather than failing.
 
 **Export path.** Settings' "Export path" (`exportPath` in `rocphotos.config.json`) sends exports somewhere else entirely — an absolute path, or one starting with `~`, anywhere on disk; blank keeps the built-in `_exports/`. A configured path *is* the export root (the album's slug directory sits directly under it, with no `_exports/` level inside). Files are read through the collection's own adapter and written through a second one rooted at the configured path (`resolveExportTarget`, `exportFiles`'s `destFsAdapter`), built by the Node run modes only (`createAbsoluteFsAdapter`, which also expands `~`) — the browser tab's File System Access API handle cannot reach outside the granted directory at all, so exporting there with a path set refuses, saying so, rather than silently landing the files somewhere the setting didn't ask for. A relative path is rejected at save time for the same reason: it would save cleanly and then be ignored.
 
@@ -123,6 +284,17 @@ Extends the Person and `ImageRegion` model (Section 3.2). A confirmed face is al
 **Library and runtime.** [face-api.js](https://github.com/justadudewhohacks/face-api.js) (TensorFlow.js, client-side) does detection and produces a 128-d embedding per face, loaded from `webview/vendor/`. Detection/embedding run identically in both run modes; only the best-effort file write needs `exiftool`, so it only ever happens from `rocphotos serve`.
 
 **Write-back is off by default, per collection, and confirming a face never depends on it.** `writeFaceRegion` (`src/adapters/exiftoolWriteback.js`) uses exiftool's `-overwrite_original` (no backup beyond the user's own). `/confirm` attempts it only if `exiftool` is available and the collection has opted in (`writeBackEnabled`, Section 3.1); neither a missing piece nor a failed write turns into a request failure. Default `writeBackEnabled: false` so a caller that forgets to pass it fails safe. Toggled via the Settings screen (Section 4.1).
+
+A permanently-ignored stranger is a reference with no Person at all — no `about`, and no `sourceRegion`, since it is deliberately never written back to a photo as a real region (see Section 2.2 for the named case):
+
+```json
+{ "@id": "e3d9f0a1-5b2c-4d6e-8f10-2a3b4c5d6e7f", "@type": "FaceEmbedding",
+  "name": "Ignored stranger",
+  "sourceImage": "2025/03/10/IMG_0051.jpg",
+  "embedding": [0.0204, -0.1137],
+  "embeddingModel": "face-api.js",
+  "embeddingModelVersion": "0.22.2" }
+```
 
 **Reference data.** `_rocphotos/faces/ro-crate-metadata.json` holds one `FaceEmbedding` entity per confirmed reference, for inspection; matching and review query its companion `_rocphotos/faces/faces-index.sqlite` instead, which tracks `scanned_images` (mtime-keyed, skips unchanged files; a model bump forces a re-scan), `reference_faces`, and `detections` (`pending`/`confirmed`/`ignored`/`auto_ignored`). Matching compares embeddings in memory (Euclidean distance) — no vector-search infrastructure needed at this scale.
 
@@ -165,6 +337,26 @@ Renaming and merging are one operation, not two: identity is name-derived (`pers
 
 **Routes** (`src/core/people/handler.js`, `/api/people/*`, both run modes): `GET /` (the list above); `POST /merge` (`{sourceNames, targetName}`, one name renames, several merge).
 
+Renaming "jane smith" to "Jane Smith" rewrites every reference to them in each crate that depicts them — the image's `about`, the region's `about` and its duplicated `name` — and drops the old Person node once nothing points at it:
+
+```json
+{ "@id": "p.jpg", "about": [{ "@id": "arcp://name,rocphoto/person/janesmith" }] }
+{ "@id": "p.jpg#region-0", "name": "jane smith",
+  "about": { "@id": "arcp://name,rocphoto/person/janesmith" } }
+{ "@id": "arcp://name,rocphoto/person/janesmith", "@type": "Person", "name": "jane smith" }
+```
+
+becomes
+
+```json
+{ "@id": "p.jpg", "about": [{ "@id": "arcp://name,rocphoto/person/JaneSmith" }] }
+{ "@id": "p.jpg#region-0", "name": "Jane Smith",
+  "about": { "@id": "arcp://name,rocphoto/person/JaneSmith" } }
+{ "@id": "arcp://name,rocphoto/person/JaneSmith", "@type": "Person", "name": "Jane Smith" }
+```
+
+A standoff region's subject is re-pointed at its body proxy's `prov:specializationOf` instead (Section 2.2), the region node itself being unaware of who it depicts beyond its own `name`.
+
 **Mechanics.** Never touches an original photo file, only crate JSON-LD and the two SQLite indexes, so it behaves identically in every run mode. For each source name not already spelled exactly like `targetName`: pages through every image tagged with it (`searchEntities`/`countSearchResults`, not the default 100-row page), re-points each one's `about` and its regions' `about`/body-proxy `prov:specializationOf` at the target id (`renamePersonInCrate`), and deletes the now-unreferenced source Person node from every crate that held it. Every touched image's facet rows are then re-derived straight from its rewritten crate record (`syncImageIndexFromCrate`) rather than hand-patched, so they can't drift from what the crate now actually says; the source's own now-orphaned `entities` row is deleted once nothing points to it any more. The faces companion index (`reference_faces`, `backfill_undetectable_regions`, `detections.suggested_person_id`/`resolved_person_id`/`rejected_person_ids`) is re-pointed the same way (`mergePersonInFacesStore`), including its own dedup/conflict handling where two rows collide afterwards. Wrapped in one `serializeWrites` call, the same read-modify-write-then-persist shape as `/edit/*` and `/faces/confirm`.
 
 Not yet implemented: renaming/merging Pets (the mechanics apply equally; the tab only lists Person for now), undoing either.
@@ -188,25 +380,7 @@ A named MWG region becomes its own entity too, not just a facet value: a `Face` 
 
 Each region occurrence is also its own `ImageRegion` entity (`<image>#region-<index>`, stable across rescans) — what "Show faces" draws. Distinct from the image's `about` (linking to the shared Person/Pet, for facets): Person/Pet is deduplicated across photos, `ImageRegion` is one photo's one occurrence. Not an external vocabulary term; `xPosition`/`yPosition`/`width`/`height` (fractional, centre-based, mirroring MWG's `Area`) are application-specific.
 
-**Standoff region data model.** A confirmed face is recorded using the [W3C Web Annotation Vocabulary](https://www.w3.org/TR/annotation-vocab/) (`oa:`, `http://www.w3.org/ns/oa#`) instead of the bespoke shape above — a second, independent shape, not a replacement: EXIF-derived regions (`regionsFromExif`) still use the plain shape; only a region confirmed but not yet written to the file (`addStandoffFaceRegion`) uses this one. `readImageRecord` normalizes both into the same centre-based `{x,y,w,h}` for every other consumer.
-
-```json
-{
-  "@id": "2025/03/10/photo.jpg#region-standoff-0",
-  "@type": ["ImageRegion", "oa:Annotation"],
-  "name": "Jane Smith",
-  "regionType": "Face",
-  "oa:motivatedBy": { "@id": "oa:identifying" },
-  "oa:hasTarget": { "@id": "2025/03/10/photo.jpg#xywh=percent:41.6,7.5,29.4,43.75" },
-  "oa:hasBody": { "@id": "2025/03/10/photo.jpg#region-standoff-0-body" },
-  "writtenToFile": false
-},
-{
-  "@id": "2025/03/10/photo.jpg#region-standoff-0-body",
-  "@type": "schema:Person",
-  "prov:specializationOf": { "@id": "arcp://name,rocphoto/person/JaneSmith" }
-}
-```
+**Standoff region data model.** A confirmed face is recorded using the [W3C Web Annotation Vocabulary](https://www.w3.org/TR/annotation-vocab/) (`oa:`, `http://www.w3.org/ns/oa#`) instead of the bespoke shape above — a second, independent shape, not a replacement: EXIF-derived regions (`regionsFromExif`) still use the plain shape; only a region confirmed but not yet written to the file (`addStandoffFaceRegion`) uses this one. `readImageRecord` normalizes both into the same centre-based `{x,y,w,h}` for every other consumer. See Section 2.2 for both shapes side by side.
 
 `oa:hasBody` points at a proxy (`prov:specializationOf` the real Person/Pet), not the shared entity directly — the same indirection Albums use — so this occurrence could later carry its own properties.
 
