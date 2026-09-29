@@ -164,6 +164,52 @@ describe('renderRootCratePreview', () => {
   });
 });
 
+describe('viewer navigation', () => {
+  const threeImages = () => renderSubCratePreview({
+    name: 'Album',
+    images: ['a.jpg', 'b.jpg', 'c.jpg'].map((name) => ({
+      path: name, name, dateCreated: null, processingError: null, thumbnailPath: null,
+    })),
+  });
+
+  it('links each viewer to its neighbours, so a photo can be stepped through without script', () => {
+    const html = threeImages();
+    const middle = html.slice(html.indexOf('id="viewer-1"'), html.indexOf('id="viewer-2"'));
+
+    expect(middle).toContain('href="#viewer-0"');
+    expect(middle).toContain('href="#viewer-2"');
+    expect(middle).toContain('2 of 3');
+  });
+
+  it('gives the first and last a dimmed non-link, so the controls do not shift between photos', () => {
+    const html = threeImages();
+    const first = html.slice(html.indexOf('id="viewer-0"'), html.indexOf('id="viewer-1"'));
+    const last = html.slice(html.indexOf('id="viewer-2"'));
+
+    expect(first).toContain('<span class="viewer-nav viewer-prev is-disabled"');
+    expect(first).toContain('href="#viewer-1"');
+    expect(last).toContain('<span class="viewer-nav viewer-next is-disabled"');
+    expect(last).toContain('href="#viewer-1"');
+  });
+
+  it('puts a full-bleed link behind the photo, so clicking away from it returns to the grid', () => {
+    const html = threeImages();
+    const first = html.slice(html.indexOf('id="viewer-0"'), html.indexOf('id="viewer-1"'));
+
+    expect(first).toContain('<a class="viewer-backdrop" href="#"');
+    // ...and the photo itself sits above it, so clicking the photo does not close.
+    expect(first).toContain('<div class="viewer-content">');
+    expect(html).toContain('.viewer-backdrop { position: absolute; inset: 0;');
+    expect(html).toContain('.viewer-content {');
+  });
+
+  it('still needs no script for any of it', () => {
+    // The people browser's search is the only script these pages carry;
+    // an album with nobody in it should have none at all.
+    expect(threeImages()).not.toContain('<script>');
+  });
+});
+
 describe('people browser', () => {
   const twoPeopleCrate = () => renderSubCratePreview({
     name: '2025-03-10',

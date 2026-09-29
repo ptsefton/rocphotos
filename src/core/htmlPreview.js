@@ -19,30 +19,80 @@ export function earliestDate(images) {
 }
 
 const SHARED_STYLE = `
-  body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
-  a { color: #1a5fb4; }
-  header { margin-bottom: 1.5rem; }
-  header p { color: #555; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; }
-  figure { margin: 0; border: 1px solid #ddd; border-radius: 4px; padding: 0.5rem; }
-  figure img { width: 100%; height: 120px; object-fit: cover; border-radius: 2px; background: #eee; cursor: pointer; }
-  figcaption { font-size: 0.8rem; margin-top: 0.4rem; word-break: break-word; }
-  figcaption .date { color: #888; }
-  figcaption .error { color: #b00020; }
-  details.exif summary { cursor: pointer; color: #555; }
+  /* These pages are opened straight off the filesystem as often as they
+     are served, so everything is self-contained: no webfonts, no
+     stylesheet to fetch, and (apart from the people search) no script.
+     Tokens match the app's own look so a collection browsed at rest and
+     the same collection in rocphotos do not feel like two products. */
+  :root {
+    --bg: #f6f6f4;
+    --panel: #ffffff;
+    --panel-2: #fafaf8;
+    --ink: #16161a;
+    --muted: #62626b;
+    --border: #d9d9d4;
+    --accent: #1f5fbf;
+    --accent-ink: #ffffff;
+    --accent-soft: #eaf1fc;
+    --error: #b3261e;
+    --radius: 10px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121214;
+      --panel: #1b1b1f;
+      --panel-2: #222227;
+      --ink: #ececef;
+      --muted: #a0a0aa;
+      --border: #34343b;
+      --accent: #7aa7ff;
+      --accent-ink: #0b1020;
+      --accent-soft: #1d2740;
+      --error: #ff8a80;
+      color-scheme: dark;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; padding: 2.5rem 1.5rem 4rem; max-width: 72rem;
+    background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  a { color: var(--accent); }
+  header { margin-bottom: 1.75rem; }
+  header h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; }
+  header p { color: var(--muted); margin: 6px 0 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 1rem; }
+  figure {
+    margin: 0; background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 0.5rem; overflow: hidden;
+    transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s;
+  }
+  figure:hover { border-color: var(--accent); box-shadow: 0 2px 12px rgb(0 0 0 / 0.08); transform: translateY(-1px); }
+  figure img { width: 100%; height: 140px; object-fit: cover; border-radius: 6px; background: var(--panel-2); cursor: pointer; display: block; }
+  figcaption { font-size: 0.8rem; margin-top: 0.45rem; word-break: break-word; }
+  figcaption .date { color: var(--muted); }
+  figcaption .error { color: var(--error); }
+  details.exif summary { cursor: pointer; color: var(--muted); font-size: 0.78rem; }
   details.exif table { border-collapse: collapse; font-size: 0.75rem; margin-top: 0.3rem; width: 100%; }
-  details.exif th, details.exif td { padding: 0.15rem 0.4rem; border-bottom: 1px solid #eee; text-align: left; }
-  details.exif th { color: #555; font-weight: 600; white-space: nowrap; }
+  details.exif th, details.exif td { padding: 0.15rem 0.4rem; border-bottom: 1px solid var(--border); text-align: left; }
+  details.exif th { color: var(--muted); font-weight: 600; white-space: nowrap; }
   section { margin-bottom: 1.5rem; }
-  section h2 { border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
-  ul.nav-list { list-style: none; padding: 0; }
-  ul.nav-list li { padding: 0.3rem 0; }
-  ul.nav-list .path { color: #888; font-size: 0.85em; }
-  details.year { margin-bottom: 0.5rem; }
+  section h2 { border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; font-size: 1.05rem; }
+  ul.nav-list { list-style: none; padding: 0; margin: 0.4rem 0 0; }
+  ul.nav-list li { padding: 0.35rem 0.5rem; border-radius: 6px; }
+  ul.nav-list li:hover { background: var(--accent-soft); }
+  ul.nav-list .path { color: var(--muted); font-size: 0.85em; }
+  details.year {
+    margin-bottom: 0.6rem; background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 0.6rem 0.9rem;
+  }
   details.year > summary { cursor: pointer; }
-  details.year > summary h2 { display: inline-block; margin: 0; border-bottom: none; padding-bottom: 0; }
-  details.month { margin: 0.4rem 0 0.4rem 1.5rem; }
-  details.month > summary { cursor: pointer; font-weight: 600; }
+  details.year > summary h2 { display: inline-block; margin: 0; border-bottom: none; padding-bottom: 0; font-size: 1.05rem; }
+  details.month { margin: 0.5rem 0 0.2rem 1.2rem; }
+  details.month > summary { cursor: pointer; font-weight: 600; color: var(--muted); }
 
   /* People browser: a scrollable, searchable list of everyone depicted,
      each opening a panel of their own photos. Driven by a hidden radio
@@ -79,16 +129,43 @@ const SHARED_STYLE = `
      image gets a #viewer-N target; the thumbnail links to it and the
      overlay is shown only while its id matches the URL fragment, which
      works identically whether the page is served or opened via file://. */
-  .viewer { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.92); z-index: 100; box-sizing: border-box; padding: 2rem; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; }
+  .viewer { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.93); z-index: 100; padding: 2rem; align-items: center; justify-content: center; }
   .viewer:target { display: flex; }
-  .viewer img { max-width: 100%; max-height: 78vh; object-fit: contain; }
-  .viewer-close { position: fixed; top: 1rem; right: 1.5rem; color: #fff; font-size: 2rem; line-height: 1; text-decoration: none; }
-  .viewer .viewer-caption { color: #eee; }
+  /* A full-bleed link behind the photo, so clicking anywhere around it
+     goes back to the grid — the usual lightbox behaviour, with nothing
+     but an anchor doing it. The content sits above it, so a click on the
+     photo, caption or EXIF table does not close. */
+  .viewer-backdrop { position: absolute; inset: 0; cursor: zoom-out; }
+  .viewer-content {
+    position: relative; z-index: 1; display: flex; flex-direction: column;
+    align-items: center; gap: 0.9rem; max-width: 100%;
+  }
+  .viewer img { max-width: 100%; max-height: 78vh; object-fit: contain; border-radius: 6px; }
+  .viewer-close { position: fixed; top: 1rem; right: 1.5rem; z-index: 2; color: #fff; font-size: 2rem; line-height: 1; text-decoration: none; opacity: 0.75; }
+  .viewer-close:hover { opacity: 1; }
+  /* Previous/next, as plain links to the adjacent image's own target. */
+  .viewer-nav {
+    position: fixed; top: 50%; transform: translateY(-50%); z-index: 2;
+    color: #fff; font-size: 2.5rem; line-height: 1; text-decoration: none;
+    padding: 0.5rem 0.8rem; border-radius: 8px; background: rgb(255 255 255 / 0.08);
+  }
+  .viewer-nav:hover { background: rgb(255 255 255 / 0.2); }
+  .viewer-nav.is-disabled { opacity: 0.2; background: none; }
+  .viewer-prev { left: 1rem; }
+  .viewer-next { right: 1rem; }
+  .viewer .viewer-caption { color: #eee; margin: 0; text-align: center; }
+  .viewer-position { color: #9a9aa2; font-size: 0.85em; margin-left: 0.4rem; }
   .viewer .error { color: #ff8a80; }
   .viewer details.exif { color: #eee; max-width: 90vw; max-height: 18vh; overflow: auto; }
   .viewer details.exif summary { color: #fff; }
   .viewer details.exif th { color: #ccc; }
   .viewer details.exif th, .viewer details.exif td { border-bottom-color: rgba(255, 255, 255, 0.2); }
+
+  @media (max-width: 560px) {
+    body { padding: 1.5rem 1rem 3rem; }
+    .viewer { padding: 1rem; }
+    .viewer-nav { font-size: 2rem; padding: 0.4rem 0.55rem; }
+  }
 `;
 
 function escapeHtml(value) {
@@ -296,12 +373,29 @@ export function renderSubCratePreview({ name, images, backLink = null }) {
   </figcaption>
 </figure>`);
 
+    // Previous/next walk this crate's own images, in the order the grid
+    // shows them — still no script: each is just a link to the adjacent
+    // image's own :target. The first and last get a dimmed non-link in
+    // place of the arrow, so the controls never move about between
+    // photos.
+    const prevHtml = index > 0
+      ? `<a class="viewer-nav viewer-prev" href="#viewer-${index - 1}" aria-label="Previous image">&#8249;</a>`
+      : '<span class="viewer-nav viewer-prev is-disabled" aria-hidden="true">&#8249;</span>';
+    const nextHtml = index < images.length - 1
+      ? `<a class="viewer-nav viewer-next" href="#viewer-${index + 1}" aria-label="Next image">&#8250;</a>`
+      : '<span class="viewer-nav viewer-next is-disabled" aria-hidden="true">&#8250;</span>';
+
     viewers.push(`<div id="${viewerId}" class="viewer">
+  <a class="viewer-backdrop" href="#" aria-label="Close"></a>
   <a href="#" class="viewer-close" aria-label="Close">&times;</a>
-  <img src="${fullSrc}" alt="${escapeHtml(image.name)}" />
-  <p class="viewer-caption">${escapeHtml(image.name)}${captionSuffix}</p>
-  ${errorHtml}
-  ${exifDetailsHtml}
+  ${prevHtml}
+  ${nextHtml}
+  <div class="viewer-content">
+    <img src="${fullSrc}" alt="${escapeHtml(image.name)}" />
+    <p class="viewer-caption">${escapeHtml(image.name)}${captionSuffix} <span class="viewer-position">${index + 1} of ${images.length}</span></p>
+    ${errorHtml}
+    ${exifDetailsHtml}
+  </div>
 </div>`);
   });
 
