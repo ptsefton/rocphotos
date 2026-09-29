@@ -115,7 +115,7 @@ The shared node is what the *root* crate holds in full, listed on its root datas
   "name": "Jane Smith" }
 ```
 
-Rebuilt from the index on every scan and after every merge, so it always names exactly the people currently depicted — but only `name` is kept in step, and anything else recorded on the entity is left alone, since that description is the reason the root crate carries them.
+A scan rebuilds this list from the index, and so does a merge, so the root crate always names exactly the people the collection currently depicts. Both write only the `name` property, and leave every other property on a Person alone. That matters because describing people is the whole reason the root crate holds them: a sync that overwrote a birth date, or a relationship to another person, would destroy the very thing this crate exists to accumulate.
 
 A crate written before instances existed points `about` straight at the `arcp://` id. Since a scan only rewrites an image whose file has actually changed, both shapes can sit in one crate indefinitely; everything that reads a person copes with either (the shared node carries `@type` and `name` just as an instance does), and a merge matches either and writes the instance, migrating that reference as it goes. `--reprocess` converts a collection outright.
 
@@ -129,7 +129,7 @@ A region tagged in the photo file itself (MWG, from digiKam/Lightroom/Photos) is
   "xPosition": 0.35, "yPosition": 0.28, "width": 0.12, "height": 0.16 }
 ```
 
-A region confirmed in this app is a *standoff* annotation instead — recorded whether or not it is ever written into the photo file (Section 3's Face Recognition), in its own `#region-standoff-N` id space so a rescan's renumbering of the EXIF-derived regions can never collide with it. Modelled on the W3C Web Annotation vocabulary, with the subject reached through a per-region body proxy — the same indirection Albums use, so this one sighting could later carry its own properties without touching the shared Person. Its target is a W3C Media Fragment, whose `xywh` is a **top-left** corner and size (as a percentage), not MWG's centre point.
+A region confirmed in this app is a *standoff* annotation instead — recorded whether or not it is ever written into the photo file (Section 3's Face Recognition), in its own `#region-standoff-N` id space so a rescan's renumbering of the EXIF-derived regions can never collide with it. This app models it on the W3C Web Annotation vocabulary, reaching the subject through a per-region body proxy — the same indirection Albums use, so this one sighting could later carry its own properties without touching the shared Person. Its target is a W3C Media Fragment, whose `xywh` is a **top-left** corner and size (as a percentage), not MWG's centre point.
 
 ```json
 { "@id": "IMG_0042.jpg#region-standoff-0",
@@ -224,7 +224,7 @@ Beyond that, a collection may contain directories or files that should never be 
 { "excludeDirectories": ["^\\.", "^HTML"], "excludeFiles": ["^Thumbs\\.db$"] }
 ```
 
-Each is a list of regular expressions matched against a directory's or file's own name, at any depth. An excluded file is treated as if it did not exist. `excludeDirectories`, if present, replaces the `.*` default rather than adding to it; `excludeFiles` has no default. Read through the same filesystem interface as everything else, so it's honoured identically by the CLI and the browser SPA.
+Each is a list of regular expressions matched against a directory's or file's own name, at any depth. An excluded file is treated as if it did not exist. `excludeDirectories`, if present, replaces the `.*` default rather than adding to it; `excludeFiles` has no default. The application reads this file through the same filesystem interface as everything else, so the CLI and the browser SPA honour it identically.
 
 The same file holds `writeMetadataToFiles` (boolean, default `false`) — the opt-in for writing metadata into the photo files themselves: confirmed faces (Face Recognition, below) and any keyword, title, caption or rating edited in the app (Editing, below) — plus `exportPath` (string, default none) and `exportWithMetadata` (boolean, default `false`), which say where album exports land and whether this app's own metadata is written into them (Albums, below). All are editable via the Settings screen (Section 4.1) as well as by hand.
 
@@ -259,7 +259,11 @@ A cleared value is removed from the entity rather than written as an empty one, 
 
 An edit writes directly to the crate and the index, reflected immediately (no rescan needed) — the read routes' crate cache is updated in the same step. A rescan of an unchanged file leaves an edit alone; `--reprocess` overwrites it from EXIF.
 
-**Into the file too, on request.** With `writeMetadataToFiles` on (Section 3.1), an edit is also written into the photo itself via `exiftool` — the same wholesale `writeImageMetadata` the export feature uses, pointed at the original rather than a copy, so one switch covers both a confirmed face and an edited keyword, title, caption or rating. Best-effort and last, exactly like the faces write-back: the edit has already succeeded in the crate and the index, so a failure here is reported alongside it rather than undoing it. The file is re-read afterwards (`rescanImageMetadata`) to keep its recorded modification time in step, or the next scan would see every edited file as changed. Off by default, and it still modifies originals with no backup — Section 2's backup mechanism remains undecided, which is the reason for the warning on the setting rather than for the feature's absence.
+**Into the file too, on request.** With `writeMetadataToFiles` on (Section 3.1), the edit routes also write the edit into the photo itself via `exiftool`, using the same wholesale `writeImageMetadata` the export feature uses but pointed at the original rather than a copy. One switch therefore covers both a confirmed face and an edited keyword, title, caption or rating.
+
+They do this last, and treat it as best-effort, exactly as the faces write-back does: the edit has already succeeded in the crate and the index by that point, so a failure here is reported alongside the edit rather than undoing it. They then re-read the file (`rescanImageMetadata`) so that the modification time recorded in the crate matches the file they just wrote — without that, the next scan would find every edited file's timestamp newer than its record and reprocess the lot.
+
+The setting is off by default, and it still modifies originals with no backup. Section 2's backup mechanism remains undecided, which is why the setting carries a warning rather than why the feature is missing.
 
 Face recognition (below) finds and confirms people automatically, instead of relying only on manual tagging in another tool.
 
@@ -287,7 +291,7 @@ Two photos in order (see Section 2.2's root-crate example for the album entity i
 
 Routes (not AROCAPI): `POST /albums` (create/update), `GET /albums` (list, `?q=` to search), `GET /albums/{id}` (members, ordered), `POST /albums/{id}/add`. `albums` is also a real facet (`STORED_FACETS`), populated by the add route rather than derived from EXIF, so an album composes with every other filter and appears in the sidebar's Albums panel and the generic facets list alike (`toggleFilter('albums', name)` either way).
 
-**Export** (`src/core/export.js`) copies an album's member files into `_exports/<album-name-slug>/`, preserving each file's collection-relative path — files only, no crate/metadata yet. `_exports/` is excluded from the scan walk. Re-exporting overwrites. Reachable via `rocphotos export-album <directory> <album name>` (CLI) or the web view's "Export \<name\> Album" button (shown only while that album is the active filter).
+**Export** (`src/core/export.js`) copies an album's member files into `_exports/<album-name-slug>/`, preserving each file's collection-relative path — files only, no crate/metadata yet. `_exports/` is excluded from the scan walk. Re-exporting overwrites. Two things can start an export: the CLI's `rocphotos export-album <directory> <album name>`, and the web view's "Export \<name\> Album" button (which appears only while that album is the active filter).
 
 **Metadata in exported files.** Settings' "Copy metadata into exported files" (`exportWithMetadata`, default off) writes what this app knows — confirmed face/pet regions, keywords, title, caption, rating, as `readImageRecord` has them — into each exported copy via `exiftool` (`writeImageMetadata`), so an export stands on its own in any other photo tool rather than only making sense beside this collection's crates. Copying already carries the original's EXIF along with the bytes; this adds everything since recorded here but never written into the file. Each value goes to both its XMP and its IPTC home (keywords also to Lightroom's hierarchical extension), since a reader may prefer any one of them and a half-written set would leave a stale value in whichever field wins — confirmed by round-tripping an export back through `scan`. This is the one place the crate's model is written back out as file metadata. Every region goes out in MWG's centre-based form regardless of which shape it had in the crate: Jane Smith's EXIF-derived `xPosition`/`yPosition` pass straight through, while Bob Jones's standoff `xywh=percent:55,30,10,14` (a top-left corner) becomes the centre `0.6, 0.37` — the same normalisation `readImageRecord` does for every other consumer (Section 2.2):
 
@@ -394,7 +398,7 @@ becomes
 
 A standoff region needs no rewriting of its own: its body proxy points at the instance, so swapping the instance moves the region with it. The root crate's `mentions` is rebuilt afterwards, dropping the merged-away identity.
 
-**Mechanics.** Never touches an original photo file, only crate JSON-LD and the two SQLite indexes, so it behaves identically in every run mode. For each source name not already spelled exactly like `targetName`: pages through every image tagged with it (`searchEntities`/`countSearchResults`, not the default 100-row page), re-points each one's `about` and its regions' `about`/body-proxy `prov:specializationOf` at the target id (`renamePersonInCrate`), and deletes the now-unreferenced source Person node from every crate that held it. Every touched image's facet rows are then re-derived straight from its rewritten crate record (`syncImageIndexFromCrate`) rather than hand-patched, so they can't drift from what the crate now actually says; the source's own now-orphaned `entities` row is deleted once nothing points to it any more. The faces companion index (`reference_faces`, `backfill_undetectable_regions`, `detections.suggested_person_id`/`resolved_person_id`/`rejected_person_ids`) is re-pointed the same way (`mergePersonInFacesStore`), including its own dedup/conflict handling where two rows collide afterwards. Wrapped in one `serializeWrites` call, the same read-modify-write-then-persist shape as `/edit/*` and `/faces/confirm`.
+**Mechanics.** Never touches an original photo file, only crate JSON-LD and the two SQLite indexes, so it behaves identically in every run mode. For each source name not already spelled exactly like `targetName`: pages through every image tagged with it (`searchEntities`/`countSearchResults`, not the default 100-row page), re-points each one's `about` and its regions' `about`/body-proxy `prov:specializationOf` at the target id (`renamePersonInCrate`), and deletes the now-unreferenced source Person node from every crate that held it. Every touched image's facet rows are then re-derived straight from its rewritten crate record (`syncImageIndexFromCrate`) rather than hand-patched, so they can't drift from what the crate now actually says; the source's own now-orphaned `entities` row is deleted once nothing points to it any more. The faces companion index (`reference_faces`, `backfill_undetectable_regions`, `detections.suggested_person_id`/`resolved_person_id`/`rejected_person_ids`) is re-pointed the same way (`mergePersonInFacesStore`), including its own dedup/conflict handling where two rows collide afterwards. The whole merge runs inside a single `serializeWrites` call, the same read-modify-write-then-persist shape as `/edit/*` and `/faces/confirm`.
 
 Not yet implemented: renaming/merging Pets (the mechanics apply equally; the tab only lists Person for now), undoing either.
 
@@ -413,7 +417,7 @@ The schema is a minimal subset of the [AROCAPI specification](https://github.com
 
 Entity types follow PCDM: crates are `pcdm:Collection`, images `pcdm:Object`, `member_of` pointing to their crate. Ids reuse the collection-relative path convention (`2025/03/10/`, `2025/03/10/photo.jpg`, `./` for root).
 
-A named MWG region becomes its own entity too, not just a facet value: a `Face` region → `schema:Person`, a `Pet` region → this app's own `Pet` type. Id is name-based, not path-based (`arcp://name,rocphoto/person/<slug>`, `.../pet/<slug>`) — the same name always the same id; a Person and a Pet with the same name never collide. Identity is by name string only. Recorded once, then duplicated into every crate that depicts them, per RO-Crate convention. A region's name is excluded from the image's own `keyword` facet, so it isn't double-counted.
+A named MWG region becomes its own entity too, not just a facet value: a `Face` region → `schema:Person`, a `Pet` region → this app's own `Pet` type. Id is name-based, not path-based (`arcp://name,rocphoto/person/<slug>`, `.../pet/<slug>`) — the same name always the same id; a Person and a Pet with the same name never collide. Identity is by name string only. A scan records the entity once, then duplicates it into every crate that depicts them, per RO-Crate convention. A region's name is excluded from the image's own `keyword` facet, so it isn't double-counted.
 
 Each region occurrence is also its own `ImageRegion` entity (`<image>#region-<index>`, stable across rescans) — what "Show faces" draws. Distinct from the image's `about` (linking to the shared Person/Pet, for facets): Person/Pet is deduplicated across photos, `ImageRegion` is one photo's one occurrence. Not an external vocabulary term; `xPosition`/`yPosition`/`width`/`height` (fractional, centre-based, mirroring MWG's `Area`) are application-specific.
 
@@ -423,7 +427,7 @@ Each region occurrence is also its own `ImageRegion` entity (`<image>#region-<in
 
 `oa:hasTarget` is a bare `{"@id": ...}` reference: the image's id plus a [Media Fragments](https://www.w3.org/TR/media-frags/) `#xywh=percent:x,y,w,h` fragment — top-left, 0-100%, matching face-api.js's own box convention (converted to MWG's centre convention only when actually written to a file's XMP).
 
-**TODO:** `regionType` is still a bare, unprefixed string, arguably redundant with the proxy's own `@type`. Left as-is for now.
+**TODO:** `regionType` is still a bare, unprefixed string, arguably redundant with the proxy's own `@type`. We have left it alone for now.
 
 `writtenToFile`: `true` for a region read from the file's EXIF; `false` for one confirmed but not (yet, or not allowed to be) written to the file. This is what makes a confirmed face fully visible immediately (viewer tags, "Show faces", people/pets facets) regardless of the write-back setting.
 
@@ -455,7 +459,7 @@ The same handler is also hosted inside the browser-tab mode via a Service Worker
 
 OS thumbnail caches (Windows `Thumbs.db`, macOS previews, freedesktop.org) are not used — they live outside the granted directory, aren't portable with the crate, and are sometimes proprietary.
 
-The application generates its own thumbnails when a sub-collection crate is created/rescanned, skipping unchanged files. Browser SPA: Canvas API; CLI: `sharp`. A failure still adds the image to the crate (recorded, not retried until the file changes) and falls back to the full-size image in generated pages. Stored in a `thumbnails/` subdirectory per sub-collection crate, listed as `hasPart`. One size by default (e.g. 400px longest edge, JPEG); more sizes possible later without a data model change.
+The application generates its own thumbnails when a sub-collection crate is created/rescanned, skipping unchanged files. Browser SPA: Canvas API; CLI: `sharp`. A failure still adds the image to the crate (recorded, not retried until the file changes) and falls back to the full-size image in generated pages. The application stores them in a `thumbnails/` subdirectory inside each sub-collection crate, listed as `hasPart`. One size by default (e.g. 400px longest edge, JPEG); more sizes possible later without a data model change.
 
 ### 3.4 HTML Preview Pages
 
