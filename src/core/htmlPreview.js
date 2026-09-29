@@ -120,7 +120,12 @@ const SHARED_STYLE = `
      below, which is the one thing here that does take over the screen. */
   .person-panel { display: none; position: relative; border: 1px solid #ddd; border-radius: 4px; padding: 0.8rem; margin-bottom: 1.5rem; }
   .person-panel h3 { margin: 0 0 0.8rem; }
-  .person-panel .person-panel-count { color: #888; font-weight: normal; font-size: 0.8em; }
+  .person-panel .person-panel-count { color: var(--muted); font-weight: normal; font-size: 0.8em; }
+  /* Caps the panel at roughly three rows and scrolls the rest. Every
+     thumbnail in it is loading="lazy", so a person with two thousand
+     photos costs two thousand <img> tags in the file but only the dozen
+     rows someone actually scrolls past in fetched bytes. */
+  .person-panel-grid { max-height: 30rem; overflow-y: auto; padding: 2px; }
   .person-panel-close { position: absolute; top: 0.3rem; right: 0.7rem; color: #555; font-size: 1.5rem; line-height: 1; cursor: pointer; }
   .person-panel-close:hover { color: #000; }
   .person-panel figcaption .path { color: #888; }
@@ -200,13 +205,6 @@ ${rows}
 </table>`;
 }
 
-// How many of one person's photos the root-level preview embeds. A
-// sub-collection's own page shows all of theirs (it is bounded by the
-// directory's size anyway); the root page would otherwise carry every
-// thumbnail of everyone across the whole collection, which for a
-// decades-spanning one is megabytes of HTML nobody asked to load.
-export const ROOT_PERSON_THUMBNAIL_LIMIT = 24;
-
 // The one thing here CSS genuinely cannot do: narrow a list by typed
 // text. Kept to this — everything else (opening a person, closing them,
 // highlighting the current one) is plain CSS, and the list is complete
@@ -232,6 +230,36 @@ for (const browser of document.querySelectorAll('.people-browser')) {
   });
 }
 `;
+
+/**
+ * One full-screen viewer: the photo, its caption, and links to step to
+ * the neighbouring photos or back out to the page underneath.
+ *
+ * Every part of it is an anchor to a `:target`, so stepping through a
+ * set needs no script. `prevId`/`nextId` are omitted at the ends of the
+ * set, which renders a dimmed non-link in place of the arrow so the
+ * controls never shift position between photos.
+ *
+ * @param {{id: string, src: string, alt: string, caption: string, sub?: string|null, position?: string|null, prevId?: string|null, nextId?: string|null, extraHtml?: string}} options
+ * @returns {string}
+ */
+function renderViewer({ id, src, alt, caption, sub = null, position = null, prevId = null, nextId = null, extraHtml = '' }) {
+  const arrow = (targetId, className, label, glyph) => (targetId
+    ? `<a class="viewer-nav ${className}" href="#${targetId}" aria-label="${label}">${glyph}</a>`
+    : `<span class="viewer-nav ${className} is-disabled" aria-hidden="true">${glyph}</span>`);
+
+  return `<div id="${id}" class="viewer">
+  <a class="viewer-backdrop" href="#" aria-label="Close"></a>
+  <a href="#" class="viewer-close" aria-label="Close">&times;</a>
+  ${arrow(prevId, 'viewer-prev', 'Previous image', '&#8249;')}
+  ${arrow(nextId, 'viewer-next', 'Next image', '&#8250;')}
+  <div class="viewer-content">
+    <img src="${src}" alt="${escapeHtml(alt)}" loading="lazy" />
+    <p class="viewer-caption">${escapeHtml(caption)}${sub ? ` &mdash; ${escapeHtml(sub)}` : ''}${position ? ` <span class="viewer-position">${position}</span>` : ''}</p>
+${extraHtml}
+  </div>
+</div>`;
+}
 
 /**
  * The searchable, scrollable people box plus one hidden panel of photos
@@ -268,9 +296,6 @@ ${listItems}
 
   const panels = `<div class="person-panels">
 ${people.map((person, index) => {
-    const shownCount = person.thumbs.length < person.total
-      ? ` <span class="person-panel-count">showing ${person.thumbs.length} of ${person.total}</span>`
-      : '';
     const figures = person.thumbs.map((thumb) => `    <figure>
       <a href="${thumb.href}"><img src="${thumb.src}" alt="${escapeHtml(thumb.alt)}" loading="lazy" /></a>
       <figcaption>
@@ -281,8 +306,8 @@ ${people.map((person, index) => {
 
     return `  <div class="person-panel" id="person-photos-${index}">
     <label for="person-none" class="person-panel-close" title="Close" role="button" aria-label="Close">&times;</label>
-    <h3>${escapeHtml(person.name)}${shownCount}</h3>
-    <div class="grid">
+    <h3>${escapeHtml(person.name)} <span class="person-panel-count">${person.thumbs.length} photo${person.thumbs.length === 1 ? '' : 's'}</span></h3>
+    <div class="grid person-panel-grid">
 ${figures}
     </div>
   </div>`;
@@ -349,7 +374,6 @@ export function renderSubCratePreview({ name, images, backLink = null }) {
     const thumbSrc = encodePath(image.thumbnailPath ?? image.path);
     const fullSrc = encodePath(image.path);
     const dateLabel = formatDate(image.dateCreated);
-    const captionSuffix = dateLabel ? ` &mdash; ${escapeHtml(dateLabel)}` : '';
     const errorHtml = image.processingError
       ? `<div class="error">${escapeHtml(image.processingError)}</div>`
       : '';
@@ -373,30 +397,17 @@ export function renderSubCratePreview({ name, images, backLink = null }) {
   </figcaption>
 </figure>`);
 
-    // Previous/next walk this crate's own images, in the order the grid
-    // shows them — still no script: each is just a link to the adjacent
-    // image's own :target. The first and last get a dimmed non-link in
-    // place of the arrow, so the controls never move about between
-    // photos.
-    const prevHtml = index > 0
-      ? `<a class="viewer-nav viewer-prev" href="#viewer-${index - 1}" aria-label="Previous image">&#8249;</a>`
-      : '<span class="viewer-nav viewer-prev is-disabled" aria-hidden="true">&#8249;</span>';
-    const nextHtml = index < images.length - 1
-      ? `<a class="viewer-nav viewer-next" href="#viewer-${index + 1}" aria-label="Next image">&#8250;</a>`
-      : '<span class="viewer-nav viewer-next is-disabled" aria-hidden="true">&#8250;</span>';
-
-    viewers.push(`<div id="${viewerId}" class="viewer">
-  <a class="viewer-backdrop" href="#" aria-label="Close"></a>
-  <a href="#" class="viewer-close" aria-label="Close">&times;</a>
-  ${prevHtml}
-  ${nextHtml}
-  <div class="viewer-content">
-    <img src="${fullSrc}" alt="${escapeHtml(image.name)}" />
-    <p class="viewer-caption">${escapeHtml(image.name)}${captionSuffix} <span class="viewer-position">${index + 1} of ${images.length}</span></p>
-    ${errorHtml}
-    ${exifDetailsHtml}
-  </div>
-</div>`);
+    viewers.push(renderViewer({
+      id: viewerId,
+      src: fullSrc,
+      alt: image.name,
+      caption: image.name,
+      sub: dateLabel,
+      position: `${index + 1} of ${images.length}`,
+      prevId: index > 0 ? `viewer-${index - 1}` : null,
+      nextId: index < images.length - 1 ? `viewer-${index + 1}` : null,
+      extraHtml: [errorHtml, exifDetailsHtml].filter(Boolean).map((h) => `    ${h}`).join('\n'),
+    }));
   });
 
   // Everyone depicted here, each of their photos pointing at the very
@@ -445,17 +456,14 @@ ${viewers.join('\n')}`;
  * Sub-collections with no dated images are listed separately as undated.
  *
  * Also carries a people browser covering the whole collection (see
- * renderPeopleBrowser). Unlike a sub-collection's own page, its
- * thumbnails link straight to the image file rather than to an in-page
- * viewer: the root page holds no images of its own, so every viewer
- * would be a second copy of markup that only exists to be opened once,
- * and a collection-wide set of them is exactly what
- * ROOT_PERSON_THUMBNAIL_LIMIT exists to keep in check.
+ * renderPeopleBrowser). A person's panel lists every photo of them, in
+ * a grid that scrolls rather than growing the page, and each photo
+ * opens a viewer that steps through that person's own set.
  *
  * @param {object} options
  * @param {string} options.name - root dataset name
  * @param {Array<{path: string, imageCount: number, representativeDate: string|null}>} options.subCrates
- * @param {Array<{name: string, total: number, images: Array<{path: string, thumbnailPath: string, name: string, subCollection: string}>}>} [options.people] - collection-wide, already capped and ordered by the caller (see previews.js)
+ * @param {Array<{name: string, total: number, images: Array<{path: string, thumbnailPath: string, name: string, subCollection: string}>}>} [options.people] - collection-wide, ordered by the caller (see previews.js)
  * @returns {string} HTML document
  */
 export function renderRootCratePreview({ name, subCrates, people = [] }) {
@@ -518,16 +526,38 @@ ${undated.map(renderLink).join('\n')}
 </section>`
     : '';
 
-  const { radios, box, panels } = renderPeopleBrowser(people.map((person) => ({
+  // Each person's photos open a viewer that steps through that person's
+  // own set, so "next" means the next photo of them rather than the next
+  // photo in the collection. That means one viewer per (person, photo)
+  // rather than per photo: a photo showing three people appears in three
+  // people's sets, and each needs its own place in each sequence. The
+  // markup is cheap — the bytes are not, and both the thumbnails and the
+  // viewers' own images are lazy, so a browser fetches only what someone
+  // actually scrolls to or opens.
+  const personViewers = [];
+  const { radios, box, panels } = renderPeopleBrowser(people.map((person, personIndex) => ({
     name: person.name,
     total: person.total,
-    thumbs: person.images.map((image) => ({
-      src: encodePath(image.thumbnailPath),
-      href: encodePath(image.path),
-      alt: image.name,
-      caption: image.name,
-      sub: image.subCollection,
-    })),
+    thumbs: person.images.map((image, imageIndex) => {
+      const viewerId = `person-${personIndex}-photo-${imageIndex}`;
+      personViewers.push(renderViewer({
+        id: viewerId,
+        src: encodePath(image.path),
+        alt: image.name,
+        caption: image.name,
+        sub: image.subCollection,
+        position: `${imageIndex + 1} of ${person.images.length}`,
+        prevId: imageIndex > 0 ? `person-${personIndex}-photo-${imageIndex - 1}` : null,
+        nextId: imageIndex < person.images.length - 1 ? `person-${personIndex}-photo-${imageIndex + 1}` : null,
+      }));
+      return {
+        src: encodePath(image.thumbnailPath),
+        href: `#${viewerId}`,
+        alt: image.name,
+        caption: image.name,
+        sub: image.subCollection,
+      };
+    }),
   })));
 
   const body = `${radios}
@@ -538,7 +568,8 @@ ${undated.map(renderLink).join('\n')}
 ${box}
 ${panels}
 ${yearSections}
-${undatedSection}`;
+${undatedSection}
+${personViewers.join('\n')}`;
 
   return page(name, null, body, { peopleCount: people.length });
 }

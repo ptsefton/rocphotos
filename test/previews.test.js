@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createNodeFsAdapter } from '../src/adapters/nodeFs.js';
 import { openNodeSqlite } from '../src/adapters/nodeSqlite.js';
 import { collectPeopleForRootPreview, regeneratePreviews } from '../src/core/previews.js';
-import { PREVIEW_FILE_NAME, ROOT_PERSON_THUMBNAIL_LIMIT } from '../src/core/htmlPreview.js';
+import { PREVIEW_FILE_NAME } from '../src/core/htmlPreview.js';
 import {
   ensureSchema,
   upsertRoCrate,
@@ -91,16 +91,16 @@ describe('collectPeopleForRootPreview', () => {
     expect(jane.images[0].thumbnailPath).toEqual('2025/03/a.jpg');
   });
 
-  it('caps each person at ROOT_PERSON_THUMBNAIL_LIMIT while still reporting the true total', () => {
-    for (let i = 0; i < ROOT_PERSON_THUMBNAIL_LIMIT + 5; i++) {
+  it('lists every photo of a person, not a sample — the panel scrolls instead', () => {
+    for (let i = 0; i < 30; i++) {
       const id = imageEntityId('2025/03', `extra-${i}.jpg`);
       upsertEntity(db, { id, roCrateId: subCrateId, entityType: ENTITY_TYPE_IMAGE, name: `extra-${i}.jpg`, memberOf: subCrateId });
       setEntityFacetValues(db, id, 'people', ['Jane Smith']);
     }
 
     const jane = collectPeopleForRootPreview(db).find((person) => person.name === 'Jane Smith');
-    expect(jane.total).toEqual(ROOT_PERSON_THUMBNAIL_LIMIT + 6);
-    expect(jane.images).toHaveLength(ROOT_PERSON_THUMBNAIL_LIMIT);
+    expect(jane.total).toEqual(31);
+    expect(jane.images).toHaveLength(31);
   });
 });
 

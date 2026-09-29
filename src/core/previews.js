@@ -11,7 +11,6 @@ import { thumbnailPathFor } from './thumbnails.js';
 import { joinPath } from './pathUtils.js';
 import {
   PREVIEW_FILE_NAME,
-  ROOT_PERSON_THUMBNAIL_LIMIT,
   renderRootCratePreview,
   renderSubCratePreview,
   earliestDate,
@@ -19,9 +18,9 @@ import {
 
 /**
  * Everyone depicted anywhere in the collection, in the shape the root
- * preview page wants (see renderRootCratePreview) — each person capped
- * at ROOT_PERSON_THUMBNAIL_LIMIT of their most recent photos, with the
- * true total kept so the page can say what it is not showing.
+ * preview page wants (see renderRootCratePreview) — every photo of each
+ * person, most recent first, since that page now scrolls a person's set
+ * rather than showing a sample of it.
  *
  * Every path is collection-root-relative, which is what the root preview
  * page needs since that is where it sits. A thumbnail path is derived
@@ -38,7 +37,7 @@ export function collectPeopleForRootPreview(db) {
   return listImagesByPerson(db).map(({ name, images }) => ({
     name,
     total: images.length,
-    images: images.slice(0, ROOT_PERSON_THUMBNAIL_LIMIT).map((image) => {
+    images: images.map((image) => {
       const crateDirPath = crateDirPathFromEntityId(image.roCrateId);
       const crateRelativePath = crateRelativeEntityId(image.roCrateId, image.id);
       return {

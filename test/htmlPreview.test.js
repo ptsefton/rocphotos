@@ -262,23 +262,59 @@ describe('people browser', () => {
     expect(html).not.toContain('<script>');
   });
 
-  it('renders the collection-wide browser on the root page, linking each photo to its file', () => {
+  it("opens each of a person's photos in a viewer that steps through that person's own set", () => {
     const html = renderRootCratePreview({
       name: 'Photo Collection',
-      subCrates: [{ path: '2025/03/10', imageCount: 2, representativeDate: '2025-03-10T00:00:00.000Z' }],
+      subCrates: [{ path: '2025/03/10', imageCount: 3, representativeDate: '2025-03-10T00:00:00.000Z' }],
       people: [{
         name: 'Jane Smith',
-        total: 2,
-        images: [{ path: '2025/03/10/a.jpg', thumbnailPath: '2025/03/10/thumbnails/a.jpg.thumb.jpg', name: 'a.jpg', subCollection: '2025/03/10' }],
+        total: 3,
+        images: ['a.jpg', 'b.jpg', 'c.jpg'].map((name) => ({
+          path: `2025/03/10/${name}`,
+          thumbnailPath: `2025/03/10/thumbnails/${name}.thumb.jpg`,
+          name,
+          subCollection: '2025/03/10',
+        })),
       }],
     });
 
     expect(html).toContain('data-name="Jane Smith"');
+    // The thumbnail opens a viewer rather than linking away to the file.
     expect(html).toContain('<img src="2025/03/10/thumbnails/a.jpg.thumb.jpg"');
-    expect(html).toContain('href="2025/03/10/a.jpg"');
-    expect(html).toContain('2025/03/10'); // the sub-collection each photo came from
-    // Says what it is not showing, since the root page caps each person.
-    expect(html).toContain('showing 1 of 2');
+    expect(html).toContain('href="#person-0-photo-0"');
+    expect(html).toContain('<div id="person-0-photo-0" class="viewer">');
+
+    // Next/previous stay within this person's photos, and the viewer
+    // shows the full-size image rather than the thumbnail.
+    const middle = html.slice(html.indexOf('id="person-0-photo-1"'), html.indexOf('id="person-0-photo-2"'));
+    expect(middle).toContain('<img src="2025/03/10/b.jpg"');
+    expect(middle).toContain('href="#person-0-photo-0"');
+    expect(middle).toContain('href="#person-0-photo-2"');
+    expect(middle).toContain('2 of 3');
+    // ...and clicking away from the photo closes it, as on a sub-collection page.
+    expect(middle).toContain('<a class="viewer-backdrop" href="#"');
+  });
+
+  it('lists every photo of a person rather than a sample, in a grid that scrolls', () => {
+    const images = Array.from({ length: 40 }, (unused, i) => ({
+      path: `2025/03/10/p${i}.jpg`,
+      thumbnailPath: `2025/03/10/thumbnails/p${i}.jpg.thumb.jpg`,
+      name: `p${i}.jpg`,
+      subCollection: '2025/03/10',
+    }));
+    const html = renderRootCratePreview({
+      name: 'Photo Collection',
+      subCrates: [],
+      people: [{ name: 'Jane Smith', total: 40, images }],
+    });
+
+    expect(html).toContain('id="person-0-photo-39"');
+    expect(html).toContain('40 photos');
+    expect(html).not.toContain('showing ');
+    // The panel's own grid scrolls, and every thumbnail defers its bytes.
+    expect(html).toContain('class="grid person-panel-grid"');
+    expect(html).toContain('.person-panel-grid { max-height:');
+    expect(html.match(/loading="lazy"/g).length).toBeGreaterThanOrEqual(80);
   });
 
   it('escapes a person name everywhere it is used', () => {
