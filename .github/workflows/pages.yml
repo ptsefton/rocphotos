@@ -33,7 +33,10 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 24, not 20: the index is built on node:sqlite, which does not
+          # exist as a built-in before Node 22 — on 20 every test that
+          # touches the store fails to import at all.
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
