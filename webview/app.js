@@ -2329,6 +2329,17 @@ function switchMode(mode) {
   }
 }
 
+// "Pick folder" goes back to the landing page, which is where the
+// directory picker lives — and only the browser build has one. Under
+// `rocphotos serve` the collection is fixed by the command that started
+// the server, and no Service Worker is registered for this page, so the
+// presence of one is what tells the two run modes apart here.
+async function showPickFolderLinkInTheBrowser() {
+  const registration = await navigator.serviceWorker?.getRegistration?.();
+  if (registration) document.querySelector('#pick-folder-link').hidden = false;
+}
+showPickFolderLinkInTheBrowser();
+
 modeButtonEls.explore.addEventListener('click', () => switchMode('explore'));
 modeButtonEls.people.addEventListener('click', () => switchMode('people'));
 modeButtonEls.scan.addEventListener('click', () => switchMode('scan'));
