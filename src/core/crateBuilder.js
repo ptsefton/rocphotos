@@ -23,7 +23,18 @@ export function loadOrCreateCrate(existingJsonText) {
   // points to when read back (e.g. entity.thumbnail, entity.exifData
   // elements) — purely a read-side convenience, it does not change what
   // gets serialized to disk (still plain JSON-LD references).
-  return new ROCrate(data, { array: true, link: true });
+  const crate = new ROCrate(data, { array: true, link: true });
+  // Bound on every crate, not only the ones currently holding a standoff
+  // region (see addStandoffFaceRegion): RO-Crate's own context defines
+  // `prov` but not `oa`, so without this the `oa:` terms are not compact
+  // IRIs at all — they expand to a literal `oa:hasBody`, silently
+  // unconnected to the Web Annotation vocabulary they are meant to be.
+  // addTermDefinition writes into the existing context object and returns
+  // early if the term already resolves, so a crate read and written back
+  // repeatedly gains it exactly once. An older crate picks it up the next
+  // time anything rewrites it.
+  crate.addTermDefinition('oa', 'http://www.w3.org/ns/oa#');
+  return crate;
 }
 
 export function serializeCrate(crate) {

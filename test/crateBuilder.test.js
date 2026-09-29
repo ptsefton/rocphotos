@@ -19,6 +19,42 @@ import {
 } from '../src/core/crateBuilder.js';
 import { personEntityId, petEntityId } from '../src/core/db/store.js';
 
+describe('loadOrCreateCrate @context', () => {
+  const contextObject = (crate) => JSON.parse(serializeCrate(crate))['@context'].find((entry) => typeof entry === 'object');
+
+  it('binds the oa prefix, so the standoff region terms are real Web Annotation IRIs rather than literal "oa:..."', () => {
+    const crate = loadOrCreateCrate(null);
+
+    expect(contextObject(crate).oa).toEqual('http://www.w3.org/ns/oa#');
+    for (const term of ['oa:Annotation', 'oa:hasBody', 'oa:hasTarget', 'oa:motivatedBy', 'oa:identifying']) {
+      expect(crate.resolveTerm(term)).toEqual(`http://www.w3.org/ns/oa#${term.slice(3)}`);
+    }
+    // prov comes from RO-Crate's own context; this must not have disturbed it.
+    expect(crate.resolveTerm('prov:specializationOf')).toEqual('http://www.w3.org/ns/prov#specializationOf');
+  });
+
+  it('adds it to a crate written before the binding existed', () => {
+    const legacy = JSON.stringify({
+      '@context': ['https://w3id.org/ro/crate/1.2/context', { '@vocab': 'http://schema.org/' }],
+      '@graph': [
+        { '@id': './', '@type': 'Dataset', name: 'old' },
+        { '@id': 'ro-crate-metadata.json', '@type': 'CreativeWork', about: { '@id': './' }, conformsTo: { '@id': 'https://w3id.org/ro/crate/1.2' } },
+      ],
+    });
+
+    expect(contextObject(loadOrCreateCrate(legacy)).oa).toEqual('http://www.w3.org/ns/oa#');
+  });
+
+  it('gains it exactly once however many times a crate is read and written back', () => {
+    let text = serializeCrate(loadOrCreateCrate(null));
+    for (let i = 0; i < 5; i++) text = serializeCrate(loadOrCreateCrate(text));
+
+    const context = JSON.parse(text)['@context'];
+    expect(context).toHaveLength(2);
+    expect(JSON.stringify(context).split('ns/oa#')).toHaveLength(2);
+  });
+});
+
 describe('setDatasetName', () => {
   it('sets the root dataset name only when not already set', () => {
     const crate = loadOrCreateCrate(null);

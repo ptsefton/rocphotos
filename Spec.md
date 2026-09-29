@@ -28,7 +28,16 @@ Coming soon:
 
 ### 2.2 RO-Crate data
 
-Each crate is its own standalone `ro-crate-metadata.json`, with the usual RO-Crate root `Dataset` (`./`) and descriptor:
+Each crate is its own standalone `ro-crate-metadata.json`, with the usual RO-Crate root `Dataset` (`./`) and descriptor, and the same `@context` throughout:
+
+```json
+{ "@context": [
+    "https://w3id.org/ro/crate/1.2/context",
+    { "@vocab": "http://schema.org/",
+      "oa": "http://www.w3.org/ns/oa#" } ] }
+```
+
+`oa` is bound on every crate, whether or not it currently holds a standoff region, because RO-Crate's own context defines `prov` but not `oa` — unbound, the `oa:` terms below would not be compact IRIs at all. A crate written before this gains the binding the next time anything rewrites it.
 
 - **The root crate**, one per collection: lists each sub-collection as a `Dataset` in `hasPart`, and holds `ImageGallery` entities (Albums, Section 3). If the root directory holds images directly (Section 3.1), it holds their `ImageObject` entities too and is the collection's only crate.
 - **Sub-collection crates**, one per sub-collection directory: an `ImageObject` per photo, an `ImageRegion` per tagged face/pet, and the `Person`/`Pet` entity each region points at. A Person/Pet depicted across several sub-collections is duplicated into each, per RO-Crate convention, rather than referenced from one place.
@@ -157,7 +166,7 @@ One entity per reference embedding, `about` the Person it belongs to (absent ent
 
 #### Vocabulary status
 
-The context is RO-Crate 1.2 plus `@vocab: http://schema.org/`. The terms coined here — `regionType`, `xPosition`/`yPosition`, `writtenToFile`, `rating`, `processingError`, `ImageRegion`, `Pet`, `FaceEmbedding`, `embedding`/`embeddingModel`/`sourceImage`/`sourceRegion` — resolve under that fallback rather than being properly defined, and `oa:` is used as a prefix without being bound in the context (unlike `prov:`, which RO-Crate's own context defines). Both are to be settled by the profile in Section 3.5, not by ad-hoc additions.
+`oa:` and `prov:` resolve properly (see the context above). The terms coined here do not: `regionType`, `xPosition`/`yPosition`, `writtenToFile`, `rating`, `processingError`, `ImageRegion`, `Pet`, `FaceEmbedding`, `embedding`/`embeddingModel`/`sourceImage`/`sourceRegion` all fall through to `@vocab`, so they read as `http://schema.org/...` IRIs that schema.org does not define. To be settled by the profile in Section 3.5 rather than by further ad-hoc bindings.
 
 ## 3. Application Behaviour
 
