@@ -346,6 +346,29 @@ export function listEntitiesForRoCrate(driver, roCrateId) {
 }
 
 /**
+ * Every image id in the collection, grouped by the crate it belongs to
+ * and ordered by id within each — which, since an image's id is its
+ * crate directory plus its path, is the same path order a sub-collection
+ * preview page numbers its viewers in (see renderSubCratePreview). That
+ * correspondence is what lets the root page link to an exact photo on
+ * another page rather than only to the page itself.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @returns {Map<string, string[]>} crate id -> image ids, in page order
+ */
+export function listImageIdsByCrate(driver) {
+  const byCrate = new Map();
+  for (const row of driver.all(
+    'SELECT id, ro_crate_id FROM entities WHERE entity_type = ? ORDER BY ro_crate_id, id',
+    [ENTITY_TYPE_IMAGE],
+  )) {
+    if (!byCrate.has(row.ro_crate_id)) byCrate.set(row.ro_crate_id, []);
+    byCrate.get(row.ro_crate_id).push(row.id);
+  }
+  return byCrate;
+}
+
+/**
  * Every Person/Pet depicted anywhere in the collection, by name — what
  * the root crate records as its contextual entities (see
  * crateBuilder.js's syncRootCrateSubjects). Read from the index rather

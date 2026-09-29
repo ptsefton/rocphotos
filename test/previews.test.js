@@ -79,6 +79,10 @@ describe('collectPeopleForRootPreview', () => {
         thumbnailPath: '2025/03/thumbnails/a.jpg.thumb.jpg',
         name: 'a.jpg',
         subCollection: '2025/03',
+        // Where to find this photo on its own folder's page: a.jpg sorts
+        // before b.jpg, so it is that page's first viewer.
+        subCollectionPreview: '2025/03/ro-crate-preview.html',
+        indexInSubCollection: 0,
       }],
     });
   });
@@ -120,6 +124,37 @@ describe('regeneratePreviews', () => {
     expect(rootHtml).toContain('<h2>People</h2>');
     expect(rootHtml).toContain('data-name="Jane Smith"');
     expect(rootHtml).toContain('<img src="2025/03/thumbnails/a.jpg.thumb.jpg"');
+  });
+
+  it("links a person's photo to that same photo on its folder's own page", async () => {
+    await regeneratePreviews({ fsAdapter, db, rootName: 'Photo Collection' });
+
+    const rootHtml = new TextDecoder().decode(await fsAdapter.readFile(PREVIEW_FILE_NAME));
+    const subHtml = new TextDecoder().decode(await fsAdapter.readFile(`2025/03/${PREVIEW_FILE_NAME}`));
+
+    // People are listed in name order, so Bob Jones is person-0 and Jane
+    // Smith person-1; take the link from inside Jane's own viewer, whose
+    // photo is a.jpg.
+    const janesViewer = rootHtml.slice(rootHtml.indexOf('id="person-1-photo-0"'));
+    const link = janesViewer.slice(0, janesViewer.indexOf('</div>'))
+      .match(/href="(2025\/03\/ro-crate-preview\.html#viewer-\d+)"/);
+    expect(link).not.toBeNull();
+    const fragment = link[1].split('#')[1];
+
+    // ...must name a viewer that exists on the page it points at, showing
+    // the same photo. Both pages order by path, which is what makes the
+    // number mean the same thing on each.
+    expect(subHtml).toContain(`<div id="${fragment}" class="viewer">`);
+    const viewer = subHtml.slice(subHtml.indexOf(`id="${fragment}"`));
+    expect(viewer.slice(0, viewer.indexOf('</div>'))).toContain('<img src="a.jpg"');
+  });
+
+  it('offers a way back to the list from a photo', async () => {
+    await regeneratePreviews({ fsAdapter, db, rootName: 'Photo Collection' });
+    const rootHtml = new TextDecoder().decode(await fsAdapter.readFile(PREVIEW_FILE_NAME));
+
+    expect(rootHtml).toContain('Back to the list');
+    expect(rootHtml).toContain('View folder collection');
   });
 
   it('reflects a rename already made in the crates, without re-reading any photo', async () => {

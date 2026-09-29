@@ -160,6 +160,12 @@ const SHARED_STYLE = `
   .viewer-next { right: 1rem; }
   .viewer .viewer-caption { color: #eee; margin: 0; text-align: center; }
   .viewer-position { color: #9a9aa2; font-size: 0.85em; margin-left: 0.4rem; }
+  .viewer-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; justify-content: center; margin: 0; }
+  .viewer-action {
+    color: #eee; background: rgb(255 255 255 / 0.1); border-radius: 8px;
+    padding: 0.35rem 0.8rem; font-size: 0.85rem; font-weight: 600; text-decoration: none;
+  }
+  .viewer-action:hover { background: rgb(255 255 255 / 0.22); }
   .viewer .error { color: #ff8a80; }
   .viewer details.exif { color: #eee; max-width: 90vw; max-height: 18vh; overflow: auto; }
   .viewer details.exif summary { color: #fff; }
@@ -353,6 +359,11 @@ ${scriptHtml}
 `;
 }
 
+// Path order, so viewer numbering does not depend on the caller.
+function images_sortByPath(images) {
+  return [...images].sort((a, b) => a.path.localeCompare(b.path));
+}
+
 /**
  * Renders the static preview page for a sub-collection crate: a thumbnail
  * grid of every image it contains, each opening a full-screen, in-page
@@ -365,7 +376,14 @@ ${scriptHtml}
  * @param {string|null} [options.backLink] - relative path back to the root crate's preview page
  * @returns {string} HTML document
  */
-export function renderSubCratePreview({ name, images, backLink = null }) {
+export function renderSubCratePreview({ name, images: unorderedImages, backLink = null }) {
+  // Sorted by path before anything is numbered, so `#viewer-3` means the
+  // same photo whoever rendered the page. A scan hands these over in
+  // directory order and regeneratePreviews in id order, which used to
+  // number the same folder's viewers differently depending on which had
+  // written the page last — and the root page's "view in folder" links
+  // point at these numbers.
+  const images = [...images_sortByPath(unorderedImages)];
   const figures = [];
   const viewers = [];
 
@@ -540,6 +558,19 @@ ${undated.map(renderLink).join('\n')}
     total: person.total,
     thumbs: person.images.map((image, imageIndex) => {
       const viewerId = `person-${personIndex}-photo-${imageIndex}`;
+      // Two ways out of a photo, beyond closing it: to the folder it
+      // actually lives in (landing on this same photo there, which is
+      // why renderSubCratePreview numbers its viewers by path), and back
+      // to the list of this person's photos, which is where the reader
+      // came from.
+      const folderLink = image.subCollectionPreview
+        ? `<a class="viewer-action" href="${encodePath(image.subCollectionPreview)}#viewer-${image.indexInSubCollection}">View folder collection &rsaquo;</a>`
+        : '';
+      const actions = `    <p class="viewer-actions">
+      <a class="viewer-action" href="#">&lsaquo; Back to the list</a>
+      ${folderLink}
+    </p>`;
+
       personViewers.push(renderViewer({
         id: viewerId,
         src: encodePath(image.path),
@@ -549,6 +580,7 @@ ${undated.map(renderLink).join('\n')}
         position: `${imageIndex + 1} of ${person.images.length}`,
         prevId: imageIndex > 0 ? `person-${personIndex}-photo-${imageIndex - 1}` : null,
         nextId: imageIndex < person.images.length - 1 ? `person-${personIndex}-photo-${imageIndex + 1}` : null,
+        extraHtml: actions,
       }));
       return {
         src: encodePath(image.thumbnailPath),

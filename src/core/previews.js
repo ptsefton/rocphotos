@@ -1,5 +1,6 @@
 import {
   listImagesByPerson,
+  listImageIdsByCrate,
   listRoCrates,
   listEntitiesForRoCrate,
   crateDirPathFromEntityId,
@@ -31,9 +32,13 @@ import {
  * there is exactly when the thumbnail may be the thing that is missing.
  *
  * @param {import('../adapters/nodeSqlite.js').SqliteDriver} db
- * @returns {Array<{name: string, total: number, images: Array<{path: string, thumbnailPath: string, name: string, subCollection: string}>}>}
+ * @returns {Array<{name: string, total: number, images: Array<{path: string, thumbnailPath: string, name: string, subCollection: string, subCollectionPreview: string, indexInSubCollection: number}>}>}
  */
 export function collectPeopleForRootPreview(db) {
+  // Where each photo sits on its own sub-collection's page, so a link
+  // from here can open it there rather than only opening the page.
+  const imageIdsByCrate = listImageIdsByCrate(db);
+
   return listImagesByPerson(db).map(({ name, images }) => ({
     name,
     total: images.length,
@@ -47,6 +52,8 @@ export function collectPeopleForRootPreview(db) {
           : joinPath(crateDirPath, thumbnailPathFor(crateRelativePath)),
         name: image.id.split('/').pop(),
         subCollection: crateDirPath || '.',
+        subCollectionPreview: joinPath(crateDirPath, PREVIEW_FILE_NAME),
+        indexInSubCollection: (imageIdsByCrate.get(image.roCrateId) ?? []).indexOf(image.id),
       };
     }),
   }));
