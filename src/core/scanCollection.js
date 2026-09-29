@@ -12,6 +12,7 @@ import {
   addImageEntity,
   recordedModifiedTime,
   readImageRecord,
+  syncRootCrateSubjects,
 } from './crateBuilder.js';
 import { PREVIEW_FILE_NAME, renderSubCratePreview, renderRootCratePreview, earliestDate } from './htmlPreview.js';
 import { collectPeopleForRootPreview } from './previews.js';
@@ -32,6 +33,7 @@ import {
   upsertFile,
   listEntitiesForRoCrate,
   getRoCrateById,
+  listDepictedSubjects,
 } from './db/store.js';
 
 /**
@@ -74,7 +76,12 @@ export async function bootstrapCollection({ fsAdapter, db, rootName }) {
   if (!(await fsAdapter.exists(CRATE_FILE_NAME))) {
     const rootCrate = loadOrCreateCrate(null);
     setDatasetName(rootCrate, rootName);
-    await fsAdapter.writeFile(CRATE_FILE_NAME, serializeCrate(rootCrate));
+    // The collection-wide Person/Pet entities live in the root crate (see
+  // syncRootCrateSubjects) — rebuilt from the index, so a partial scan
+  // still reflects every sub-collection rather than only the ones it
+  // just walked.
+  syncRootCrateSubjects(rootCrate, listDepictedSubjects(db));
+  await fsAdapter.writeFile(CRATE_FILE_NAME, serializeCrate(rootCrate));
   }
   if (!(await fsAdapter.exists(CONFIG_FILE_NAME))) {
     await fsAdapter.writeFile(CONFIG_FILE_NAME, JSON.stringify({}, null, 2));
@@ -283,6 +290,11 @@ export async function scanCollection({ fsAdapter, db, rootName, subdirs = [], re
     }
   }
 
+  // The collection-wide Person/Pet entities live in the root crate (see
+  // syncRootCrateSubjects) — rebuilt from the index, so a partial scan
+  // still reflects every sub-collection rather than only the ones it
+  // just walked.
+  syncRootCrateSubjects(rootCrate, listDepictedSubjects(db));
   await fsAdapter.writeFile(CRATE_FILE_NAME, serializeCrate(rootCrate));
   const rootHtml = rootImageRecords
     ? renderSubCratePreview({ name: rootName, images: rootImageRecords })

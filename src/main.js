@@ -11,6 +11,7 @@ import {
   addImageEntity,
   recordedModifiedTime,
   readImageRecord,
+  syncRootCrateSubjects,
 } from './core/crateBuilder.js';
 import {
   PREVIEW_FILE_NAME,
@@ -48,6 +49,7 @@ import {
   upsertEntity,
   setEntityFacetValues,
   upsertFile,
+  listDepictedSubjects,
 } from './core/db/store.js';
 // Vite resolves this to the built asset's final URL; sql.js's browser
 // build needs to be told where to find its .wasm file explicitly rather
@@ -321,6 +323,9 @@ async function scanAndBuild(selectedPaths) {
     }
   }
 
+  // See scanCollection.js: the collection-wide Person/Pet entities are
+  // the root crate's own, rebuilt from the index.
+  syncRootCrateSubjects(rootCrate, listDepictedSubjects(indexDb));
   await fsAdapter.writeFile(CRATE_FILE_NAME, serializeCrate(rootCrate));
   const rootHtml = rootImageRecords
     ? renderSubCratePreview({ name: 'Photo Collection', images: rootImageRecords })

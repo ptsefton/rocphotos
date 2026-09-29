@@ -5,11 +5,16 @@ import {
   countSearchResults,
   facetCounts,
   personEntityId,
+  crateEntityId,
+  listDepictedSubjects,
   crateDirPathFromEntityId,
   crateRelativeEntityId,
   ENTITY_TYPE_IMAGE,
 } from '../db/store.js';
-import { CRATE_FILE_NAME, loadOrCreateCrate, serializeCrate, readImageRecord, renamePersonInCrate } from '../crateBuilder.js';
+import {
+  CRATE_FILE_NAME, loadOrCreateCrate, serializeCrate, readImageRecord,
+  renamePersonInCrate, subjectInstanceId, syncRootCrateSubjects,
+} from '../crateBuilder.js';
 import { syncImageIndexFromCrate } from '../scanImage.js';
 import { joinPath } from '../pathUtils.js';
 import { serializeWrites } from '../writeQueue.js';
@@ -127,7 +132,7 @@ export function createPeopleHandler({ mainStore, facesStore, fsAdapter, crateCac
             for (const row of rows) {
               const crate = await loadCrateForEdit(cache, row.ro_crate_id);
               const imagePath = crateRelativeEntityId(row.ro_crate_id, row.id);
-              renamePersonInCrate(crate, imagePath, { sourceId, targetId, targetName, subjectType: 'Person' });
+              renamePersonInCrate(crate, imagePath, { sourceId, sourceName, targetId, targetName, subjectType: 'Person' });
               touchedImageIds.add(row.id);
             }
           }
@@ -141,8 +146,12 @@ export function createPeopleHandler({ mainStore, facesStore, fsAdapter, crateCac
           // Removing it now, rather than leaving it in the crate
           // forever, is what keeps a merge from leaving a dangling,
           // unreferenced Person node behind.
+          const sourceInstanceId = subjectInstanceId(sourceName, 'Person');
           for (const crate of cache.values()) {
             if (crate.getEntity(sourceId)) crate.deleteEntity(sourceId);
+            // Its crate-local instance goes too (see addSubjectInstance):
+            // every image that pointed at it now points at the target's.
+            if (crate.getEntity(sourceInstanceId)) crate.deleteEntity(sourceInstanceId);
           }
         }
 
@@ -161,6 +170,14 @@ export function createPeopleHandler({ mainStore, facesStore, fsAdapter, crateCac
           const imagePath = crateRelativeEntityId(row.ro_crate_id, imageId);
           syncImageIndexFromCrate(mainStore, crateDirPath, imagePath, readImageRecord(crate, imagePath));
         }
+
+        // The root crate names every identity in the collection (see
+        // syncRootCrateSubjects) — after a merge that set has changed,
+        // and nothing else would notice until the next scan. Done after
+        // the index is re-derived above, so it reads the new truth.
+        const rootCrateId = crateEntityId('');
+        const rootCrate = await loadCrateForEdit(cache, rootCrateId);
+        syncRootCrateSubjects(rootCrate, listDepictedSubjects(mainStore));
 
         await saveEditedCrates(cache);
         await persistStore(mainStore);

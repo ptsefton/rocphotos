@@ -16,6 +16,8 @@ import {
   albumMemberIds,
   addStandoffFaceRegion,
   renamePersonInCrate,
+  subjectInstanceId,
+  syncRootCrateSubjects,
 } from '../src/core/crateBuilder.js';
 import { personEntityId, petEntityId } from '../src/core/db/store.js';
 
@@ -550,7 +552,11 @@ describe('addStandoffFaceRegion', () => {
     expect(region.writtenToFile).toEqual([false]);
     expect(region['oa:motivatedBy'][0]['@id']).toEqual('oa:identifying');
     const bodyId = region['oa:hasBody'][0]['@id'];
-    expect(crate.getEntity(bodyId)['prov:specializationOf'][0]['@id']).toEqual(subjectId);
+    // body -> this crate's instance of them -> the shared identity
+    const instanceId = crate.getEntity(bodyId)['prov:specializationOf'][0]['@id'];
+    expect(instanceId).toEqual('#person-JaneSmith');
+    expect(crate.getEntity(instanceId)['prov:specializationOf'][0]['@id']).toEqual(subjectId);
+    expect(crate.getEntity(instanceId).name).toEqual(['Jane Smith']);
   });
 
   it('gives each standoff region on the same image its own id, not colliding with the next', () => {
@@ -778,18 +784,20 @@ describe('removeImageEntity', () => {
 describe('renamePersonInCrate', () => {
   const sourceId = personEntityId('jane smith');
   const targetId = personEntityId('Jane Smith');
+  const renameArgs = { sourceId, sourceName: 'jane smith', targetId, targetName: 'Jane Smith', subjectType: 'Person' };
 
   it('re-points an EXIF-derived region (and the image\'s own about) at the target identity', () => {
     const crate = loadOrCreateCrate(null);
     addImageEntity(crate, { path: 'photo.jpg', exif: { Regions: { RegionList: { Name: 'jane smith', Type: 'Face', Area: { x: 0.5, y: 0.5, w: 0.2, h: 0.2 } } } } });
 
-    const changed = renamePersonInCrate(crate, 'photo.jpg', { sourceId, targetId, targetName: 'Jane Smith', subjectType: 'Person' });
+    const changed = renamePersonInCrate(crate, 'photo.jpg', renameArgs);
 
     expect(changed).toBe(true);
     const record = readImageRecord(crate, 'photo.jpg');
     expect(record.people).toEqual(['Jane Smith']);
     expect(record.regions).toEqual([{ name: 'Jane Smith', type: 'Face', area: { x: 0.5, y: 0.5, w: 0.2, h: 0.2 } }]);
-    expect(crate.getEntity('photo.jpg').about[0]['@id']).toEqual(targetId);
+    expect(crate.getEntity('photo.jpg').about[0]['@id']).toEqual('#person-JaneSmith');
+    expect(crate.getEntity('#person-JaneSmith')['prov:specializationOf'][0]['@id']).toEqual(targetId);
     expect(crate.getEntity(targetId).name).toEqual(['Jane Smith']);
   });
 
@@ -800,7 +808,7 @@ describe('renamePersonInCrate', () => {
       name: 'jane smith', subjectId: sourceId, subjectType: 'Person', box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 },
     });
 
-    renamePersonInCrate(crate, 'photo.jpg', { sourceId, targetId, targetName: 'Jane Smith', subjectType: 'Person' });
+    renamePersonInCrate(crate, 'photo.jpg', renameArgs);
 
     const record = readImageRecord(crate, 'photo.jpg');
     expect(record.people).toEqual(['Jane Smith']);
@@ -810,28 +818,153 @@ describe('renamePersonInCrate', () => {
   it('dedupes the image\'s about array if it somehow already referenced both identities', () => {
     const crate = loadOrCreateCrate(null);
     addImageEntity(crate, { path: 'photo.jpg', exif: {} });
-    crate.addEntity({ '@id': sourceId, '@type': 'Person', name: 'jane smith' }, { replace: true });
-    crate.addEntity({ '@id': targetId, '@type': 'Person', name: 'Jane Smith' }, { replace: true });
-    crate.addValues('photo.jpg', 'about', [{ '@id': sourceId }, { '@id': targetId }]);
+    crate.addEntity({ '@id': '#person-janesmith', '@type': 'Person', name: 'jane smith', 'prov:specializationOf': { '@id': sourceId } }, { replace: true });
+    crate.addEntity({ '@id': '#person-JaneSmith', '@type': 'Person', name: 'Jane Smith', 'prov:specializationOf': { '@id': targetId } }, { replace: true });
+    crate.addValues('photo.jpg', 'about', [{ '@id': '#person-janesmith' }, { '@id': '#person-JaneSmith' }]);
 
-    renamePersonInCrate(crate, 'photo.jpg', { sourceId, targetId, targetName: 'Jane Smith', subjectType: 'Person' });
+    renamePersonInCrate(crate, 'photo.jpg', renameArgs);
 
     expect(crate.getEntity('photo.jpg').about).toHaveLength(1);
-    expect(crate.getEntity('photo.jpg').about[0]['@id']).toEqual(targetId);
+    expect(crate.getEntity('photo.jpg').about[0]['@id']).toEqual('#person-JaneSmith');
   });
 
   it('is a no-op, returning false, for an image that never referenced the source identity', () => {
     const crate = loadOrCreateCrate(null);
     addImageEntity(crate, { path: 'photo.jpg', exif: { Regions: { RegionList: { Name: 'Someone Else', Type: 'Face' } } } });
 
-    const changed = renamePersonInCrate(crate, 'photo.jpg', { sourceId, targetId, targetName: 'Jane Smith', subjectType: 'Person' });
+    const changed = renamePersonInCrate(crate, 'photo.jpg', renameArgs);
 
     expect(changed).toBe(false);
     expect(readImageRecord(crate, 'photo.jpg').people).toEqual(['Someone Else']);
   });
 
+  it('also moves a crate written before instances existed, migrating its reference on the way past', () => {
+    // A scan only rewrites an image whose file changed, so an old-shape
+    // reference straight to the arcp id can persist indefinitely; a
+    // merge that skipped those would silently do nothing for them.
+    const crate = loadOrCreateCrate(JSON.stringify({
+      '@context': ['https://w3id.org/ro/crate/1.2/context', { '@vocab': 'http://schema.org/' }],
+      '@graph': [
+        { '@id': './', '@type': 'Dataset', name: '2005', hasPart: { '@id': 'photo.jpg' } },
+        { '@id': 'ro-crate-metadata.json', '@type': 'CreativeWork', about: { '@id': './' }, conformsTo: { '@id': 'https://w3id.org/ro/crate/1.2' } },
+        { '@id': sourceId, '@type': 'Person', name: 'jane smith' },
+        { '@id': 'photo.jpg#region-0', '@type': 'ImageRegion', name: 'jane smith', regionType: 'Face', about: { '@id': sourceId } },
+        { '@id': 'photo.jpg', '@type': 'ImageObject', name: 'photo.jpg', about: [{ '@id': sourceId }], regions: [{ '@id': 'photo.jpg#region-0' }] },
+      ],
+    }));
+
+    expect(renamePersonInCrate(crate, 'photo.jpg', renameArgs)).toBe(true);
+
+    expect(crate.getEntity('photo.jpg').about.map((ref) => ref['@id'])).toEqual(['#person-JaneSmith']);
+    expect(unwrapId(crate.getEntity('photo.jpg#region-0').about)).toEqual('#person-JaneSmith');
+    expect(readImageRecord(crate, 'photo.jpg').people).toEqual(['Jane Smith']);
+  });
+
   it('is a no-op for an image with no entity yet, rather than throwing', () => {
     const crate = loadOrCreateCrate(null);
-    expect(() => renamePersonInCrate(crate, 'nope.jpg', { sourceId, targetId, targetName: 'Jane Smith', subjectType: 'Person' })).not.toThrow();
+    expect(() => renamePersonInCrate(crate, 'nope.jpg', renameArgs)).not.toThrow();
   });
 });
+
+describe('per-crate Person/Pet instances', () => {
+  it('points an image and its EXIF region at this crate\'s instance, which specializes the shared identity', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'a.jpg', exif: { Regions: { RegionList: { Name: 'Jane Smith', Type: 'Face', Area: { x: 0.3, y: 0.3, w: 0.1, h: 0.1 } } } } });
+
+    expect(crate.getEntity('a.jpg').about[0]['@id']).toEqual('#person-JaneSmith');
+    expect(unwrapId(crate.getEntity('a.jpg#region-0').about)).toEqual('#person-JaneSmith');
+
+    const instance = crate.getEntity('#person-JaneSmith');
+    expect(instance['@type']).toEqual(['Person']);
+    expect(instance.name).toEqual(['Jane Smith']);
+    expect(unwrapId(instance['prov:specializationOf'])).toEqual(personEntityId('Jane Smith'));
+    // The shared identity is still present, so the crate reads standalone.
+    expect(crate.getEntity(personEntityId('Jane Smith')).name).toEqual(['Jane Smith']);
+  });
+
+  it('gives a pet its own instance id space, so a Person and a Pet of the same name never collide', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'a.jpg', exif: { Regions: { RegionList: [
+      { Name: 'Rex', Type: 'Face' }, { Name: 'Rex', Type: 'Pet' },
+    ] } } });
+
+    expect(subjectInstanceId('Rex', 'Person')).toEqual('#person-Rex');
+    expect(subjectInstanceId('Rex', 'Pet')).toEqual('#pet-Rex');
+    expect(crate.getEntity('a.jpg').about.map((ref) => ref['@id']).sort()).toEqual(['#person-Rex', '#pet-Rex']);
+    expect(unwrapId(crate.getEntity('#pet-Rex')['prov:specializationOf'])).toEqual(petEntityId('Rex'));
+  });
+
+  it('shares one instance between every photo in the crate depicting them', () => {
+    const crate = loadOrCreateCrate(null);
+    for (const path of ['a.jpg', 'b.jpg']) {
+      addImageEntity(crate, { path, exif: { Regions: { RegionList: { Name: 'Jane Smith', Type: 'Face' } } } });
+    }
+
+    expect(crate.getEntity('a.jpg').about[0]['@id']).toEqual('#person-JaneSmith');
+    expect(crate.getEntity('b.jpg').about[0]['@id']).toEqual('#person-JaneSmith');
+    const instances = crate.toJSON()['@graph'].filter((e) => e['@id'] === '#person-JaneSmith');
+    expect(instances).toHaveLength(1);
+  });
+
+  it('still reads back the person\'s name through readImageRecord, unchanged by the extra hop', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'a.jpg', exif: { Regions: { RegionList: [
+      { Name: 'Jane Smith', Type: 'Face' }, { Name: 'Rex', Type: 'Pet' },
+    ] } } });
+
+    const record = readImageRecord(crate, 'a.jpg');
+    expect(record.people).toEqual(['Jane Smith']);
+    expect(record.pets).toEqual(['Rex']);
+  });
+
+  it('survives a rescan that preserves a standoff region, keeping the about link on the instance', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'a.jpg', exif: {} });
+    addStandoffFaceRegion(crate, 'a.jpg', {
+      name: 'Bob Jones', subjectId: personEntityId('Bob Jones'), subjectType: 'Person', box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 },
+    });
+    addImageEntity(crate, { path: 'a.jpg', exif: {} }); // rescan, still no EXIF regions
+
+    expect(crate.getEntity('a.jpg').about.map((ref) => ref['@id'])).toEqual(['#person-BobJones']);
+    expect(readImageRecord(crate, 'a.jpg').people).toEqual(['Bob Jones']);
+  });
+});
+
+describe('syncRootCrateSubjects', () => {
+  it('records each identity once and lists it on the root dataset\'s mentions', () => {
+    const crate = loadOrCreateCrate(null);
+    syncRootCrateSubjects(crate, [{ name: 'Jane Smith', subjectType: 'Person' }, { name: 'Rex', subjectType: 'Pet' }]);
+    syncRootCrateSubjects(crate, [{ name: 'Jane Smith', subjectType: 'Person' }, { name: 'Rex', subjectType: 'Pet' }]);
+
+    expect(crate.rootDataset.mentions.map((ref) => ref['@id']).sort()).toEqual([petEntityId('Rex'), personEntityId('Jane Smith')].sort());
+    expect(crate.getEntity(personEntityId('Jane Smith'))['@type']).toEqual(['Person']);
+    expect(crate.getEntity(petEntityId('Rex'))['@type']).toEqual(['Pet']);
+    expect(crate.toJSON()['@graph'].filter((e) => e['@id'] === personEntityId('Jane Smith'))).toHaveLength(1);
+  });
+
+  it('keeps whatever else has been recorded about someone — the reason the root crate holds them at all', () => {
+    const crate = loadOrCreateCrate(null);
+    syncRootCrateSubjects(crate, [{ name: 'Jane Smith', subjectType: 'Person' }]);
+    crate.getEntity(personEntityId('Jane Smith')).birthDate = '1984-02-03';
+
+    syncRootCrateSubjects(crate, [{ name: 'Jane Smith', subjectType: 'Person' }]);
+
+    expect(crate.getEntity(personEntityId('Jane Smith')).birthDate).toEqual(['1984-02-03']);
+  });
+
+  it('drops an identity no longer depicted anywhere, so a merged-away name does not linger', () => {
+    const crate = loadOrCreateCrate(null);
+    syncRootCrateSubjects(crate, [{ name: 'jane smith', subjectType: 'Person' }, { name: 'Jane Smith', subjectType: 'Person' }]);
+
+    syncRootCrateSubjects(crate, [{ name: 'Jane Smith', subjectType: 'Person' }]);
+
+    expect(crate.getEntity(personEntityId('jane smith'))).toBeUndefined();
+    expect(crate.rootDataset.mentions.map((ref) => ref['@id'])).toEqual([personEntityId('Jane Smith')]);
+  });
+});
+
+// Reads a property that may come back as a one-element array under
+// { array: true } (see crateBuilder's own unwrap).
+function unwrapId(value) {
+  return (Array.isArray(value) ? value[0] : value)?.['@id'];
+}

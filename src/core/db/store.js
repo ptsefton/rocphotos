@@ -346,6 +346,26 @@ export function listEntitiesForRoCrate(driver, roCrateId) {
 }
 
 /**
+ * Every Person/Pet depicted anywhere in the collection, by name — what
+ * the root crate records as its contextual entities (see
+ * crateBuilder.js's syncRootCrateSubjects). Read from the index rather
+ * than the crates for the same reason the root preview is: only the
+ * index knows about every sub-collection at once, including those a
+ * given scan run did not touch.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @returns {Array<{name: string, subjectType: 'Person'|'Pet'}>}
+ */
+export function listDepictedSubjects(driver) {
+  return driver
+    .all(
+      `SELECT DISTINCT facet_name, value FROM entity_facets
+       WHERE facet_name IN ('people', 'pets') ORDER BY facet_name, value`,
+    )
+    .map((row) => ({ name: row.value, subjectType: row.facet_name === 'pets' ? 'Pet' : 'Person' }));
+}
+
+/**
  * Every image depicting each person, across the whole collection, most
  * recent first within each person and people in name order — backing the
  * root preview page's people browser (see previews.js), which needs the

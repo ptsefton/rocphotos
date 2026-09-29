@@ -39,8 +39,8 @@ Each crate is its own standalone `ro-crate-metadata.json`, with the usual RO-Cra
 
 `oa` is bound on every crate, whether or not it currently holds a standoff region, because RO-Crate's own context defines `prov` but not `oa` — unbound, the `oa:` terms below would not be compact IRIs at all. A crate written before this gains the binding the next time anything rewrites it.
 
-- **The root crate**, one per collection: lists each sub-collection as a `Dataset` in `hasPart`, and holds `ImageGallery` entities (Albums, Section 3). If the root directory holds images directly (Section 3.1), it holds their `ImageObject` entities too and is the collection's only crate.
-- **Sub-collection crates**, one per sub-collection directory: an `ImageObject` per photo, an `ImageRegion` per tagged face/pet, and the `Person`/`Pet` entity each region points at. A Person/Pet depicted across several sub-collections is duplicated into each, per RO-Crate convention, rather than referenced from one place.
+- **The root crate**, one per collection: lists each sub-collection as a `Dataset` in `hasPart`, holds `ImageGallery` entities (Albums, Section 3), and is where each `Person`/`Pet` in the collection is described — the place a person's own context (relationships, dates, and the rest of Section 1's "coming soon") is meant to accumulate. If the root directory holds images directly (Section 3.1), it holds their `ImageObject` entities too and is the collection's only crate.
+- **Sub-collection crates**, one per sub-collection directory: an `ImageObject` per photo, an `ImageRegion` per tagged face/pet, and — between the two — an *instance* of each `Person`/`Pet` depicted there (below). The shared identity is duplicated into each crate as well, per RO-Crate convention, so a crate reads standalone rather than depending on the root's copy.
 - **The faces crate** (`_rocphotos/faces/ro-crate-metadata.json`): one `FaceEmbedding` entity per confirmed face-recognition reference, linking back to its source `ImageRegion`/Person rather than duplicating image data — a mirror for inspection only. Matching and review query its companion `_rocphotos/faces/faces-index.sqlite` instead. Similar standalone crates may hold other kinds of reference data in future.
 
 `rocphotos-index.sqlite` (Section 3.2) is a read-only, queryable index of the root and sub-collection crates combined; the PCDM `Collection`/`Object` typing lives there, not in the crates. The faces crate and its SQLite file are separate and not folded into it.
@@ -63,9 +63,9 @@ One photo carrying everything this app records: EXIF, keywords, a rating, a titl
   "rating": 4,
   "exifData": [{ "@id": "IMG_0042.jpg#exif-Make" }, { "@id": "IMG_0042.jpg#exif-Model" }],
   "about": [
-    { "@id": "arcp://name,rocphoto/person/JaneSmith" },
-    { "@id": "arcp://name,rocphoto/pet/Rex" },
-    { "@id": "arcp://name,rocphoto/person/BobJones" }
+    { "@id": "#person-JaneSmith" },
+    { "@id": "#pet-Rex" },
+    { "@id": "#person-BobJones" }
   ],
   "regions": [
     { "@id": "IMG_0042.jpg#region-0" },
@@ -90,12 +90,34 @@ One photo carrying everything this app records: EXIF, keywords, a rating, a titl
 
 #### Faces and pets
 
-A Person/Pet id is derived from the name (`arcp://name,rocphoto/person/<NameSlug>`, letters and digits only, case-sensitive — see Section 3.2's People), so the same name is the same entity everywhere, and the node itself is only ever `@id`/`@type`/`name`:
+A Person/Pet id is derived from the name (`arcp://name,rocphoto/person/<NameSlug>`, letters and digits only, case-sensitive — see Section 3.2's People), so the same name is the same entity everywhere. In a sub-collection crate that identity appears twice over: the shared node, and **an instance of them in this crate** which everything else points at.
 
 ```json
-{ "@id": "arcp://name,rocphoto/person/JaneSmith", "@type": "Person", "name": "Jane Smith" }
-{ "@id": "arcp://name,rocphoto/pet/Rex", "@type": "Pet", "name": "Rex" }
+{ "@id": "arcp://name,rocphoto/person/JaneSmith", "@type": "Person",
+  "name": "Jane Smith" }
+
+{ "@id": "#person-JaneSmith", "@type": "Person",
+  "name": "Jane Smith",
+  "prov:specializationOf": { "@id": "arcp://name,rocphoto/person/JaneSmith" } }
 ```
+
+The instance is a bare fragment (`#person-<NameSlug>`, `#pet-<NameSlug>` — their own id spaces, so a Person and a Pet of one name never collide), resolved against the crate itself, and there is exactly one per person per crate however many photos in it depict them. **Every** reference inside a crate goes through it: an image's `about`, an EXIF-derived region's `about`, and a standoff region's body proxy all name the instance, never the `arcp://` id directly.
+
+The point of the hop is that a person is not always known by one name. A sub-collection is usually a slice of time, so its instance is the natural place to record who they were *then* — a maiden name in the 2005 crates and a married name in the 2025 ones, both `prov:specializationOf` one identity, which is what makes them one person to the People tab, the facets and face recognition alike. The same applies to a name that was simply wrong in one place. (Merging two identities currently rewrites the instance names to the surviving one; setting a name per crate deliberately is a future feature, this lays the model down for it.)
+
+The shared node is what the *root* crate holds in full, listed on its root dataset's `mentions`:
+
+```json
+{ "@id": "./", "@type": "Dataset", "name": "Photo Collection",
+  "mentions": [{ "@id": "arcp://name,rocphoto/person/JaneSmith" }] }
+
+{ "@id": "arcp://name,rocphoto/person/JaneSmith", "@type": "Person",
+  "name": "Jane Smith" }
+```
+
+Rebuilt from the index on every scan and after every merge, so it always names exactly the people currently depicted — but only `name` is kept in step, and anything else recorded on the entity is left alone, since that description is the reason the root crate carries them.
+
+A crate written before instances existed points `about` straight at the `arcp://` id. Since a scan only rewrites an image whose file has actually changed, both shapes can sit in one crate indefinitely; everything that reads a person copes with either (the shared node carries `@type` and `name` just as an instance does), and a merge matches either and writes the instance, migrating that reference as it goes. `--reprocess` converts a collection outright.
 
 A region tagged in the photo file itself (MWG, from digiKam/Lightroom/Photos) is rebuilt from EXIF on every rescan, with a stable `#region-N` id. Its area is MWG's own convention: the **centre** point plus width/height, as fractions of the image.
 
@@ -103,7 +125,7 @@ A region tagged in the photo file itself (MWG, from digiKam/Lightroom/Photos) is
 { "@id": "IMG_0042.jpg#region-0", "@type": "ImageRegion",
   "name": "Jane Smith",
   "regionType": "Face",
-  "about": { "@id": "arcp://name,rocphoto/person/JaneSmith" },
+  "about": { "@id": "#person-JaneSmith" },
   "xPosition": 0.35, "yPosition": 0.28, "width": 0.12, "height": 0.16 }
 ```
 
@@ -120,14 +142,14 @@ A region confirmed in this app is a *standoff* annotation instead — recorded w
   "writtenToFile": false }
 
 { "@id": "IMG_0042.jpg#region-standoff-0-body", "@type": "Person",
-  "prov:specializationOf": { "@id": "arcp://name,rocphoto/person/BobJones" } }
+  "prov:specializationOf": { "@id": "#person-BobJones" } }
 ```
 
 `writtenToFile` records whether this region has made it into the photo file's own XMP. Once a rescan finds the same name among the file's real EXIF regions, the standoff region and its body proxy are deleted and the EXIF-derived one takes over.
 
 #### The root crate
 
-Sub-collections and albums, both under the root `Dataset`'s `hasPart`. An album's membership *is* its `hasPart`, in display order, each entry a proxy rather than a direct reference to the image, so an image's appearance in this album could later carry its own caption:
+Sub-collections and albums, both under the root `Dataset`'s `hasPart`. An album's membership *is* its `hasPart`, in display order, each entry a proxy rather than a direct reference to the image, so an image's appearance in this album could later have its own caption:
 
 ```json
 { "@id": "./", "@type": "Dataset", "name": "Photo Collection",
@@ -263,7 +285,7 @@ Routes (not AROCAPI): `POST /albums` (create/update), `GET /albums` (list, `?q=`
 
 **Export** (`src/core/export.js`) copies an album's member files into `_exports/<album-name-slug>/`, preserving each file's collection-relative path — files only, no crate/metadata yet. `_exports/` is excluded from the scan walk. Re-exporting overwrites. Reachable via `rocphotos export-album <directory> <album name>` (CLI) or the web view's "Export \<name\> Album" button (shown only while that album is the active filter).
 
-**Metadata in exported files.** Settings' "Copy metadata into exported files" (`exportWithMetadata`, default off) writes what this app knows — confirmed face/pet regions, keywords, title, caption, rating, as `readImageRecord` has them — into each exported copy via `exiftool` (`writeImageMetadata`), so an export stands on its own in any other photo tool rather than only making sense beside this collection's crates. Copying already carries the original's own EXIF along with the bytes; this adds everything since recorded here but never written into the file. Each value goes to both its XMP and its IPTC home (keywords also to Lightroom's hierarchical extension), since a reader may prefer any one of them and a half-written set would leave a stale value in whichever field wins — confirmed by round-tripping an export back through `scan`. This is the one place the crate's model is written back out as file metadata. Every region goes out in MWG's centre-based form regardless of which shape it had in the crate: Jane Smith's EXIF-derived `xPosition`/`yPosition` pass straight through, while Bob Jones's standoff `xywh=percent:55,30,10,14` (a top-left corner) becomes the centre `0.6, 0.37` — the same normalisation `readImageRecord` does for every other consumer (Section 2.2):
+**Metadata in exported files.** Settings' "Copy metadata into exported files" (`exportWithMetadata`, default off) writes what this app knows — confirmed face/pet regions, keywords, title, caption, rating, as `readImageRecord` has them — into each exported copy via `exiftool` (`writeImageMetadata`), so an export stands on its own in any other photo tool rather than only making sense beside this collection's crates. Copying already carries the original's EXIF along with the bytes; this adds everything since recorded here but never written into the file. Each value goes to both its XMP and its IPTC home (keywords also to Lightroom's hierarchical extension), since a reader may prefer any one of them and a half-written set would leave a stale value in whichever field wins — confirmed by round-tripping an export back through `scan`. This is the one place the crate's model is written back out as file metadata. Every region goes out in MWG's centre-based form regardless of which shape it had in the crate: Jane Smith's EXIF-derived `xPosition`/`yPosition` pass straight through, while Bob Jones's standoff `xywh=percent:55,30,10,14` (a top-left corner) becomes the centre `0.6, 0.37` — the same normalisation `readImageRecord` does for every other consumer (Section 2.2):
 
 ```json
 { "XMP-mwg-rs:RegionInfo": {
@@ -282,7 +304,7 @@ Routes (not AROCAPI): `POST /albums` (create/update), `GET /albums` (list, `?q=`
   "XMP:Rating": 4 }
 ```
 
-Unlike `writeMetadataToFiles`, this needs no warning and no separate opt-in beyond the checkbox: it only ever touches copies the export just made. Needs `exiftool` and a destination the run mode can name on disk (`absolutePathFor`, Node only); without either, the copies still export and the response says what was skipped (`metadata.unsupported`) rather than failing.
+Unlike `writeMetadataToFiles`, this needs no warning and no separate opt-in beyond the checkbox: it only ever touches the export just made. Needs `exiftool` and a destination the run mode can name on disk (`absolutePathFor`, Node only); without either, the copies still export and the response says what was skipped (`metadata.unsupported`) rather than failing.
 
 **Export path.** Settings' "Export path" (`exportPath` in `rocphotos.config.json`) sends exports somewhere else entirely — an absolute path, or one starting with `~`, anywhere on disk; blank keeps the built-in `_exports/`. A configured path *is* the export root (the album's slug directory sits directly under it, with no `_exports/` level inside). Files are read through the collection's own adapter and written through a second one rooted at the configured path (`resolveExportTarget`, `exportFiles`'s `destFsAdapter`), built by the Node run modes only (`createAbsoluteFsAdapter`, which also expands `~`) — the browser tab's File System Access API handle cannot reach outside the granted directory at all, so exporting there with a path set refuses, saying so, rather than silently landing the files somewhere the setting didn't ask for. A relative path is rejected at save time for the same reason: it would save cleanly and then be ignored.
 
@@ -349,22 +371,24 @@ Renaming and merging are one operation, not two: identity is name-derived (`pers
 Renaming "jane smith" to "Jane Smith" rewrites every reference to them in each crate that depicts them — the image's `about`, the region's `about` and its duplicated `name` — and drops the old Person node once nothing points at it:
 
 ```json
-{ "@id": "p.jpg", "about": [{ "@id": "arcp://name,rocphoto/person/janesmith" }] }
-{ "@id": "p.jpg#region-0", "name": "jane smith",
-  "about": { "@id": "arcp://name,rocphoto/person/janesmith" } }
+{ "@id": "p.jpg", "about": [{ "@id": "#person-janesmith" }] }
+{ "@id": "p.jpg#region-0", "name": "jane smith", "about": { "@id": "#person-janesmith" } }
+{ "@id": "#person-janesmith", "@type": "Person", "name": "jane smith",
+  "prov:specializationOf": { "@id": "arcp://name,rocphoto/person/janesmith" } }
 { "@id": "arcp://name,rocphoto/person/janesmith", "@type": "Person", "name": "jane smith" }
 ```
 
 becomes
 
 ```json
-{ "@id": "p.jpg", "about": [{ "@id": "arcp://name,rocphoto/person/JaneSmith" }] }
-{ "@id": "p.jpg#region-0", "name": "Jane Smith",
-  "about": { "@id": "arcp://name,rocphoto/person/JaneSmith" } }
+{ "@id": "p.jpg", "about": [{ "@id": "#person-JaneSmith" }] }
+{ "@id": "p.jpg#region-0", "name": "Jane Smith", "about": { "@id": "#person-JaneSmith" } }
+{ "@id": "#person-JaneSmith", "@type": "Person", "name": "Jane Smith",
+  "prov:specializationOf": { "@id": "arcp://name,rocphoto/person/JaneSmith" } }
 { "@id": "arcp://name,rocphoto/person/JaneSmith", "@type": "Person", "name": "Jane Smith" }
 ```
 
-A standoff region's subject is re-pointed at its body proxy's `prov:specializationOf` instead (Section 2.2), the region node itself being unaware of who it depicts beyond its own `name`.
+A standoff region needs no rewriting of its own: its body proxy points at the instance, so swapping the instance moves the region with it. The root crate's `mentions` is rebuilt afterwards, dropping the merged-away identity.
 
 **Mechanics.** Never touches an original photo file, only crate JSON-LD and the two SQLite indexes, so it behaves identically in every run mode. For each source name not already spelled exactly like `targetName`: pages through every image tagged with it (`searchEntities`/`countSearchResults`, not the default 100-row page), re-points each one's `about` and its regions' `about`/body-proxy `prov:specializationOf` at the target id (`renamePersonInCrate`), and deletes the now-unreferenced source Person node from every crate that held it. Every touched image's facet rows are then re-derived straight from its rewritten crate record (`syncImageIndexFromCrate`) rather than hand-patched, so they can't drift from what the crate now actually says; the source's own now-orphaned `entities` row is deleted once nothing points to it any more. The faces companion index (`reference_faces`, `backfill_undetectable_regions`, `detections.suggested_person_id`/`resolved_person_id`/`rejected_person_ids`) is re-pointed the same way (`mergePersonInFacesStore`), including its own dedup/conflict handling where two rows collide afterwards. Wrapped in one `serializeWrites` call, the same read-modify-write-then-persist shape as `/edit/*` and `/faces/confirm`.
 
@@ -391,7 +415,7 @@ Each region occurrence is also its own `ImageRegion` entity (`<image>#region-<in
 
 **Standoff region data model.** A confirmed face is recorded using the [W3C Web Annotation Vocabulary](https://www.w3.org/TR/annotation-vocab/) (`oa:`, `http://www.w3.org/ns/oa#`) instead of the bespoke shape above — a second, independent shape, not a replacement: EXIF-derived regions (`regionsFromExif`) still use the plain shape; only a region confirmed but not yet written to the file (`addStandoffFaceRegion`) uses this one. `readImageRecord` normalizes both into the same centre-based `{x,y,w,h}` for every other consumer. See Section 2.2 for both shapes side by side.
 
-`oa:hasBody` points at a proxy (`prov:specializationOf` the real Person/Pet), not the shared entity directly — the same indirection Albums use — so this occurrence could later carry its own properties.
+`oa:hasBody` points at a per-region proxy, `prov:specializationOf` this crate's instance of the Person/Pet (which in turn specializes the shared identity) — the same indirection Albums use, so this one sighting could later carry its own properties.
 
 `oa:hasTarget` is a bare `{"@id": ...}` reference: the image's id plus a [Media Fragments](https://www.w3.org/TR/media-frags/) `#xywh=percent:x,y,w,h` fragment — top-left, 0-100%, matching face-api.js's own box convention (converted to MWG's centre convention only when actually written to a file's XMP).
 
