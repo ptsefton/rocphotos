@@ -188,7 +188,7 @@ One entity per reference embedding, `about` the Person it belongs to (absent ent
 
 #### Vocabulary status
 
-Every term resolves. `oa:` and `prov:` are prefixes (see the context above); the terms this app coins, because schema.org has no equivalent — `Pet`, `ImageRegion`, `FaceEmbedding`, `regions`, `regionType`, `xPosition`/`yPosition`, `writtenToFile`, `rating`, `processingError`, `embedding`/`embeddingModel`/`embeddingModelVersion`/`sourceImage`/`sourceRegion` — are bound individually to `https://w3id.org/rocphotos/terms#<term>`. Term definitions rather than a prefix, so the crates are unchanged: a crate still writes `regionType`, and the binding is what stops it reading as a `http://schema.org/` IRI that schema.org does not define. `width` and `height`, which a region also uses, are left as schema.org's own rather than redefined to mean a fraction.
+Every term resolves. `oa:` and `prov:` are prefixes (see the context above); the terms this app coins, because schema.org has no equivalent — `Pet`, `ImageRegion`, `FaceEmbedding`, `regions`, `regionType`, `xPosition`/`yPosition`, `writtenToFile`, `rating`, `processingError`, `embedding`/`embeddingModel`/`embeddingModelVersion`/`sourceImage`/`sourceRegion` — are bound individually to `https://w3id.org/ldac/rocphotos/terms#<term>`. Term definitions rather than a prefix, so the crates are unchanged: a crate still writes `regionType`, and the binding is what stops it reading as a `http://schema.org/` IRI that schema.org does not define. `width` and `height`, which a region also uses, are left as schema.org's own rather than redefined to mean a fraction.
 
 These IRIs are the ones named by the rocphotos MASP profile (Section 3.5), which is where the terms are described.
 

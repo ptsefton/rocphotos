@@ -10,13 +10,6 @@ export const CRATE_FILE_NAME = 'ro-crate-metadata.json';
 // apart.
 const EXIF_TABLE_FIELDS = ['Make', 'Model', 'ImageWidth', 'ImageHeight', 'Orientation', 'LensMake', 'LensModel'];
 
-/**
- * Loads a crate from an existing ro-crate-metadata.json text, or creates a
- * new, empty crate if none was given.
- *
- * @param {string|null} existingJsonText
- * @returns {ROCrate}
- */
 // The vocabulary this application coins, because schema.org has no
 // equivalent — the face/pet region shape, the star rating, the
 // face-recognition reference data. Bound as real term definitions
@@ -33,7 +26,7 @@ const EXIF_TABLE_FIELDS = ['Make', 'Model', 'ImageWidth', 'ImageHeight', 'Orient
 // stretch of using it.
 //
 // See the rocphotos MASP profile, whose rules name these same IRIs.
-const ROCPHOTOS_TERMS_NAMESPACE = 'https://w3id.org/rocphotos/terms#';
+const ROCPHOTOS_TERMS_NAMESPACE = 'https://w3id.org/ldac/rocphotos/terms#';
 const ROCPHOTOS_TERMS = [
   'Pet', 'ImageRegion', 'FaceEmbedding',
   'regions', 'regionType', 'xPosition', 'yPosition', 'writtenToFile',
@@ -41,6 +34,13 @@ const ROCPHOTOS_TERMS = [
   'embedding', 'embeddingModel', 'embeddingModelVersion', 'sourceImage', 'sourceRegion',
 ];
 
+/**
+ * Loads a crate from an existing ro-crate-metadata.json text, or creates a
+ * new, empty crate if none was given.
+ *
+ * @param {string|null} existingJsonText
+ * @returns {ROCrate}
+ */
 export function loadOrCreateCrate(existingJsonText) {
   const data = existingJsonText ? JSON.parse(existingJsonText) : undefined;
   // link: true resolves an {'@id': ...} reference into the full entity it
