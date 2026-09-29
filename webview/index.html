@@ -506,8 +506,8 @@
     <h2>Settings</h2>
     <div id="settings-status"></div>
     <form id="settings-form">
-      <label class="checkbox-label"><input type="checkbox" id="settings-write-metadata" /> Write recognized faces back into photo files</label>
-      <p id="settings-write-metadata-warning">⚠️ This directly modifies your original photo files (via <code>exiftool</code>), with no backup of their previous bytes beyond whatever you already keep yourself. Off by default — only turn on if you understand the risk. Takes effect the next time <code>rocphotos serve</code> is restarted, not immediately.</p>
+      <label class="checkbox-label"><input type="checkbox" id="settings-write-metadata" /> Write metadata into photo files</label>
+      <p id="settings-write-metadata-warning">Writes confirmed faces, and any keyword, title, caption or rating you edit here, into the photo files themselves — so the metadata travels with the photo rather than living only in this collection's crates.<br /><br />⚠️ This directly modifies your original photo files (via <code>exiftool</code>), with no backup of their previous bytes beyond whatever you already keep yourself. Off by default — only turn on if you understand the risk. Takes effect the next time <code>rocphotos serve</code> is restarted, not immediately.</p>
       <label class="field-label" for="settings-export-path">Export path — where "Export Album" writes to. Leave blank to export to <code>_exports/</code> inside the collection. An absolute path (or one starting with <code>~</code>) exports outside the collection instead, and only works from <code>rocphotos serve</code> or the CLI, not a browser tab.</label>
       <input type="text" id="settings-export-path" placeholder="~/Pictures/Exports" autocomplete="off" />
       <label class="checkbox-label"><input type="checkbox" id="settings-export-with-metadata" /> Copy face regions and other metadata into the exported files</label>

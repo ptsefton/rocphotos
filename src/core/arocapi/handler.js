@@ -36,6 +36,7 @@ import {
   albumMemberIds,
 } from '../crateBuilder.js';
 import { loadEntityFromCrate, loadRawCrate } from '../entityCrate.js';
+import { rescanImageMetadata } from '../scanImage.js';
 import { moveToTrash } from '../trash.js';
 import { joinPath } from '../pathUtils.js';
 import { serializeWrites } from '../writeQueue.js';
@@ -150,10 +151,11 @@ async function persistStore(store) {
  * @param {import('../fsAdapter.js').FsAdapter} deps.fsAdapter
  * @param {Map<string, import('ro-crate').ROCrate>} [deps.crateCache] - the long-lived read cache below; accepted rather than always created fresh so another writer of the same crate files (see faces/handler.js's /confirm route) can share and keep it in sync too. Defaults to a private one when not given (e.g. in tests, or the browser SW's per-request handler — see src/sw.js).
  * @param {(absolutePath: string) => import('../fsAdapter.js').FsAdapter} [deps.createAbsoluteFsAdapter] - builds an adapter rooted at an absolute path anywhere on disk, for exporting an album outside the collection (Settings' "Export path" — see the /albums/{id}/export route). Supplied only by the Node-backed run modes, which have unrestricted filesystem access; absent in the browser SW, whose granted directory handle cannot reach outside itself.
- * @param {(absolutePath: string, metadata: object) => Promise<void>} [deps.writeImageMetadata] - writes an image record's regions/keywords/title/caption/rating into a file via `exiftool` (src/adapters/exiftoolWriteback.js), for Settings' "Copy metadata into exported files". Supplied only where exiftool can actually be run, the same way the faces handler's own writeFaceRegion is; its absence just means an export copies the files without adding anything to them.
+ * @param {(absolutePath: string, metadata: object) => Promise<void>} [deps.writeImageMetadata] - writes an image record's regions/keywords/title/caption/rating into a file via `exiftool` (src/adapters/exiftoolWriteback.js). Used for two different things: copying metadata into exported *copies* (always allowed, see the export route), and writing an edit back into the *original* (only with deps.writeBackEnabled). Supplied only where exiftool can actually be run, the same way the faces handler's own writeFaceRegion is.
+ * @param {boolean} [deps.writeBackEnabled] - this collection's own opt-in to modifying original photo files (config.js's loadWriteMetadataToFilesSetting). Defaults to false, so a caller that forgets to pass it fails safe rather than silently editing originals.
  * @returns {(request: {method: string, path: string, query?: object, body?: object}) => Promise<{status: number, headers: object, body: string|Uint8Array}>}
  */
-export function createHandler({ store, fsAdapter, crateCache = new Map(), createAbsoluteFsAdapter = null, writeImageMetadata = null }) {
+export function createHandler({ store, fsAdapter, crateCache = new Map(), createAbsoluteFsAdapter = null, writeImageMetadata = null, writeBackEnabled = false }) {
 
   // A short-lived, per-edit-request cache of crates being written to —
   // deliberately not the same long-lived crateCache the read routes
@@ -183,6 +185,46 @@ export function createHandler({ store, fsAdapter, crateCache = new Map(), create
       // one, so the very next read reflects the edit without an
       // avoidable extra parse of the file it was just built from.
       crateCache.set(roCrateId, crate);
+    }
+  }
+
+  // Writes an edit back into the original photo file, when the
+  // collection has opted in (Settings' "Write metadata into photo
+  // files") and exiftool is actually available here. The same
+  // wholesale write the export feature uses, pointed at the original
+  // rather than a copy — the crate's record is the complete truth about
+  // the image by this point, so there is nothing to merge.
+  //
+  // Best-effort, exactly like the faces handler's own write-back: the
+  // edit has already succeeded in the crate and the index by the time
+  // this runs, and a failure here must not undo it or fail the request.
+  // Returns a message to report alongside the edit, or null.
+  //
+  // Re-reads the file afterwards (rescanImageMetadata) so the crate's
+  // recorded modification time matches the file it just wrote —
+  // otherwise the very next scan would see every edited file as changed
+  // and reprocess it.
+  async function writeEditToOriginalFile(row, crate, crateRelativeId) {
+    if (!writeBackEnabled || !writeImageMetadata || !fsAdapter.absolutePathFor) return null;
+    const crateDirPath = crateDirPathFromEntityId(row.ro_crate_id);
+    const record = readImageRecord(crate, crateRelativeId);
+    if (!record) return null;
+    const exifByName = Object.fromEntries((record.exifEntries ?? []).map((entry) => [entry.name, entry.value]));
+    try {
+      await writeImageMetadata(fsAdapter.absolutePathFor(joinPath(crateDirPath, crateRelativeId)), {
+        regions: record.regions ?? [],
+        keywords: record.keywords ?? [],
+        title: record.title ?? null,
+        description: record.description ?? null,
+        rating: record.rating ?? null,
+        imageWidth: Number(exifByName.ImageWidth) || null,
+        imageHeight: Number(exifByName.ImageHeight) || null,
+      });
+      await rescanImageMetadata(fsAdapter, store, crateDirPath, crate, crateRelativeId);
+      return null;
+    } catch (err) {
+      console.error(`Could not write metadata into ${row.id}: ${err.message}`);
+      return { id: row.id, message: `edited, but its metadata could not be written into the file: ${err.message}` };
     }
   }
 
@@ -387,6 +429,8 @@ export function createHandler({ store, fsAdapter, crateCache = new Map(), create
           for (const keyword of toRemove) keywords.delete(keyword);
           setImageKeywords(crate, crateRelativeId, [...keywords]);
           setEntityFacetValues(store, id, 'keyword', [...keywords]);
+          const writeError = await writeEditToOriginalFile(row, crate, crateRelativeId);
+          if (writeError) errors.push(writeError);
           updated.push(id);
         }
 
@@ -419,6 +463,8 @@ export function createHandler({ store, fsAdapter, crateCache = new Map(), create
           const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
           setImageRating(crate, crateRelativeId, rating);
           setEntityFacetValues(store, id, 'rating', rating !== null ? [String(rating)] : []);
+          const writeError = await writeEditToOriginalFile(row, crate, crateRelativeId);
+          if (writeError) errors.push(writeError);
           updated.push(id);
         }
 
@@ -450,6 +496,8 @@ export function createHandler({ store, fsAdapter, crateCache = new Map(), create
           // index should record that resolved value, not a blank one.
           const updatedTitle = readImageRecord(crate, crateRelativeId)?.title ?? row.title;
           upsertEntityFromRow(row, { title: updatedTitle });
+          const writeError = await writeEditToOriginalFile(row, crate, crateRelativeId);
+          if (writeError) errors.push(writeError);
           updated.push(id);
         }
 
@@ -478,6 +526,8 @@ export function createHandler({ store, fsAdapter, crateCache = new Map(), create
           const crateRelativeId = crateRelativeEntityId(row.ro_crate_id, id);
           setImageDescription(crate, crateRelativeId, description);
           upsertEntityFromRow(row, { description });
+          const writeError = await writeEditToOriginalFile(row, crate, crateRelativeId);
+          if (writeError) errors.push(writeError);
           updated.push(id);
         }
 

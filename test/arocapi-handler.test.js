@@ -16,6 +16,7 @@ import {
   ENTITY_TYPE_IMAGE,
   ENTITY_TYPE_PERSON,
   ENTITY_TYPE_PET,
+  listFacetValuesForEntity,
 } from '../src/core/db/store.js';
 import { loadOrCreateCrate, serializeCrate, addImageEntity, addSubCrateReference, CRATE_FILE_NAME } from '../src/core/crateBuilder.js';
 import { createFixtureTree, removeFixtureTree } from './helpers/tempDir.js';
@@ -104,6 +105,85 @@ beforeEach(async () => {
   upsertFile(db, { id: undatedId, entityId: undatedId, filename: 'undated.jpg', mediaType: 'image/jpeg', size: 16, relativePath: undatedId });
 
   handleRequest = createHandler({ store: db, fsAdapter });
+});
+
+describe('writing an edit back into the original file', () => {
+  // The collection's own opt-in (Settings' "Write metadata into photo
+  // files"); exiftool itself is stubbed, since what matters here is
+  // whether it is called at all, and with what.
+  function handlerWith({ writeBackEnabled }) {
+    const written = [];
+    const handler = createHandler({
+      store: db,
+      fsAdapter: createNodeFsAdapter(currentRoot),
+      writeBackEnabled,
+      writeImageMetadata: async (absolutePath, metadata) => written.push({ absolutePath, metadata }),
+    });
+    return { handler, written };
+  }
+
+  it('writes the edit into the photo when the collection has opted in', async () => {
+    const { handler, written } = handlerWith({ writeBackEnabled: true });
+
+    await handler({ method: 'POST', path: '/edit/keywords', body: { ids: ['2025/03/10/photo.jpg'], add: ['sunset'] } });
+
+    expect(written).toHaveLength(1);
+    expect(written[0].absolutePath).toEqual(`${currentRoot}/2025/03/10/photo.jpg`);
+    expect(written[0].metadata.keywords).toContain('sunset');
+  });
+
+  it.each([
+    ['/edit/rating', { rating: 4 }],
+    ['/edit/title', { title: 'A new title' }],
+    ['/edit/description', { description: 'A new caption' }],
+  ])('writes it for %s too — one setting, every kind of edit', async (path, extra) => {
+    const { handler, written } = handlerWith({ writeBackEnabled: true });
+
+    await handler({ method: 'POST', path, body: { ids: ['2025/03/10/photo.jpg'], ...extra } });
+
+    expect(written).toHaveLength(1);
+  });
+
+  it('leaves the original file completely alone when the collection has not opted in', async () => {
+    const { handler, written } = handlerWith({ writeBackEnabled: false });
+
+    const res = await handler({ method: 'POST', path: '/edit/keywords', body: { ids: ['2025/03/10/photo.jpg'], add: ['sunset'] } });
+
+    expect(written).toEqual([]);
+    // The edit itself still happened, in the crate and the index.
+    expect(JSON.parse(res.body).updated).toEqual(['2025/03/10/photo.jpg']);
+    expect(listFacetValuesForEntity(db, '2025/03/10/photo.jpg', 'keyword')).toContain('sunset');
+  });
+
+  it('defaults to not writing, so a caller that forgets the opt-in cannot modify originals', async () => {
+    const written = [];
+    const handler = createHandler({
+      store: db,
+      fsAdapter: createNodeFsAdapter(currentRoot),
+      writeImageMetadata: async (...args) => written.push(args),
+    });
+
+    await handler({ method: 'POST', path: '/edit/keywords', body: { ids: ['2025/03/10/photo.jpg'], add: ['sunset'] } });
+
+    expect(written).toEqual([]);
+  });
+
+  it('reports a failed file write without failing the edit, which has already happened', async () => {
+    const handler = createHandler({
+      store: db,
+      fsAdapter: createNodeFsAdapter(currentRoot),
+      writeBackEnabled: true,
+      writeImageMetadata: async () => { throw new Error('exiftool exploded'); },
+    });
+
+    const res = await handler({ method: 'POST', path: '/edit/keywords', body: { ids: ['2025/03/10/photo.jpg'], add: ['sunset'] } });
+
+    expect(res.status).toEqual(200);
+    const result = JSON.parse(res.body);
+    expect(result.updated).toEqual(['2025/03/10/photo.jpg']);
+    expect(result.errors[0].message).toMatch(/could not be written into the file/);
+    expect(listFacetValuesForEntity(db, '2025/03/10/photo.jpg', 'keyword')).toContain('sunset');
+  });
 });
 
 describe('GET /capabilities', () => {

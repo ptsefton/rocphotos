@@ -226,7 +226,7 @@ Beyond that, a collection may contain directories or files that should never be 
 
 Each is a list of regular expressions matched against a directory's or file's own name, at any depth. An excluded file is treated as if it did not exist. `excludeDirectories`, if present, replaces the `.*` default rather than adding to it; `excludeFiles` has no default. Read through the same filesystem interface as everything else, so it's honoured identically by the CLI and the browser SPA.
 
-The same file holds `writeMetadataToFiles` (boolean, default `false`) — the opt-in for writing confirmed faces back to photo files (Face Recognition, below) — plus `exportPath` (string, default none) and `exportWithMetadata` (boolean, default `false`), which say where album exports land and whether this app's own metadata is written into them (Albums, below). All are editable via the Settings screen (Section 4.1) as well as by hand.
+The same file holds `writeMetadataToFiles` (boolean, default `false`) — the opt-in for writing metadata into the photo files themselves: confirmed faces (Face Recognition, below) and any keyword, title, caption or rating edited in the app (Editing, below) — plus `exportPath` (string, default none) and `exportWithMetadata` (boolean, default `false`), which say where album exports land and whether this app's own metadata is written into them (Albums, below). All are editable via the Settings screen (Section 4.1) as well as by hand.
 
 #### Loose Images in the Collection Root
 
@@ -257,7 +257,9 @@ A cleared value is removed from the entity rather than written as an empty one, 
 
 (the same photo as Section 2.2, with its keywords, rating and caption all cleared; `title` falls back to the filename rather than disappearing.)
 
-An edit writes directly to the crate and the index, reflected immediately (no rescan needed) — the read routes' crate cache is updated in the same step. A rescan of an unchanged file leaves an edit alone; `--reprocess` overwrites it from EXIF. Writing an edit back to the original file itself is not yet implemented (Section 2's backup mechanism is still undecided).
+An edit writes directly to the crate and the index, reflected immediately (no rescan needed) — the read routes' crate cache is updated in the same step. A rescan of an unchanged file leaves an edit alone; `--reprocess` overwrites it from EXIF.
+
+**Into the file too, on request.** With `writeMetadataToFiles` on (Section 3.1), an edit is also written into the photo itself via `exiftool` — the same wholesale `writeImageMetadata` the export feature uses, pointed at the original rather than a copy, so one switch covers both a confirmed face and an edited keyword, title, caption or rating. Best-effort and last, exactly like the faces write-back: the edit has already succeeded in the crate and the index, so a failure here is reported alongside it rather than undoing it. The file is re-read afterwards (`rescanImageMetadata`) to keep its recorded modification time in step, or the next scan would see every edited file as changed. Off by default, and it still modifies originals with no backup — Section 2's backup mechanism remains undecided, which is the reason for the warning on the setting rather than for the feature's absence.
 
 Face recognition (below) finds and confirms people automatically, instead of relying only on manual tagging in another tool.
 

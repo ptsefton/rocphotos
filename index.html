@@ -145,8 +145,8 @@
       <h2>Settings</h2>
       <p class="hint">The first applies to this browser; the second is saved with the collection itself.</p>
       <label class="check"><input type="checkbox" id="always-rescan" /> <span>Always process everything on open</span></label>
-      <label class="check"><input type="checkbox" id="write-metadata-to-files" disabled /> <span>Write recognized faces back into photo files</span></label>
-      <p id="write-metadata-warning">⚠️ This directly modifies your original photo files (via <code>exiftool</code>), with no backup of their previous bytes beyond whatever you already keep yourself. Off by default — only turn on if you understand the risk. This setting is saved per collection, in that collection's own <code>rocphotos.config.json</code>.</p>
+      <label class="check"><input type="checkbox" id="write-metadata-to-files" disabled /> <span>Write metadata into photo files</span></label>
+      <p id="write-metadata-warning">Writes confirmed faces, and any keyword, title, caption or rating you edit, into the photo files themselves. ⚠️ This directly modifies your original photo files (via <code>exiftool</code>), with no backup of their previous bytes beyond whatever you already keep yourself. Off by default — only turn on if you understand the risk. This setting is saved per collection, in that collection's own <code>rocphotos.config.json</code>.</p>
       <p id="write-metadata-hint">Open a directory below to change this setting for that collection.</p>
     </section>
 

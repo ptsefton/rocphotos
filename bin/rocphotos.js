@@ -475,6 +475,17 @@ async function serve(rootDir, { port = 8420 } = {}) {
   if (!exiftoolAvailable) {
     console.warn('Warning: the `exiftool` binary was not found — confirming a recognized face will not be able to write it back into the photo file, and an export cannot write metadata into the exported copies.');
   }
+  // Read once at startup, the same way exiftoolAvailable is — a change
+  // made via the Settings screen while this server is already running
+  // takes effect on its next restart, not immediately. Off by default,
+  // for a collection with no config file at all (see
+  // loadWriteMetadataToFilesSetting in config.js): a --fresh install or
+  // one scanned before this setting existed never writes to original
+  // files until someone explicitly turns it on.
+  const writeBackEnabled = await loadWriteMetadataToFilesSetting(fsAdapter);
+  if (exiftoolAvailable && !writeBackEnabled) {
+    console.warn('Note: writing metadata into photo files is turned off for this collection (see Settings) — confirming a face, or editing keywords, title, caption or rating, still works as crate-only metadata until it is turned on.');
+  }
   const handleRequest = createHandler({
     store,
     fsAdapter,
@@ -487,6 +498,10 @@ async function serve(rootDir, { port = 8420 } = {}) {
     // so it is left out entirely when that is missing, which the export
     // route reports rather than failing over.
     writeImageMetadata: exiftoolAvailable ? writeImageMetadata : null,
+    // Editing a photo's keywords/title/caption/rating writes them into
+    // the original file too, but only with this collection's own opt-in
+    // — the same switch the faces handler's write-back uses.
+    writeBackEnabled,
   });
   const handleAdminRequest = createAdminHandler({
     db: store,
@@ -501,17 +516,6 @@ async function serve(rootDir, { port = 8420 } = {}) {
   const facesStore = openNodeSqlite(facesDbPath);
   ensureFacesSchema(facesStore);
 
-  // Read once at startup, the same way exiftoolAvailable is — a change
-  // made via the Settings screen while this server is already running
-  // takes effect on its next restart, not immediately. Off by default,
-  // for a collection with no config file at all (see
-  // loadWriteMetadataToFilesSetting in config.js): a --fresh install or
-  // one scanned before this setting existed never writes to original
-  // files until someone explicitly turns it on.
-  const writeBackEnabled = await loadWriteMetadataToFilesSetting(fsAdapter);
-  if (exiftoolAvailable && !writeBackEnabled) {
-    console.warn('Note: writing recognized faces back into photo files is turned off for this collection (see Settings) — confirming a face will still succeed, as crate-only metadata, until it is turned on.');
-  }
   const handleFacesRequest = createFacesHandler({
     mainStore: store,
     facesStore,
