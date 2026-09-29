@@ -59,6 +59,11 @@ function serveWebviewPlugin() {
 }
 
 export default defineConfig({
+  // A GitHub Pages project site is served under its repo name, so the
+  // published build needs that prefix baked in; everything else (dev,
+  // tests, a local preview) stays at the root. Set by the Pages
+  // workflow rather than hardcoded, so the same config builds either.
+  base: process.env.ROCPHOTOS_BASE || '/',
   plugins: [serveWebviewPlugin()],
   build: {
     rollupOptions: {

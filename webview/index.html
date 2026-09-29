@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect x=%274%27 y=%279%27 width=%2724%27 height=%2718%27 rx=%273%27 fill=%27%231f5fbf%27/%3E%3Crect x=%278%27 y=%275%27 width=%2716%27 height=%273%27 rx=%271.5%27 fill=%27%237aa7ff%27/%3E%3Ccircle cx=%2716%27 cy=%2718%27 r=%275%27 fill=%27%23fff%27/%3E%3C/svg%3E" />
   <title>RO-Crate Photo Browser</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 0; color: #222; display: flex; flex-direction: column; height: 100vh; }
@@ -269,6 +270,162 @@
     #viewer-prev:disabled, #viewer-next:disabled { opacity: 0.25; cursor: default; }
     #viewer-prev { left: 1rem; }
     #viewer-next { right: 1rem; }
+
+    /* ---------------------------------------------------------------
+       Theme layer. Design tokens plus a restyle of the app chrome,
+       appended rather than woven through the rules above so that every
+       selector app.js depends on stays exactly where it was. Modelled
+       on the chordpro book builder's look (ptsefton.com), including its
+       light/dark tokens.
+
+       The full-screen overlays — the image viewer, the faces review
+       screen, the face-context view — are deliberately left dark in
+       both schemes: they are lightboxes, and a photo should be looked
+       at against a neutral dark ground whatever the rest is doing.
+       ---------------------------------------------------------------- */
+    :root {
+      --bg: #f6f6f4;
+      --panel: #ffffff;
+      --panel-2: #fafaf8;
+      --ink: #16161a;
+      --muted: #62626b;
+      --border: #d9d9d4;
+      --accent: #1f5fbf;
+      --accent-ink: #ffffff;
+      --accent-soft: #eaf1fc;
+      --error: #b3261e;
+      --warn: #8a5a00;
+      --warn-bg: #fff6e0;
+      --ok: #1d6b35;
+      --ok-bg: #e7f4ea;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --radius: 10px;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #121214;
+        --panel: #1b1b1f;
+        --panel-2: #222227;
+        --ink: #ececef;
+        --muted: #a0a0aa;
+        --border: #34343b;
+        --accent: #7aa7ff;
+        --accent-ink: #0b1020;
+        --accent-soft: #1d2740;
+        --error: #ff8a80;
+        --warn: #f0c060;
+        --warn-bg: #2e2412;
+        --ok: #7bd88f;
+        --ok-bg: #16281b;
+        color-scheme: dark;
+      }
+    }
+
+    body { background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    h1, h2, h3 { color: var(--ink); }
+
+    /* Tabs */
+    #mode-bar { background: var(--panel); border-bottom: 1px solid var(--border); padding: 0.55rem 1rem; gap: 0.35rem; }
+    .mode-button { border: 1px solid transparent; border-radius: 999px; padding: 0.35rem 0.95rem; font-weight: 600; color: var(--muted); background: none; }
+    .mode-button:hover { background: var(--panel-2); color: var(--ink); }
+    .mode-button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+    /* Shell */
+    #sidebar { background: var(--panel-2); border-right: 1px solid var(--border); }
+    .sidebar-section > summary, #albums h2, .facet-group h2 { color: var(--muted); font-weight: 600; letter-spacing: 0.04em; }
+    .nav-all-button, .tree-node-button, .album-row, .facet-value { border-radius: 6px; color: inherit; }
+    .nav-all-button:hover, .tree-node-button:hover, .album-row:hover, .facet-value:hover { background: var(--accent-soft); }
+    .nav-all-button.active, .tree-node-button.active, .album-row.active, .facet-value.active { background: var(--accent); color: var(--accent-ink); }
+    .tree-node-count, .facet-value .count, .tree-row .image-count { color: var(--muted); }
+    .tree-node-button.active .tree-node-count, .facet-value.active .count { color: var(--accent-ink); opacity: 0.75; }
+    #status { color: var(--muted); }
+
+    /* Buttons: one family, two weights */
+    #select-all, #recognize-faces-button, #new-album-button, #export-album-button,
+    #overview-controls button, #people-controls #people-refresh {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.35rem 0.85rem; font-size: 0.85rem; font-weight: 600; color: var(--ink);
+    }
+    #select-all:hover, #recognize-faces-button:hover, #new-album-button:hover,
+    #overview-controls button:hover, #people-controls #people-refresh:hover { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
+    #export-album-button { border-color: var(--accent); color: var(--accent); }
+    #export-album-button:hover { background: var(--accent-soft); }
+    #people-controls button, #settings-save, #settings-regenerate-previews, #overview-process {
+      background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent);
+      border-radius: 8px; padding: 0.4rem 1rem; font-size: 0.85rem; font-weight: 600;
+    }
+    #people-controls button:disabled, #settings-regenerate-previews:disabled,
+    #overview-controls button:disabled, #recognize-faces-button:disabled { opacity: 0.5; }
+
+    /* Inputs */
+    #people-filter, #settings-form textarea, #settings-form input[type="text"],
+    #keyword-input, #person-input, #new-album-name, #new-album-description, #album-picker-input {
+      background: var(--panel-2); color: var(--ink); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.45rem 0.6rem; font-size: 0.85rem;
+    }
+    #people-filter:focus, #settings-form textarea:focus, #settings-form input[type="text"]:focus,
+    #keyword-input:focus, #person-input:focus, #new-album-name:focus, #album-picker-input:focus {
+      outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent);
+    }
+
+    /* Panels on the non-Explore screens */
+    #overview-section, #settings-form, #people-list, #people-screen #people-status,
+    #settings-previews-note + #settings-regenerate-previews { max-width: 46rem; }
+    #overview-tree, #people-list {
+      background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 0.6rem 0.9rem;
+    }
+    #admin-status, #settings-status, #people-status,
+    #settings-previews-note, #settings-previews-status, #settings-export-with-metadata-note,
+    #settings-form label.field-label { color: var(--muted); }
+    #settings-write-metadata-warning { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); border-radius: 8px; }
+    .person-row { border-bottom-color: var(--border); }
+    .person-row .person-name { color: var(--accent); }
+    .person-row .person-image-count { color: var(--muted); }
+    .status-badge { font-weight: 600; }
+    .status-badge.not-scanned { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+    .status-badge.out-of-date { background: var(--warn-bg); color: var(--warn); }
+    .status-badge.up-to-date { background: var(--ok-bg); color: var(--ok); }
+    .status-badge.invalid { background: #fbdcdc; color: #8a1c1c; }
+
+    /* Photo grid */
+    #grid { gap: 0.9rem; }
+    figure { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.5rem; transition: border-color 0.12s, box-shadow 0.12s; }
+    figure:hover { border-color: var(--accent); box-shadow: 0 2px 10px rgb(0 0 0 / 0.07); }
+    figure img { height: 132px; border-radius: 6px; background: var(--panel-2); }
+    figcaption { color: var(--muted); }
+    .select-checkbox { background: var(--panel); border: 1px solid var(--border); border-radius: 5px; }
+
+    /* Selection bar and chips */
+    #selection-bar { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: var(--radius); }
+    #selection-bar button { background: var(--accent); color: var(--accent-ink); border-radius: 8px; font-weight: 600; }
+    #selection-bar button.danger { background: var(--error); }
+    .keyword-chip { background: var(--accent-soft); border-color: var(--accent); border-radius: 999px; }
+    .keyword-chip button { color: var(--muted); }
+    .keyword-suggestion, .album-picker-option { background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; color: var(--ink); }
+    .album-picker-option { border-radius: 8px; }
+    .keyword-suggestion:hover, .album-picker-option:hover { background: var(--accent-soft); border-color: var(--accent); }
+    #keyword-suggestions-label, #person-suggestions-label { color: var(--muted); font-weight: 600; }
+
+    /* Dialogs */
+    dialog#keyword-dialog, dialog#person-dialog, dialog#new-album-dialog, dialog#album-picker-dialog {
+      background: var(--panel); color: var(--ink); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.1rem 1.3rem; box-shadow: 0 10px 40px rgb(0 0 0 / 0.3);
+    }
+    #keyword-dialog p, #person-dialog p, #new-album-dialog p, #album-picker-dialog p { color: var(--ink); font-weight: 600; }
+    #keyword-dialog-submit, #person-dialog-submit, #new-album-dialog-submit, #keyword-add-button {
+      background: var(--accent); border: 1px solid var(--accent); color: var(--accent-ink); font-weight: 600; border-radius: 8px;
+    }
+    #keyword-dialog-cancel, #person-dialog-cancel, #new-album-dialog-cancel, #album-picker-cancel {
+      background: transparent; border: 1px solid var(--border); color: var(--ink); border-radius: 8px;
+    }
+
+    /* The lightboxes keep their own dark ground; only the accent follows the theme. */
+    .face-card-actions button:hover, .face-match-thumb-actions button:hover,
+    .viewer-tag:hover, #viewer-controls button.active,
+    .face-match-group-header button, .faces-review-bulk-bar button { background: var(--accent); color: var(--accent-ink); }
+    .face-match-group, .faces-review-bulk-bar { border-radius: var(--radius); }
   </style>
 </head>
 <body>

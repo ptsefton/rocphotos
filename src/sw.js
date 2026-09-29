@@ -131,7 +131,18 @@ function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+// This worker's own mount point: "/" when the app is served from the
+// root, "/irocrate/" when published under a project path on GitHub
+// Pages. Every /api match below is made against the path *after* it, so
+// one build works either way — and so it agrees with how webview/app.js
+// derives the same prefix from its own location.
+function scopeRelativePath(url) {
+  const scopePath = new URL(self.registration.scope).pathname;
+  return url.pathname.slice(scopePath.length - 1);
+}
+
 async function handleApiRequest(request, url) {
+  const path = scopeRelativePath(url);
   const ctx = await ensureContext();
   if (ctx.error) {
     return jsonResponse(ctx.error.status, { error: ctx.error.message });
@@ -147,8 +158,8 @@ async function handleApiRequest(request, url) {
     }
   }
 
-  if (url.pathname.startsWith('/api/faces/')) {
-    const apiPath = url.pathname.slice('/api/faces'.length) || '/';
+  if (path.startsWith('/api/faces/')) {
+    const apiPath = path.slice('/api/faces'.length) || '/';
     // No writeFaceRegion here: a Service Worker cannot shell out to the
     // system exiftool binary, so /faces/confirm returns a clear error in
     // this run mode (see createFacesHandler) rather than silently
@@ -158,8 +169,8 @@ async function handleApiRequest(request, url) {
     return new Response(result.body, { status: result.status, headers: result.headers });
   }
 
-  if (url.pathname.startsWith('/api/people/') || url.pathname === '/api/people') {
-    const apiPath = url.pathname.slice('/api/people'.length) || '/';
+  if (path.startsWith('/api/people/') || path === '/api/people') {
+    const apiPath = path.slice('/api/people'.length) || '/';
     // A merge never touches a photo file, only crate JSON-LD and the two
     // SQLite indexes — unlike /faces/confirm above, this behaves
     // identically in every run mode, so no capability is missing here.
@@ -168,7 +179,7 @@ async function handleApiRequest(request, url) {
     return new Response(result.body, { status: result.status, headers: result.headers });
   }
 
-  const apiPath = url.pathname.slice('/api'.length) || '/';
+  const apiPath = path.slice('/api'.length) || '/';
   const handleRequest = createHandler({ store: ctx.driver, fsAdapter: ctx.fsAdapter });
   const result = await handleRequest({ method: request.method, path: apiPath, query, body });
   return new Response(result.body, { status: result.status, headers: result.headers });
@@ -176,7 +187,8 @@ async function handleApiRequest(request, url) {
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  if (url.pathname.startsWith('/api/') || url.pathname === '/api') {
+  const path = scopeRelativePath(url);
+  if (path.startsWith('/api/') || path === '/api') {
     event.respondWith(handleApiRequest(event.request, url));
   }
 });

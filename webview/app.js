@@ -1,6 +1,15 @@
 import { renderOverviewTree, selectedOverviewPaths, setAllCrateCheckboxes } from './overviewUI.js';
 import { DETECTION_MIN_CONFIDENCE, isReliableForMatching } from './faceQuality.js';
 
+// Where this app's own API lives, relative to wherever this page is
+// being served from. `rocphotos serve` puts the page at / and the API
+// at /api; the published static build sits under a project path
+// (.../irocrate/webview/), with the Service Worker answering
+// .../irocrate/api. Derived from the location rather than baked in at
+// build time, so one built copy works under any path — and so the
+// served and published copies of this file stay byte-identical.
+const API = location.pathname.replace(/\/webview\/[^/]*$/, '').replace(/\/$/, '');
+
 const IMAGE_ENTITY_TYPE = 'http://pcdm.org/models#Object';
 const FACET_NAMES = ['camera', 'lens', 'keyword', 'rating', 'people', 'pets', 'albums', 'year'];
 const FACET_LABELS = { camera: 'Camera', lens: 'Lens', keyword: 'Keywords', rating: 'Rating', people: 'People', pets: 'Pets', albums: 'Albums', year: 'Year', month: 'Month', day: 'Day', memberOf: 'Collection' };
@@ -141,7 +150,7 @@ function entityUrl(base, id) {
 }
 
 async function postEdit(path, body) {
-  const response = await fetch(`/api${path}`, {
+  const response = await fetch(`${API}/api${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -159,7 +168,7 @@ async function postEdit(path, body) {
 async function search() {
   statusEl.textContent = 'Loading…';
   try {
-    const response = await fetch('/api/search', {
+    const response = await fetch(`${API}/api/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -358,7 +367,7 @@ function syncCollectionsActiveState() {
 
 async function loadCollections() {
   try {
-    const response = await fetch('/api/ro-crates');
+    const response = await fetch(`${API}/api/ro-crates`);
     if (!response.ok) return;
     const result = await response.json();
     const tree = buildCollectionsTree(result.roCrates ?? []);
@@ -384,7 +393,7 @@ async function loadCollections() {
 // tree bothers to.
 async function fetchDateFacet(granularity, params = {}) {
   const query = new URLSearchParams({ granularity, ...params });
-  const response = await fetch(`/api/date-facet?${query}`);
+  const response = await fetch(`${API}/api/date-facet?${query}`);
   if (!response.ok) return [];
   const results = await response.json();
   // The server orders by count (facetCounts' usual, shared-with-every-
@@ -570,7 +579,7 @@ exportAlbumButtonEl.addEventListener('click', async () => {
 
 async function loadAlbumsList() {
   try {
-    const response = await fetch('/api/albums');
+    const response = await fetch(`${API}/api/albums`);
     if (!response.ok) return;
     const result = await response.json();
     albumsById = new Map((result.albums ?? []).map((album) => [album.id, album]));
@@ -723,7 +732,7 @@ document.addEventListener('keydown', (event) => {
 
 async function openViewer(entity) {
   currentViewerEntityId = entity.id;
-  viewerImageEl.src = entityUrl('/api/file', entity.id);
+  viewerImageEl.src = entityUrl(`${API}/api/file`, entity.id);
   viewerImageEl.alt = entity.title;
   // entity.title/description/rating all come from the same search result
   // the grid tile itself was rendered from (see entityToJson in the
@@ -749,7 +758,7 @@ async function openViewer(entity) {
   // and the full EXIF list live in the entity's own full RO-Crate
   // document, fetched only once a photo is actually opened.
   try {
-    const response = await fetch(entityUrl('/api/entity', entity.id) + '/metadata');
+    const response = await fetch(entityUrl(`${API}/api/entity`, entity.id) + '/metadata');
     if (!response.ok) return;
     const metadata = await response.json();
 
@@ -915,14 +924,14 @@ function renderGrid(entities) {
     figure.appendChild(checkboxLabel);
 
     const img = document.createElement('img');
-    img.src = entityUrl('/api/entity', entity.id) + '/thumbnail';
+    img.src = entityUrl(`${API}/api/entity`, entity.id) + '/thumbnail';
     img.alt = entity.title;
     img.loading = 'lazy';
     img.addEventListener('error', () => {
       // No thumbnail available (see the handler's /entity/{id}/thumbnail
       // route) — fall back to the full-size image rather than a broken
       // image icon.
-      img.src = entityUrl('/api/file', entity.id);
+      img.src = entityUrl(`${API}/api/file`, entity.id);
     });
     figure.appendChild(img);
 
@@ -965,7 +974,7 @@ let knownKeywords = [];
 
 async function fetchKnownKeywords() {
   try {
-    const response = await fetch('/api/search', {
+    const response = await fetch(`${API}/api/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filters: {}, facets: ['keyword'], limit: 0 }),
@@ -1121,7 +1130,7 @@ let knownPeople = [];
 // paginated, the same way the Keywords sidebar list already isn't.
 async function fetchKnownPeople() {
   try {
-    const response = await fetch('/api/search', {
+    const response = await fetch(`${API}/api/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filters: {}, facets: ['people'], limit: 0 }),
@@ -1252,7 +1261,7 @@ let knownAlbums = [];
 
 async function fetchAlbums() {
   try {
-    const response = await fetch('/api/albums');
+    const response = await fetch(`${API}/api/albums`);
     if (!response.ok) return [];
     const result = await response.json();
     return result.albums ?? [];
@@ -1454,7 +1463,7 @@ document.querySelector('#viewer-edit-title').addEventListener('click', async () 
     // Read back via a fresh metadata fetch rather than trusting `title`
     // directly, since an empty title resolves to the filename server-side
     // (see setImageTitle), not to a blank caption.
-    const response = await fetch(entityUrl('/api/entity', currentViewerEntityId) + '/metadata');
+    const response = await fetch(entityUrl(`${API}/api/entity`, currentViewerEntityId) + '/metadata');
     const metadata = await response.json();
     viewerCaptionEl.textContent = metadata.title?.[0] ?? viewerCaptionEl.textContent;
     await search();
@@ -1523,7 +1532,7 @@ function loadImage(url) {
 // as if nothing had been detected there at all — not recorded anywhere,
 // so a later, better model or a manual tag is free to find it fresh.
 async function detectFacesForImage(imageId) {
-  const img = await loadImage(entityUrl('/api/file', imageId));
+  const img = await loadImage(entityUrl(`${API}/api/file`, imageId));
   const results = await faceapi
     .detectAllFaces(img, new faceapi.SsdMobilenetv1Options({ minConfidence: DETECTION_MIN_CONFIDENCE }))
     .withFaceLandmarks()
@@ -1629,7 +1638,7 @@ async function detectInCrop(img, area) {
 }
 
 async function computeEmbeddingForKnownRegion(imageId, rawArea, correctedArea) {
-  const img = await loadImage(entityUrl('/api/file', imageId));
+  const img = await loadImage(entityUrl(`${API}/api/file`, imageId));
 
   // Whole-image detection first, at the normal confidence threshold:
   // reliable for an ordinary-sized face, and — since it is matched by
@@ -1668,7 +1677,7 @@ async function computeEmbeddingForKnownRegion(imageId, rawArea, correctedArea) {
 // which is real (if currently unavoidable) repeated work, not just a
 // cheap no-op; see Spec.md's Face Recognition section.
 async function fetchAllImageIds() {
-  const response = await fetch('/api/search', {
+  const response = await fetch(`${API}/api/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ filters: { entityType: IMAGE_ENTITY_TYPE }, facets: [], limit: 100000 }),
@@ -1759,7 +1768,7 @@ recognizeFacesButtonEl.addEventListener('click', async () => {
 // entirely separate session (the review screen can be reopened any time
 // there are pending detections, not only right after a scan).
 async function drawFaceCrop(canvas, detection) {
-  const img = await loadImage(entityUrl('/api/file', detection.imageId));
+  const img = await loadImage(entityUrl(`${API}/api/file`, detection.imageId));
   const sx = detection.box.x * img.naturalWidth;
   const sy = detection.box.y * img.naturalHeight;
   const sw = detection.box.w * img.naturalWidth;
@@ -1801,7 +1810,7 @@ function renderFaceContextHighlight() {
 
 function openFaceContext(detection) {
   currentFaceContextBox = detection.box;
-  faceContextImageEl.src = entityUrl('/api/file', detection.imageId);
+  faceContextImageEl.src = entityUrl(`${API}/api/file`, detection.imageId);
   faceContextViewerEl.classList.add('open');
 }
 
@@ -2147,7 +2156,7 @@ async function openFacesReview() {
   // page, even though the underlying data was already correct.
   search();
 
-  const response = await fetch('/api/faces/detections?status=pending');
+  const response = await fetch(`${API}/api/faces/detections?status=pending`);
   // unmatchedClusters defaults to [] for a server still running the
   // handler from before it added this field — Node does not hot-reload,
   // so an already-running `rocphotos serve` process keeps serving its
@@ -2406,7 +2415,7 @@ function renderPeopleList(people) {
 
 async function loadPeople() {
   peopleStatusEl.textContent = 'Loading…';
-  const response = await fetch('/api/people/');
+  const response = await fetch(`${API}/api/people/`);
   if (!response.ok) throw new Error(`Failed to load people: ${response.status}`);
   const { people } = await response.json();
   // A name no longer in the fresh list (e.g. it was just merged away)
@@ -2441,7 +2450,7 @@ async function mergeSelectedPeople() {
   peopleMergeButtonEl.disabled = true;
   peopleStatusEl.textContent = renaming ? 'Renaming…' : 'Merging…';
   try {
-    const response = await fetch('/api/people/merge', {
+    const response = await fetch(`${API}/api/people/merge`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sourceNames, targetName }),
@@ -2479,7 +2488,7 @@ regeneratePreviewsButtonEl.addEventListener('click', async () => {
   regeneratePreviewsButtonEl.disabled = true;
   previewsStatusEl.textContent = 'Regenerating…';
   try {
-    const response = await fetch('/api/admin/regenerate-previews', { method: 'POST' });
+    const response = await fetch(`${API}/api/admin/regenerate-previews`, { method: 'POST' });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error ?? `Failed: ${response.status}`);
     const skippedNote = result.skipped.length > 0
@@ -2504,7 +2513,7 @@ regeneratePreviewsButtonEl.addEventListener('click', async () => {
 // this running server (src/core/admin/handler.js) rather than an
 // in-browser File System Access API walk.
 async function fetchOverview({ refresh = false } = {}) {
-  const response = await fetch(`/api/admin/overview${refresh ? '?refresh=true' : ''}`);
+  const response = await fetch(`${API}/api/admin/overview${refresh ? '?refresh=true' : ''}`);
   if (!response.ok) throw new Error(`Failed to load scan status: ${response.status}`);
   return response.json();
 }
@@ -2549,7 +2558,7 @@ overviewProcessButtonEl.addEventListener('click', async () => {
   try {
     for (let i = 0; i < subdirs.length; i++) {
       adminStatusEl.textContent = `Scanning ${subdirs[i]}… (${i + 1} of ${subdirs.length})`;
-      const response = await fetch('/api/admin/scan', {
+      const response = await fetch(`${API}/api/admin/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subdirs: [subdirs[i]] }),
@@ -2589,7 +2598,7 @@ overviewProcessButtonEl.addEventListener('click', async () => {
 async function loadSettings() {
   settingsStatusEl.textContent = 'Loading…';
   try {
-    const response = await fetch('/api/admin/config');
+    const response = await fetch(`${API}/api/admin/config`);
     if (!response.ok) throw new Error(`Failed to load settings: ${response.status}`);
     const config = await response.json();
     settingsWriteMetadataCheckbox.checked = config.writeMetadataToFiles;
@@ -2608,7 +2617,7 @@ settingsFormEl.addEventListener('submit', async (event) => {
   event.preventDefault();
   settingsStatusEl.textContent = 'Saving…';
   try {
-    const response = await fetch('/api/admin/config', {
+    const response = await fetch(`${API}/api/admin/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

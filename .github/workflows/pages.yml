@@ -1,0 +1,67 @@
+name: Deploy to GitHub Pages
+
+# Publishes the browser-tab app (index.html + src/ + webview/, built by
+# Vite) to GitHub Pages. That run mode needs no server: it reads and
+# writes a directory the visitor grants through the File System Access
+# API, with a Service Worker answering the app's own /api requests, so
+# the whole thing is publishable as static files.
+#
+# One-time setup: repo Settings -> Pages -> "Build and deployment" ->
+# Source: "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        # A project site is served under the repo name, so the build
+        # needs that prefix (see vite.config.js, and the matching
+        # derivation in webview/app.js and src/sw.js). Taken from the
+        # repository name rather than written out, so renaming the repo
+        # does not silently publish a build with the wrong base.
+        run: ROCPHOTOS_BASE="/${GITHUB_REPOSITORY#*/}/" npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

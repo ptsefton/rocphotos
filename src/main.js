@@ -78,16 +78,23 @@ let fsAdapter = null;
 // src/sw.js is a Service Worker (see there for what it does): it lands at
 // a fixed /sw.js in the production build, but Vite's dev server serves
 // unbundled source at its real path instead.
-const SERVICE_WORKER_URL = import.meta.env.DEV ? '/src/sw.js' : '/sw.js';
+// BASE_URL is "/" in dev and whatever Vite was built with otherwise —
+// "/irocrate/" for the GitHub Pages build, since a project site is
+// served under its repo name. The worker must be registered from, and
+// scoped to, that path: a Service Worker's scope can never be broader
+// than its own script's location.
+const SERVICE_WORKER_URL = import.meta.env.DEV ? '/src/sw.js' : `${import.meta.env.BASE_URL}sw.js`;
 
 async function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   try {
-    // scope must be explicit: a Service Worker's default scope is its own
-    // script's directory, which in dev is /src/ (the script is served at
-    // /src/sw.js there) — that would leave /webview/, where the requests
-    // this worker exists to intercept actually come from, uncontrolled.
-    await navigator.serviceWorker.register(SERVICE_WORKER_URL, { type: 'module', scope: '/' });
+    // scope must be explicit: a Service Worker's default scope is its
+    // own script's directory, which in dev is /src/ (the script is
+    // served at /src/sw.js there) — that would leave /webview/, where
+    // the requests this worker exists to intercept actually come from,
+    // uncontrolled. BASE_URL covers /webview/ in both dev and the
+    // published build.
+    await navigator.serviceWorker.register(SERVICE_WORKER_URL, { type: 'module', scope: import.meta.env.BASE_URL });
     await navigator.serviceWorker.ready;
   } catch (err) {
     console.error('Service Worker registration failed; the /webview browsing view will not work.', err);

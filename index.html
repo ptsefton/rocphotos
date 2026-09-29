@@ -3,77 +3,170 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect x=%274%27 y=%279%27 width=%2724%27 height=%2718%27 rx=%273%27 fill=%27%231f5fbf%27/%3E%3Crect x=%278%27 y=%275%27 width=%2716%27 height=%273%27 rx=%271.5%27 fill=%27%237aa7ff%27/%3E%3Ccircle cx=%2716%27 cy=%2718%27 r=%275%27 fill=%27%23fff%27/%3E%3C/svg%3E" />
+  <meta name="description" content="Keep a photo collection as nested RO-Crates on your own disk — browse by date, keyword, rating and the people in them, with face recognition. Runs entirely in your browser." />
   <title>RO-Crate Photo Manager</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
-    header { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
-    #status { color: #555; }
-    #results { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; margin-top: 1.5rem; }
-    figure { margin: 0; border: 1px solid #ddd; border-radius: 4px; padding: 0.5rem; }
-    figure img { width: 100%; height: 120px; object-fit: cover; border-radius: 2px; background: #eee; }
-    figcaption { font-size: 0.8rem; margin-top: 0.4rem; word-break: break-word; }
-    figcaption .crate-dir { color: #888; }
-    figcaption .error { color: #b00020; }
+    /* Tokens shared with the browsing view (webview/index.html), modelled
+       on the chordpro book builder's look. Kept inline in both rather
+       than in one stylesheet: each page is served from a different place
+       in two different run modes, and a demo is a poor time to find out
+       a relative path resolved differently than expected. */
+    :root {
+      --bg: #f6f6f4;
+      --panel: #ffffff;
+      --panel-2: #fafaf8;
+      --ink: #16161a;
+      --muted: #62626b;
+      --border: #d9d9d4;
+      --accent: #1f5fbf;
+      --accent-ink: #ffffff;
+      --accent-soft: #eaf1fc;
+      --error: #b3261e;
+      --warn: #8a5a00;
+      --warn-bg: #fff6e0;
+      --ok: #1d6b35;
+      --ok-bg: #e7f4ea;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #121214;
+        --panel: #1b1b1f;
+        --panel-2: #222227;
+        --ink: #ececef;
+        --muted: #a0a0aa;
+        --border: #34343b;
+        --accent: #7aa7ff;
+        --accent-ink: #0b1020;
+        --accent-soft: #1d2740;
+        --error: #ff8a80;
+        --warn: #f0c060;
+        --warn-bg: #2e2412;
+        --ok: #7bd88f;
+        --ok-bg: #16281b;
+        color-scheme: dark;
+      }
+    }
 
-    #overview-section { margin-top: 1.5rem; border-top: 1px solid #ddd; padding-top: 1rem; }
-    #overview-section h2 { font-size: 1rem; margin: 0 0 0.6rem; }
-    #overview-controls { display: flex; gap: 0.6rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    code { font-family: var(--mono); font-size: 0.92em; }
+    a { color: var(--accent); }
 
-    #overview-tree { max-height: 55vh; overflow-y: auto; border: 1px solid #eee; border-radius: 4px; padding: 0.3rem 0.6rem; font-size: 0.88rem; }
+    .site-header { max-width: 46rem; margin: 0 auto; padding: 40px 16px 4px; }
+    .site-header h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; }
+    .site-header .tagline { color: var(--muted); margin: 6px 0 0; }
+    main { max-width: 46rem; margin: 0 auto; padding: 8px 16px 64px; }
+
+    .card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+      padding: 20px 22px; margin-top: 16px;
+    }
+    .card h2 { margin: 0 0 4px; font-size: 1.05rem; }
+    .card > .hint { margin: 0 0 14px; }
+    .hint { color: var(--muted); font-size: 0.9rem; }
+
+    button {
+      font: inherit; font-weight: 600; cursor: pointer; border-radius: 8px; padding: 8px 16px;
+      border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink);
+    }
+    button.secondary { background: transparent; color: var(--accent); }
+    button:disabled { opacity: 0.55; cursor: default; }
+    #open-directory { padding: 10px 20px; font-size: 1rem; }
+
+    label.check { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px; font-size: 0.95rem; }
+    label.check input { margin-top: 3px; }
+
+    #write-metadata-warning {
+      background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn);
+      border-radius: 8px; padding: 10px 12px; font-size: 0.86rem; margin: 10px 0 0;
+    }
+    #write-metadata-hint { color: var(--muted); font-size: 0.84rem; margin: 8px 0 0; }
+
+    #status { color: var(--muted); margin-top: 14px; font-size: 0.92rem; }
+    #browse-link-wrap { margin: 14px 0 0; font-size: 0.92rem; }
+    #browse-link { font-weight: 600; }
+
+    #overview-controls { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+    #overview-controls button { padding: 6px 14px; font-size: 0.85rem; background: transparent; color: var(--accent); }
+    #overview-controls #overview-process { background: var(--accent); color: var(--accent-ink); }
+
+    #overview-tree {
+      max-height: 55vh; overflow-y: auto; background: var(--panel-2);
+      border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 0.88rem;
+    }
     #overview-tree ul { list-style: none; margin: 0; padding-left: 1.3rem; }
     #overview-tree > ul { padding-left: 0; }
     #overview-tree li { padding: 0.15rem 0; }
     #overview-tree summary { cursor: pointer; }
-    #overview-tree summary::marker { color: #999; }
+    #overview-tree summary::marker { color: var(--muted); }
     .tree-row { display: inline-flex; align-items: center; gap: 0.5rem; }
     .tree-row .node-name { min-width: 3em; }
-    .tree-row .image-count { color: #888; font-size: 0.85em; }
+    .tree-row .image-count { color: var(--muted); font-size: 0.85em; }
     .summary-badges { display: inline-flex; gap: 0.3rem; }
-    .status-badge { font-size: 0.7rem; padding: 0.08rem 0.5rem; border-radius: 9px; white-space: nowrap; }
-    .status-badge.not-scanned { background: #eee; color: #555; }
-    .status-badge.out-of-date { background: #fff1cc; color: #8a6100; }
-    .status-badge.up-to-date { background: #e0f3e0; color: #1e6b1e; }
+    .status-badge { font-size: 0.7rem; font-weight: 600; padding: 0.1rem 0.5rem; border-radius: 999px; white-space: nowrap; }
+    .status-badge.not-scanned { background: var(--panel); color: var(--muted); border: 1px solid var(--border); }
+    .status-badge.out-of-date { background: var(--warn-bg); color: var(--warn); }
+    .status-badge.up-to-date { background: var(--ok-bg); color: var(--ok); }
     .status-badge.invalid { background: #fbdcdc; color: #8a1c1c; }
 
-    #settings { margin-bottom: 1.5rem; border-bottom: 1px solid #ddd; padding-bottom: 1.2rem; }
-    #settings h2, #find-photos h2 { font-size: 1rem; margin: 0 0 0.6rem; }
-    #settings label { display: block; margin-bottom: 0.4rem; }
-    #write-metadata-warning { background: #fff1cc; color: #8a6100; border: 1px solid #f0d68a; border-radius: 4px; padding: 0.5rem 0.7rem; font-size: 0.85rem; max-width: 40rem; margin: 0.4rem 0 0; }
-    #write-metadata-hint { color: #888; font-size: 0.8rem; margin: 0.3rem 0 0; }
+    #results { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; margin-top: 16px; }
+    #results:empty { display: none; }
+    figure { margin: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 0.5rem; }
+    figure img { width: 100%; height: 130px; object-fit: cover; border-radius: 6px; background: var(--panel-2); }
+    figcaption { font-size: 0.78rem; margin-top: 0.4rem; word-break: break-word; color: var(--muted); }
+    figcaption .crate-dir { color: var(--muted); }
+    figcaption .error { color: var(--error); }
+
+    .browser-note { color: var(--muted); font-size: 0.84rem; margin: 24px auto 0; max-width: 46rem; padding: 0 16px; }
   </style>
 </head>
 <body>
-  <h1>RO-Crate Photo Manager</h1>
+  <header class="site-header">
+    <h1>RO-Crate Photo Manager</h1>
+    <p class="tagline">Keep a photo collection as nested RO-Crates, on your own disk. Browse by date, keyword, rating and the people in them — with face recognition to help find who is who.</p>
+  </header>
 
-  <section id="settings">
-    <h2>Settings</h2>
-    <label><input type="checkbox" id="always-rescan" /> Always process everything on open</label>
-    <label><input type="checkbox" id="write-metadata-to-files" disabled /> Write recognized faces back into photo files</label>
-    <p id="write-metadata-warning">⚠️ This directly modifies your original photo files (via <code>exiftool</code>), with no backup of their previous bytes beyond whatever you already keep yourself. Off by default — only turn on if you understand the risk. This setting is saved per collection, in that collection's own <code>rocphotos.config.json</code>.</p>
-    <p id="write-metadata-hint">Open a directory below to change this setting for that collection.</p>
-  </section>
-
-  <section id="find-photos">
-    <h2>Find Photos</h2>
-    <header>
+  <main>
+    <section class="card">
+      <h2>Open a collection</h2>
+      <p class="hint">Your photos stay on your machine: nothing is uploaded, and the app reads and writes the folder you choose directly.</p>
       <button id="open-directory">Open Directory</button>
-    </header>
-    <div id="status">Choose a directory to begin.</div>
-    <p id="browse-link-wrap" hidden><a id="browse-link" href="/webview/index.html">Browse this collection &rarr;</a> (facets, keywords, ratings, people, pets — the same view as <code>rocphotos serve</code>)</p>
+      <div id="status">Choose a directory to begin.</div>
+      <p id="browse-link-wrap" hidden><a id="browse-link" href="webview/index.html">Browse this collection &rarr;</a> <span class="hint">facets, keywords, ratings, people, pets — the same view as <code>rocphotos serve</code></span></p>
+    </section>
 
-    <section id="overview-section" hidden>
+    <section class="card" id="settings">
+      <h2>Settings</h2>
+      <p class="hint">The first applies to this browser; the second is saved with the collection itself.</p>
+      <label class="check"><input type="checkbox" id="always-rescan" /> <span>Always process everything on open</span></label>
+      <label class="check"><input type="checkbox" id="write-metadata-to-files" disabled /> <span>Write recognized faces back into photo files</span></label>
+      <p id="write-metadata-warning">⚠️ This directly modifies your original photo files (via <code>exiftool</code>), with no backup of their previous bytes beyond whatever you already keep yourself. Off by default — only turn on if you understand the risk. This setting is saved per collection, in that collection's own <code>rocphotos.config.json</code>.</p>
+      <p id="write-metadata-hint">Open a directory below to change this setting for that collection.</p>
+    </section>
+
+    <section class="card" id="overview-section" hidden>
       <h2>Sub-collections</h2>
+      <p class="hint">Pick which folders to process. A large collection can be done a few at a time — nothing else is read.</p>
       <div id="overview-controls">
-        <button id="overview-select-all">Select All</button>
-        <button id="overview-select-none">Select None</button>
-        <button id="overview-refresh">Refresh Status</button>
+        <button id="overview-select-all" class="secondary">Select All</button>
+        <button id="overview-select-none" class="secondary">Select None</button>
+        <button id="overview-refresh" class="secondary">Refresh Status</button>
         <button id="overview-process">Process Selected</button>
       </div>
       <div id="overview-tree"></div>
     </section>
 
     <div id="results"></div>
-  </section>
+  </main>
+
+  <p class="browser-note">Needs a browser with the File System Access API — Chrome or Edge. Also available as a command-line tool and a local server (<code>rocphotos serve</code>).</p>
+
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>
