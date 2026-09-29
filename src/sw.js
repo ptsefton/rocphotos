@@ -85,11 +85,13 @@ async function buildContext() {
     return { error: { status: 404, message: 'No collection has been opened yet — open the app tab and click "Open Directory".' } };
   }
 
-  const permission = await handle.queryPermission({ mode: 'read' });
+  // 'readwrite', not 'read': this worker writes crates, previews and the
+  // index, and a handle carrying only read access fails at the first
+  // write instead of here. A Service Worker cannot itself prompt for
+  // permission (there is no user gesture in this context) — only a
+  // window can, so the fix has to happen there.
+  const permission = await handle.queryPermission({ mode: 'readwrite' });
   if (permission !== 'granted') {
-    // A Service Worker cannot itself prompt for permission (there is no
-    // user gesture in this context) — only a window can, so the fix has
-    // to happen there.
     return { error: { status: 409, message: 'Access to the collection needs to be re-granted — open the app tab and click "Open Directory" again.' } };
   }
 
@@ -160,7 +162,19 @@ function scopeRelativePath(url) {
   return url.pathname.slice(scopePath.length - 1);
 }
 
+// Anything thrown below reaches the page as a bare "Failed to fetch",
+// because a rejected respondWith() is indistinguishable from the network
+// being down — which tells whoever hit it nothing at all. This turns
+// every such failure into an ordinary 500 the web view can display.
 async function handleApiRequest(request, url) {
+  try {
+    return await dispatchApiRequest(request, url);
+  } catch (err) {
+    return jsonResponse(500, { error: err?.message || String(err) });
+  }
+}
+
+async function dispatchApiRequest(request, url) {
   const path = scopeRelativePath(url);
   const ctx = await ensureContext();
   if (ctx.error) {

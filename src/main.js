@@ -400,7 +400,15 @@ async function showOverview({ forceRefresh = false } = {}) {
 }
 
 async function openDirectory() {
-  const handle = await window.showDirectoryPicker();
+  // 'readwrite' matters even though this page only ever writes during a
+  // click: the picker's default is read-only, and Chrome then prompts
+  // for write access on the first createWritable() call. A page can
+  // answer that prompt because a click gives it user activation; the
+  // Service Worker never has any, so a write it makes (regenerating
+  // previews, scanning, saving the index) would fail outright. Asking
+  // here, once, grants the whole handle — including the copy handed to
+  // the worker below.
+  const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
   fsAdapter = createBrowserFsAdapter(handle);
   // The Service Worker cannot call showDirectoryPicker itself (no user
   // gesture in that context), so the handle this page just obtained is
