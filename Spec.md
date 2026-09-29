@@ -149,7 +149,7 @@ A region confirmed in this app is a *standoff* annotation instead — recorded w
 
 #### The root crate
 
-Sub-collections and albums, both under the root `Dataset`'s `hasPart`. An album's membership *is* its `hasPart`, in display order, each entry a proxy rather than a direct reference to the image, so an image's appearance in this album could later have its own caption:
+The root crate links both its sub-collections and its albums from the root `Dataset`'s `hasPart`. An album's membership *is* its `hasPart`, in display order, and each entry is a proxy rather than a direct reference to the image, so an image's appearance in this album can later carry its own caption:
 
 ```json
 { "@id": "./", "@type": "Dataset", "name": "Photo Collection",
@@ -194,7 +194,7 @@ These IRIs are the ones named by the rocphotos MASP profile (Section 3.5), which
 
 ## 3. Application Behaviour
 
-On first use, the application walks the file tree and builds an overview map (`rocphotos-overview.json`, at the collection root): one row per sub-collection — path, image count, and status (`not-scanned`, `out-of-date`, `up-to-date`, or `invalid` — an existing crate file that fails to load, e.g. from an incompatible tool) — computed cheaply, without reading image bytes or EXIF. The user picks which sub-collections to actually process, via a collapsible tree grouped by directory structure (year, then month, say): every folder starts collapsed, shows a rolled-up status-count summary, and only a leaf (a sub-collection) is actually selectable — checking a folder selects everything beneath it, with an indeterminate state when only some are selected. Expansion and selection survive "Refresh Status" and processing. Re-opening the app finds and shows the existing map; "Refresh Status" recomputes it on demand.
+On first use, the application walks the file tree and builds an overview map (`rocphotos-overview.json`, at the collection root): one row per sub-collection — path, image count, and status (`not-scanned`, `out-of-date`, `up-to-date`, or `invalid` — an existing crate file that fails to load, e.g. from an incompatible tool). It computes all of this cheaply, without reading image bytes or EXIF. The user picks which sub-collections to actually process, via a collapsible tree grouped by directory structure (year, then month, say): every folder starts collapsed, shows a rolled-up status-count summary, and only a leaf (a sub-collection) is actually selectable — checking a folder selects everything beneath it, with an indeterminate state when only some are selected. Expansion and selection survive "Refresh Status" and processing. Re-opening the app finds and shows the existing map; "Refresh Status" recomputes it on demand.
 
 Processing a selection creates/updates the root and sub-collection crates, adds an Image entity for any file not already present, and generates thumbnails. Non-image files are ignored.
 
@@ -318,7 +318,7 @@ Unlike `writeMetadataToFiles`, this needs no warning and no separate opt-in beyo
 
 ### Face Recognition
 
-Extends the Person and `ImageRegion` model (Section 3.2). A confirmed face is always recorded as a standoff region first (`addStandoffFaceRegion`) — a crate-only write — and only then, best-effort, written into the photo file's own XMP (via `exiftool`) and re-extracted, superseding the standoff region. The confirmation itself succeeds either way.
+Face recognition extends the Person and `ImageRegion` model (Section 3.2). A confirmed face is always recorded as a standoff region first (`addStandoffFaceRegion`) — a crate-only write — and only then, best-effort, written into the photo file's own XMP (via `exiftool`) and re-extracted, superseding the standoff region. The confirmation itself succeeds either way.
 
 **Library and runtime.** [face-api.js](https://github.com/justadudewhohacks/face-api.js) (TensorFlow.js, client-side) does detection and produces a 128-d embedding per face, loaded from `webview/vendor/`. Detection/embedding run identically in both run modes; only the best-effort file write needs `exiftool`, so it only ever happens from `rocphotos serve`.
 
@@ -459,7 +459,7 @@ The same handler is also hosted inside the browser-tab mode via a Service Worker
 
 OS thumbnail caches (Windows `Thumbs.db`, macOS previews, freedesktop.org) are not used — they live outside the granted directory, aren't portable with the crate, and are sometimes proprietary.
 
-The application generates its own thumbnails when a sub-collection crate is created/rescanned, skipping unchanged files. Browser SPA: Canvas API; CLI: `sharp`. A failure still adds the image to the crate (recorded, not retried until the file changes) and falls back to the full-size image in generated pages. The application stores them in a `thumbnails/` subdirectory inside each sub-collection crate, listed as `hasPart`. One size by default (e.g. 400px longest edge, JPEG); more sizes possible later without a data model change.
+The application generates its own thumbnails when a sub-collection crate is created/rescanned, skipping unchanged files. The browser SPA uses the Canvas API for this; the CLI uses `sharp`. A failure still adds the image to the crate (recorded, not retried until the file changes) and falls back to the full-size image in generated pages. The application stores them in a `thumbnails/` subdirectory inside each sub-collection crate, listed as `hasPart`. It writes one size by default (e.g. 400px longest edge, JPEG), and could write more later without any change to the data model.
 
 ### 3.4 HTML Preview Pages
 
@@ -473,7 +473,7 @@ At scan time, a static `ro-crate-preview.html` is written into every crate direc
 
 Opening, closing and highlighting a person are plain CSS — a hidden radio per person, checked by the list's own `<label>`, rather than `:target`, which the image viewer already uses: radio state is independent of the URL fragment, so opening a photo from someone's panel leaves that panel open to come back to. The one thing CSS cannot do is narrow a list by typed text, so the search field alone is driven by a few inline lines of JavaScript; it starts hidden and is revealed by that script, leaving a complete, fully working list when scripts are blocked rather than a search box that does nothing.
 
-Links are complete, percent-encoded relative paths, so they resolve under `file://` regardless of special characters in filenames. Regenerated in full on every scan, or on demand from Settings' "Regenerate Preview HTML" (`POST /api/admin/regenerate-previews`, `src/core/previews.js`), which rewrites every page from the crates and index as they stand without re-reading a photo — the quick way to pick up a change to the template, or to see a rename or merge reflected. Not part of the crate's own metadata graph. A source image's `ImageObject` links to its thumbnail `ImageObject` via schema.org `thumbnail`.
+Links are complete, percent-encoded relative paths, so they resolve under `file://` regardless of special characters in filenames. Regenerated in full on every scan, or on demand from Settings' "Regenerate Preview HTML" (`POST /api/admin/regenerate-previews`, `src/core/previews.js`), which rewrites every page from the crates and index as they stand without re-reading a photo — the quick way to pick up a change to the template, or to see a rename or merge reflected. The preview is not part of the crate's own metadata graph. A source image's `ImageObject` links to its thumbnail `ImageObject` via schema.org `thumbnail`.
 
 ### 3.5 Future Features
 
