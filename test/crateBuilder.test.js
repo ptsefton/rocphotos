@@ -47,6 +47,26 @@ describe('loadOrCreateCrate @context', () => {
     expect(contextObject(loadOrCreateCrate(legacy)).oa).toEqual('http://www.w3.org/ns/oa#');
   });
 
+  it('binds the terms this app coins, so they resolve instead of falling through @vocab', () => {
+    const crate = loadOrCreateCrate(null);
+    const context = contextObject(crate);
+
+    for (const term of ['Pet', 'ImageRegion', 'FaceEmbedding', 'regionType', 'writtenToFile', 'rating', 'embedding', 'xPosition', 'processingError']) {
+      expect(context[term]).toEqual(`https://w3id.org/rocphotos/terms#${term}`);
+      expect(crate.resolveTerm(term)).toEqual(`https://w3id.org/rocphotos/terms#${term}`);
+    }
+  });
+
+  it('leaves terms that schema.org already defines alone, rather than redefining them', () => {
+    const crate = loadOrCreateCrate(null);
+
+    for (const term of ['width', 'height', 'name', 'title', 'about', 'keywords', 'thumbnail']) {
+      expect(contextObject(crate)[term]).toBeUndefined();
+      expect(crate.resolveTerm(term)).toEqual(`http://schema.org/${term}`);
+    }
+    expect(crate.resolveTerm('Person')).toEqual('http://schema.org/Person');
+  });
+
   it('gains it exactly once however many times a crate is read and written back', () => {
     let text = serializeCrate(loadOrCreateCrate(null));
     for (let i = 0; i < 5; i++) text = serializeCrate(loadOrCreateCrate(text));
@@ -54,6 +74,9 @@ describe('loadOrCreateCrate @context', () => {
     const context = JSON.parse(text)['@context'];
     expect(context).toHaveLength(2);
     expect(JSON.stringify(context).split('ns/oa#')).toHaveLength(2);
+    // Each coined term defined once, not once per round trip.
+    const coined = Object.entries(context[1]).filter(([, iri]) => String(iri).startsWith('https://w3id.org/rocphotos/terms#'));
+    expect(coined).toHaveLength(new Set(coined.map(([term]) => term)).size);
   });
 });
 

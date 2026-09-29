@@ -103,7 +103,7 @@ A Person/Pet id is derived from the name (`arcp://name,rocphoto/person/<NameSlug
 
 The instance is a bare fragment (`#person-<NameSlug>`, `#pet-<NameSlug>` — their own id spaces, so a Person and a Pet of one name never collide), resolved against the crate itself, and there is exactly one per person per crate however many photos in it depict them. **Every** reference inside a crate goes through it: an image's `about`, an EXIF-derived region's `about`, and a standoff region's body proxy all name the instance, never the `arcp://` id directly.
 
-The point of the hop is that a person is not always known by one name. A sub-collection is usually a slice of time, so its instance is the natural place to record who they were *then* — a maiden name in the 2005 crates and a married name in the 2025 ones, both `prov:specializationOf` one identity, which is what makes them one person to the People tab, the facets and face recognition alike. The same applies to a name that was simply wrong in one place. (Merging two identities currently rewrites the instance names to the surviving one; setting a name per crate deliberately is a future feature, this lays the model down for it.)
+The point of the proxy pattern is that a person is not always known by one name. A sub-collection is usually a slice of time, so its instance is the natural place to record who they were *then* — a maiden name in the 2005 crates and a married name in the 2025 ones, both `prov:specializationOf` one identity, which is what makes them one person to the People tab, the facets and face recognition alike. The same applies to a name that was simply wrong in one place. (Merging two identities currently rewrites the instance names to the surviving one; setting a name per crate deliberately is a future feature, this lays the model down for it.)
 
 The shared node is what the *root* crate holds in full, listed on its root dataset's `mentions`:
 
@@ -188,7 +188,9 @@ One entity per reference embedding, `about` the Person it belongs to (absent ent
 
 #### Vocabulary status
 
-`oa:` and `prov:` resolve properly (see the context above). The terms coined here do not: `regionType`, `xPosition`/`yPosition`, `writtenToFile`, `rating`, `processingError`, `ImageRegion`, `Pet`, `FaceEmbedding`, `embedding`/`embeddingModel`/`sourceImage`/`sourceRegion` all fall through to `@vocab`, so they read as `http://schema.org/...` IRIs that schema.org does not define. To be settled by the profile in Section 3.5 rather than by further ad-hoc bindings.
+Every term resolves. `oa:` and `prov:` are prefixes (see the context above); the terms this app coins, because schema.org has no equivalent — `Pet`, `ImageRegion`, `FaceEmbedding`, `regions`, `regionType`, `xPosition`/`yPosition`, `writtenToFile`, `rating`, `processingError`, `embedding`/`embeddingModel`/`embeddingModelVersion`/`sourceImage`/`sourceRegion` — are bound individually to `https://w3id.org/rocphotos/terms#<term>`. Term definitions rather than a prefix, so the crates are unchanged: a crate still writes `regionType`, and the binding is what stops it reading as a `http://schema.org/` IRI that schema.org does not define. `width` and `height`, which a region also uses, are left as schema.org's own rather than redefined to mean a fraction.
+
+These IRIs are the ones named by the rocphotos MASP profile (Section 3.5), which is where the terms are described.
 
 ## 3. Application Behaviour
 
@@ -475,7 +477,7 @@ Links are complete, percent-encoded relative paths, so they resolve under `file:
 - Writing an edit back to the original image's own metadata, not just the crate — pending a decision on backup (`_rocphotos/backup`).
 - Pet recognition: face-api.js is human-faces-only, so this needs a separate model/pipeline.
 - A general-purpose manual tagger: draw an arbitrary box and label it free-text, not limited to MWG's Face/Pet types.
-- An RO-Crate MASP profile (as used in [collection2crate](https://github.com/Language-Research-Technology/collection2crate)) for this structure, once enough example crates exist.
+- The RO-Crate MASP profile for this structure is drafted (in the [ro-crate-masp](https://github.com/Language-Research-Technology/ro-crate-masp) repo, `profiles/rocphotos/`): class and property rules for all three crate shapes, validating clean against real crates. Still to do there: describe `oa:identifying` as an entity so a standoff region's motivation can be range-checked, and carry a copy of each `Person` in the faces crate so its `FaceEmbedding`s resolve the way the photo crates' references do.
 
 ## 4. Implementation Basics
 

@@ -17,6 +17,30 @@ const EXIF_TABLE_FIELDS = ['Make', 'Model', 'ImageWidth', 'ImageHeight', 'Orient
  * @param {string|null} existingJsonText
  * @returns {ROCrate}
  */
+// The vocabulary this application coins, because schema.org has no
+// equivalent — the face/pet region shape, the star rating, the
+// face-recognition reference data. Bound as real term definitions
+// rather than a prefix so the crates themselves are unchanged: they go
+// on writing `regionType`, not `rocphotos:regionType`, and the binding
+// is what gives that bare term an IRI instead of leaving it to the
+// `@vocab` fallback, where it would silently read as a schema.org term
+// that schema.org does not define.
+//
+// Only terms that resolve to nothing otherwise are listed. `width` and
+// `height`, which a region also uses, are deliberately absent: they are
+// real schema.org properties already, and redefining a standard term to
+// mean something of ours would be a worse trade than the slight
+// stretch of using it.
+//
+// See the rocphotos MASP profile, whose rules name these same IRIs.
+const ROCPHOTOS_TERMS_NAMESPACE = 'https://w3id.org/rocphotos/terms#';
+const ROCPHOTOS_TERMS = [
+  'Pet', 'ImageRegion', 'FaceEmbedding',
+  'regions', 'regionType', 'xPosition', 'yPosition', 'writtenToFile',
+  'rating', 'processingError',
+  'embedding', 'embeddingModel', 'embeddingModelVersion', 'sourceImage', 'sourceRegion',
+];
+
 export function loadOrCreateCrate(existingJsonText) {
   const data = existingJsonText ? JSON.parse(existingJsonText) : undefined;
   // link: true resolves an {'@id': ...} reference into the full entity it
@@ -34,6 +58,12 @@ export function loadOrCreateCrate(existingJsonText) {
   // repeatedly gains it exactly once. An older crate picks it up the next
   // time anything rewrites it.
   crate.addTermDefinition('oa', 'http://www.w3.org/ns/oa#');
+  // Same idempotent, write-into-the-existing-context call as `oa` above,
+  // so an older crate picks these up the next time anything rewrites it
+  // and a crate read and written back repeatedly gains each exactly once.
+  for (const term of ROCPHOTOS_TERMS) {
+    crate.addTermDefinition(term, `${ROCPHOTOS_TERMS_NAMESPACE}${term}`);
+  }
   return crate;
 }
 
