@@ -13,6 +13,15 @@ import { isAbsoluteExportPath, EXPORTS_DIR_NAME } from '../export.js';
 import { regeneratePreviews } from '../previews.js';
 import { serializeWrites } from '../writeQueue.js';
 
+// The browser's driver keeps the index in memory and only writes it back
+// when asked (see src/sw.js and the same call in the other handlers);
+// Node's is already backed by the file, where this does nothing. Without
+// it, a scan started from the web view in the browser would write every
+// crate to disk and then lose the whole index update.
+async function persistStore(db) {
+  await db.persist?.();
+}
+
 function json(status, body) {
   return { status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
 }
@@ -102,6 +111,7 @@ export function createAdminHandler({ db, fsAdapter, rootName, crateCache = new M
       // silently lose whichever one's write finishes first.
       return serializeWrites(async () => {
         const result = await scanCollection({ fsAdapter, db, rootName, subdirs, generateThumbnailFor });
+        await persistStore(db);
         // Cheaper to just drop the whole cache than to work out exactly
         // which crates this scan touched — it is a plain Map, re-populated
         // lazily the next time each one is actually read.

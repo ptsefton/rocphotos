@@ -99,6 +99,23 @@ describe('POST /scan', () => {
   });
 });
 
+describe('persisting the index', () => {
+  it('writes the index back after a scan, for a driver that keeps it in memory', async () => {
+    // The browser's sql.js driver only writes when asked; Node's needs no
+    // such call. A scan that skipped it would leave the crates updated
+    // and the index not.
+    let persisted = 0;
+    const inMemoryLike = { ...db, persist: async () => { persisted += 1; } };
+    const handler = createAdminHandler({
+      db: inMemoryLike, fsAdapter, rootName: 'Root', generateThumbnailFor: noopThumbnail,
+    });
+
+    await handler({ method: 'POST', path: '/scan', body: { subdirs: ['2024'] } });
+
+    expect(persisted).toEqual(1);
+  });
+});
+
 describe('POST /regenerate-previews', () => {
   it('rewrites every preview page from what is already indexed, without a rescan', async () => {
     await handleRequest({ method: 'POST', path: '/scan', body: { subdirs: ['2024'] } });

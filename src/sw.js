@@ -12,6 +12,10 @@ import { openBrowserSqlite } from './adapters/browserSqlite.js';
 import { createHandler } from './core/arocapi/handler.js';
 import { createFacesHandler } from './core/faces/handler.js';
 import { createPeopleHandler } from './core/people/handler.js';
+import { createAdminHandler } from './core/admin/handler.js';
+import { generateThumbnail } from './adapters/browserThumbnail.js';
+import { thumbnailPathFor } from './core/thumbnails.js';
+import { joinPath } from './core/pathUtils.js';
 import { ensureFacesSchema, FACES_INDEX_FILE_NAME } from './core/faces/store.js';
 import { ensureSchema, INDEX_FILE_NAME } from './core/db/store.js';
 import sqlWasmUrl from 'sql.js/dist/sql-wasm-browser.wasm?url';
@@ -127,6 +131,21 @@ async function ensureContext() {
   return context;
 }
 
+// The browser's own thumbnail generation, in the shape scanCollection
+// expects (see bin/rocphotos.js for the Node counterpart) — injected
+// rather than imported by the scanner itself, so the one scanner works
+// in both places.
+async function generateThumbnailFor(fsAdapter, crateDirPath, imagePath, bytes) {
+  const thumbnailPath = thumbnailPathFor(imagePath);
+  try {
+    const thumbnailBytes = await generateThumbnail(bytes);
+    await fsAdapter.writeFile(joinPath(crateDirPath, thumbnailPath), thumbnailBytes);
+    return { thumbnailPath, error: null };
+  } catch (err) {
+    return { thumbnailPath: null, error: `Thumbnail generation failed: ${err.message}` };
+  }
+}
+
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
@@ -166,6 +185,20 @@ async function handleApiRequest(request, url) {
     // updating the crate/index without also updating the photo file.
     const handleFacesRequest = createFacesHandler({ mainStore: ctx.driver, facesStore: ctx.facesStore, fsAdapter: ctx.fsAdapter });
     const result = await handleFacesRequest({ method: request.method, path: apiPath, query, body });
+    return new Response(result.body, { status: result.status, headers: result.headers });
+  }
+
+  if (path.startsWith('/api/admin/')) {
+    const apiPath = path.slice('/api/admin'.length) || '/';
+    // 'Photo Collection' is the name this run mode gives the root crate
+    // when it scans (see src/main.js), so the two agree about it.
+    const handleAdminRequest = createAdminHandler({
+      db: ctx.driver,
+      fsAdapter: ctx.fsAdapter,
+      rootName: 'Photo Collection',
+      generateThumbnailFor,
+    });
+    const result = await handleAdminRequest({ method: request.method, path: apiPath, query, body });
     return new Response(result.body, { status: result.status, headers: result.headers });
   }
 
