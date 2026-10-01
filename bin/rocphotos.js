@@ -28,7 +28,9 @@ import {
   loadWriteMetadataToFilesSetting,
   loadExportPathSetting,
   loadExportWithMetadataSetting,
+  CONFIG_FILE_NAME,
 } from '../src/core/config.js';
+import { runMigrations, MIGRATION_NAMES } from '../src/core/migrate.js';
 import {
   INDEX_FILE_NAME,
   ensureSchema,
@@ -582,13 +584,59 @@ async function serve(rootDir, { port = 8420 } = {}) {
   });
 }
 
+/**
+ * Rewrites crate JSON-LD across the collection, without re-reading a
+ * single photo (see src/core/migrate.js). Available both as its own
+ * command and as `scan --migrate`, which runs it first: the point of
+ * the standalone form is that fixing the shape of the JSON should not
+ * cost a full re-extract of a 64,000-photo collection.
+ */
+async function migrate(rootDir, { only = null, dryRun = false } = {}) {
+  const fsAdapter = createNodeFsAdapter(rootDir);
+  const result = await runMigrations({
+    fsAdapter,
+    only,
+    dryRun,
+    onProgress: ({ done, total, path: cratePath }) => {
+      if (done === 1 || done === total || done % 200 === 0) {
+        console.log(`  [${done}/${total}] ${cratePath}`);
+      }
+    },
+  });
+
+  if (result.unknown.length > 0) {
+    console.error(`Unknown migration(s): ${result.unknown.join(', ')}`);
+    console.error(`Available: ${MIGRATION_NAMES.join(', ')}`);
+  }
+  if (result.ran.length === 0) {
+    console.log('No migrations selected.');
+    console.log(`Add one to "migrations" in ${CONFIG_FILE_NAME}, or pass --only=<name>.`);
+    console.log(`Available: ${MIGRATION_NAMES.join(', ')}`);
+    return result;
+  }
+
+  console.log(`${result.dryRun ? 'Would rewrite' : 'Rewrote'} ${result.cratesChanged} of ${result.cratesScanned} crate(s): ${result.ran.join(', ')}`);
+  for (const [name, totals] of Object.entries(result.changes)) {
+    const counts = Object.entries(totals).filter(([, value]) => typeof value === 'number' && value > 0);
+    if (counts.length > 0) console.log(`  ${name}: ${counts.map(([key, value]) => `${value} ${key}`).join(', ')}`);
+    for (const kept of totals.keptLocalNames ?? []) {
+      console.log(`  kept ${kept.id} ("${kept.name}") in ${kept.crate}: a local name differing from the identity's, left alone`);
+    }
+  }
+  for (const failure of result.failed) {
+    console.error(`  could not read ${failure.path}: ${failure.message}`);
+  }
+  return result;
+}
+
 function fail(err) {
   console.error(err.message ?? err);
   process.exit(1);
 }
 
 function usage() {
-  console.error('Usage: rocphotos scan <directory> [--fresh] [--reprocess] [--loose-root-images=move|ignore] [--loose-root-images-folder=<name>] [--subdir=<name>]...');
+  console.error('Usage: rocphotos scan <directory> [--fresh] [--reprocess] [--migrate] [--loose-root-images=move|ignore] [--loose-root-images-folder=<name>] [--subdir=<name>]...');
+  console.error('       rocphotos migrate <directory> [--only=<name>,...] [--dry-run]');
   console.error('       rocphotos export-excel <directory> [output.xlsx] [--include-entity-crates]');
   console.error('       rocphotos export-album <directory> <album name>');
   console.error('       rocphotos serve <directory> [--port=8420]');
@@ -611,6 +659,15 @@ function usage() {
   console.error('every file, not only ones touched since. Unlike --fresh, this does not');
   console.error('discard the index or root crate metadata first. Slower than a normal scan,');
   console.error('since it skips no files.');
+  console.error('');
+  console.error('migrate rewrites crate JSON-LD across the whole collection to catch up with');
+  console.error('a change to the data model — no photo is re-read and no thumbnail is made, so');
+  console.error('it is quick even on a very large collection, and it is safe to run twice. The');
+  console.error('migrations to run come from "migrations" in rocphotos.config.json, or from');
+  console.error('--only for a one-off; --dry-run reports what would change and writes nothing.');
+  console.error(`Available: ${MIGRATION_NAMES.join(', ')}`);
+  console.error('');
+  console.error('--migrate on scan runs the same thing first, before indexing.');
   console.error('');
   console.error('--loose-root-images resolves images found loose in the collection root');
   console.error('(alongside other subdirectories) without an interactive prompt: "move"');
@@ -661,7 +718,18 @@ function parseArgs(argv) {
 const { positional, flags } = parseArgs(process.argv.slice(2));
 const [command, targetDir, extraArg] = positional;
 
-if (command === 'scan' && targetDir) {
+// --only=a,b overrides the config's own list, for a one-off run.
+function migrationsOnly(flag) {
+  if (flag === undefined) return null;
+  if (flag === true) {
+    fail(new Error(`--only requires a value: --only=<name>. Available: ${MIGRATION_NAMES.join(', ')}`));
+  }
+  return String(flag).split(',').map((name) => name.trim()).filter(Boolean);
+}
+
+if (command === 'migrate' && targetDir) {
+  migrate(path.resolve(targetDir), { only: migrationsOnly(flags.only), dryRun: Boolean(flags['dry-run']) }).catch(fail);
+} else if (command === 'scan' && targetDir) {
   const mode = flags['loose-root-images'];
   const subdirs = flags.subdir === undefined ? [] : (Array.isArray(flags.subdir) ? flags.subdir : [flags.subdir]);
   if (mode !== undefined && mode !== 'move' && mode !== 'ignore') {
@@ -669,11 +737,18 @@ if (command === 'scan' && targetDir) {
   } else if (subdirs.some((s) => s === true)) {
     fail(new Error('--subdir requires a value: --subdir=<name>, not a bare --subdir'));
   } else {
-    scan(
-      path.resolve(targetDir),
+    const rootDir = path.resolve(targetDir);
+    // Migrations first: they rewrite the crates the scan is about to
+    // read, so running them afterwards would index the old shape and
+    // then quietly change it underneath the index.
+    const before = flags.migrate
+      ? migrate(rootDir, { only: migrationsOnly(flags.only), dryRun: false }).then(() => console.log(''))
+      : Promise.resolve();
+    before.then(() => scan(
+      rootDir,
       { mode, folderName: flags['loose-root-images-folder'] },
       { fresh: Boolean(flags.fresh), reprocess: Boolean(flags.reprocess), subdirs },
-    ).catch(fail);
+    )).catch(fail);
   }
 } else if (command === 'export-excel' && targetDir) {
   const resolvedDir = path.resolve(targetDir);
