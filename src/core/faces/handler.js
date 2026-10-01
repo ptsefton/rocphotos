@@ -1,9 +1,9 @@
+import { resolveSubjectIdFromIndex } from '../subjects.js';
 import {
   getEntityById,
   getFileById,
   crateDirPathFromEntityId,
   crateRelativeEntityId,
-  personEntityId,
   searchEntities,
   ENTITY_TYPE_IMAGE,
 } from '../db/store.js';
@@ -67,7 +67,7 @@ async function loadCrateForImage(fsAdapter, roCrateId) {
 async function markImageIfNowFullyBackfilled(fsAdapter, mainStore, facesStore, imageId, modelName, modelVersion) {
   const existingRegions = await loadExistingFaceRegions(fsAdapter, mainStore, new Map(), imageId);
   const stillMissing = existingRegions.some((region) => {
-    const personId = personEntityId(region.name);
+    const personId = resolveSubjectIdFromIndex(mainStore, region.name);
     return (
       !hasReferenceForPersonOnImage(facesStore, imageId, personId, modelName, modelVersion)
       && !isRegionUndetectable(facesStore, imageId, personId, modelName, modelVersion)
@@ -208,7 +208,7 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
         const existingRegions = await loadExistingFaceRegions(fsAdapter, mainStore, requestCrateCache, imageId);
         let allResolved = true;
         for (const { index, name, rawArea, correctedArea } of existingRegions) {
-          const personId = personEntityId(name);
+          const personId = resolveSubjectIdFromIndex(mainStore, name);
           if (hasReferenceForPersonOnImage(facesStore, imageId, personId, modelName, modelVersion)) continue;
           // Already tried and given up on (see /backfill-undetectable) —
           // treated the same as a real reference here so it is never
@@ -241,7 +241,7 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
         return badRequest('sourceImageId, sourceRegionId, personName, embedding, modelName, and modelVersion are required');
       }
 
-      const personId = personEntityId(personName);
+      const personId = resolveSubjectIdFromIndex(mainStore, personName);
       // /existing-regions only checks this at listing time, against a
       // single snapshot of the reference set — if the same image has
       // more than one region for the same Person (duplicate regions from
@@ -287,7 +287,7 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
         return badRequest('sourceImageId, personName, modelName, and modelVersion are required');
       }
 
-      const personId = personEntityId(personName);
+      const personId = resolveSubjectIdFromIndex(mainStore, personName);
       markRegionUndetectable(facesStore, { imageId: sourceImageId, personId, personName, modelName, modelVersion });
       await markImageIfNowFullyBackfilled(fsAdapter, mainStore, facesStore, sourceImageId, modelName, modelVersion);
       await persistStore(facesStore);
@@ -508,7 +508,7 @@ export function createFacesHandler({ mainStore, facesStore, fsAdapter, writeFace
 
         const { crateDirPath, crate } = await loadCrateForImage(fsAdapter, imageRow.ro_crate_id);
         const imagePath = crateRelativeEntityId(imageRow.ro_crate_id, imageRow.id);
-        const resolvedPersonId = personEntityId(personName);
+        const resolvedPersonId = resolveSubjectIdFromIndex(mainStore, personName);
         const box = { x: detection.box_x, y: detection.box_y, w: detection.box_w, h: detection.box_h };
 
         const standoff = addStandoffFaceRegion(crate, imagePath, {

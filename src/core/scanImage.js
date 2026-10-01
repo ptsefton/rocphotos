@@ -8,8 +8,6 @@ import {
   ENTITY_TYPE_PET,
   imageEntityId,
   crateEntityId,
-  personEntityId,
-  petEntityId,
   facetValuesFromRecord,
   upsertEntity,
   setEntityFacetValues,
@@ -51,11 +49,12 @@ export function syncImageIndexFromCrate(db, crateDirPath, imagePath, record) {
   setEntityFacetValues(db, entityId, 'rating', record.rating !== null ? [String(record.rating)] : []);
   setEntityFacetValues(db, entityId, 'people', record.people);
   setEntityFacetValues(db, entityId, 'pets', record.pets);
-  for (const name of record.people) {
-    upsertEntity(db, { id: personEntityId(name), roCrateId, entityType: ENTITY_TYPE_PERSON, name });
-  }
-  for (const name of record.pets) {
-    upsertEntity(db, { id: petEntityId(name), roCrateId, entityType: ENTITY_TYPE_PET, name });
+  // The id the crate itself records, never one recomputed from the
+  // name: an identity is minted once and frozen (see subjects.js), so
+  // deriving it here would give a renamed person a second row under a
+  // brand new id. readImageRecord reads both off `about`.
+  for (const { id, name, subjectType } of record.subjects ?? []) {
+    upsertEntity(db, { id, roCrateId, entityType: subjectType === 'Pet' ? ENTITY_TYPE_PET : ENTITY_TYPE_PERSON, name });
   }
 }
 

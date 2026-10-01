@@ -41,8 +41,6 @@ import {
   ENTITY_TYPE_PET,
   crateEntityId,
   imageEntityId,
-  personEntityId,
-  petEntityId,
   facetValuesFromRecord,
   ensureSchema,
   upsertRoCrate,
@@ -293,11 +291,13 @@ async function scanAndBuild(selectedPaths) {
         setEntityFacetValues(indexDb, entityId, 'rating', record.rating !== null ? [String(record.rating)] : []);
         setEntityFacetValues(indexDb, entityId, 'people', record.people);
         setEntityFacetValues(indexDb, entityId, 'pets', record.pets);
-        for (const name of record.people) {
-          upsertEntity(indexDb, { id: personEntityId(name), roCrateId: crateEntityId(crateDirPath), entityType: ENTITY_TYPE_PERSON, name });
-        }
-        for (const name of record.pets) {
-          upsertEntity(indexDb, { id: petEntityId(name), roCrateId: crateEntityId(crateDirPath), entityType: ENTITY_TYPE_PET, name });
+        // The id the crate records, not one recomputed from the name —
+        // the same rule scanCollection follows, and for the same
+        // reason: an identity is minted once and frozen (see
+        // core/subjects.js), so a renamed person must not be given a
+        // second row under a brand new id.
+        for (const { id, name, subjectType } of record.subjects ?? []) {
+          upsertEntity(indexDb, { id, roCrateId: crateEntityId(crateDirPath), entityType: subjectType === 'Pet' ? ENTITY_TYPE_PET : ENTITY_TYPE_PERSON, name });
         }
         upsertFile(indexDb, {
           id: entityId,

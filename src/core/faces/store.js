@@ -407,6 +407,27 @@ export function updateDetectionSuggestion(driver, id, { suggestedPersonId, sugge
 }
 
 /**
+ * Updates the name this index keeps beside a person's id, wherever it
+ * appears.
+ *
+ * A rename no longer moves anybody: an identity is minted once and
+ * frozen (see core/subjects.js), so nothing here changes owner and
+ * none of the dedup and conflict handling a merge needs applies. This
+ * is a label correction across four redundant copies — kept redundant
+ * because matching and the review screen read them without joining
+ * back to the main index.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {{personId: string, newName: string}} options
+ */
+export function renamePersonInFacesStore(driver, { personId, newName }) {
+  driver.run('UPDATE reference_faces SET person_name = ? WHERE person_id = ?', [newName, personId]);
+  driver.run('UPDATE backfill_undetectable_regions SET person_name = ? WHERE person_id = ?', [newName, personId]);
+  driver.run('UPDATE detections SET suggested_person_name = ? WHERE suggested_person_id = ?', [newName, personId]);
+  driver.run('UPDATE detections SET resolved_person_name = ? WHERE resolved_person_id = ?', [newName, personId]);
+}
+
+/**
  * Re-points every row of this index that names one of `sourceIds` at
  * `targetId`/`targetName` instead — the faces-index side of merging two
  * Person identities into one (see people/handler.js, which does the same

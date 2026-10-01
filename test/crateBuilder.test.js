@@ -18,6 +18,7 @@ import {
   renamePersonInCrate,
   subjectInstanceId,
   syncRootCrateSubjects,
+  foldSubjectInto,
 } from '../src/core/crateBuilder.js';
 import { personEntityId, petEntityId } from '../src/core/db/store.js';
 
@@ -509,7 +510,7 @@ describe('addImageEntity people and pets', () => {
       },
     });
 
-    expect(record.regions).toEqual([{ name: 'Peter Malcolm Sefton', type: 'Face', area: { x: 0.57, y: 0.23, w: 0.29, h: 0.27 } }]);
+    expect(record.regions).toEqual([{ name: 'Peter Malcolm Sefton', nameInFile: null, type: 'Face', area: { x: 0.57, y: 0.23, w: 0.29, h: 0.27 } }]);
 
     const regionRefs = crate.getEntity('photo.jpg').regions;
     expect(regionRefs).toHaveLength(1);
@@ -547,7 +548,7 @@ describe('addImageEntity people and pets', () => {
 
     const reloaded = loadOrCreateCrate(serializeCrate(crate));
     expect(readImageRecord(reloaded, 'photo.jpg').regions).toEqual([
-      { name: 'Gail McGlinn', type: 'Face', area: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 } },
+      { name: 'Gail McGlinn', nameInFile: null, type: 'Face', area: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 } },
     ]);
   });
 });
@@ -567,19 +568,18 @@ describe('addStandoffFaceRegion', () => {
     const record = readImageRecord(crate, 'photo.jpg');
     expect(record.people).toEqual(['Jane Smith']);
     expect(record.regions).toEqual([
-      { name: 'Jane Smith', type: 'Face', area: { x: 0.5, y: 0.4, w: 0.2, h: 0.2 } }, // converted to centre-based
+      { name: 'Jane Smith', nameInFile: null, type: 'Face', area: { x: 0.5, y: 0.4, w: 0.2, h: 0.2 } }, // converted to centre-based
     ]);
 
     const region = crate.getEntity(result.regionId);
     expect(region['@type']).toEqual(expect.arrayContaining(['ImageRegion', 'oa:Annotation']));
     expect(region.writtenToFile).toEqual([false]);
     expect(region['oa:motivatedBy'][0]['@id']).toEqual('oa:identifying');
-    const bodyId = region['oa:hasBody'][0]['@id'];
-    // body -> this crate's instance of them -> the shared identity
-    const instanceId = crate.getEntity(bodyId)['prov:specializationOf'][0]['@id'];
-    expect(instanceId).toEqual('#person-JaneSmith');
-    expect(crate.getEntity(instanceId)['prov:specializationOf'][0]['@id']).toEqual(subjectId);
-    expect(crate.getEntity(instanceId).name).toEqual(['Jane Smith']);
+    // oa:hasBody names the Person itself, which is what an identifying
+    // annotation means, rather than a proxy that only points at them.
+    expect(region['oa:hasBody'][0]['@id']).toEqual(subjectId);
+    expect(crate.getEntity(subjectId).name).toEqual(['Jane Smith']);
+    expect(crate.getEntity(`${result.regionId}-body`)).toBeUndefined();
   });
 
   it('gives each standoff region on the same image its own id, not colliding with the next', () => {
@@ -626,6 +626,7 @@ describe('addStandoffFaceRegion', () => {
       name: 'Jane Smith', subjectId: personEntityId('Jane Smith'), subjectType: 'Person', box: { x: 0.4, y: 0.3, w: 0.2, h: 0.2 },
     });
     const bodyId = crate.getEntity(standoff.regionId)['oa:hasBody'][0]['@id'];
+    expect(bodyId).toEqual(personEntityId('Jane Smith'));
 
     // Write-back (or another tool) has since tagged the same person for
     // real - the next rescan picks that up from EXIF.
@@ -637,10 +638,33 @@ describe('addStandoffFaceRegion', () => {
     const record = readImageRecord(crate, 'photo.jpg');
     expect(record.people).toEqual(['Jane Smith']); // not ['Jane Smith', 'Jane Smith']
     expect(record.regions).toHaveLength(1);
-    // The superseded standoff region and its body proxy are cleaned up,
-    // not left dangling in the graph.
+    // The superseded standoff region is cleaned up, not left dangling.
     expect(crate.getEntity(standoff.regionId)).toBeUndefined();
-    expect(crate.getEntity(bodyId)).toBeUndefined();
+    // Its body is the shared Person, which the EXIF region now depicts
+    // and which other photos in this crate may also depict: removing
+    // the region must not take them with it.
+    expect(crate.getEntity(bodyId)).toBeTruthy();
+  });
+
+  it('removes the body proxy of a superseded region written before bodies named the person directly', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: {} });
+    const standoff = addStandoffFaceRegion(crate, 'photo.jpg', {
+      name: 'Jane Smith', subjectId: personEntityId('Jane Smith'), subjectType: 'Person', box: { x: 0.4, y: 0.3, w: 0.2, h: 0.2 },
+    });
+    // Put the old shape back: a proxy owned by this one region.
+    const proxyId = `${standoff.regionId}-body`;
+    crate.addEntity({ '@id': proxyId, '@type': 'Person', 'prov:specializationOf': { '@id': personEntityId('Jane Smith') } });
+    crate.getEntity(standoff.regionId)['oa:hasBody'] = { '@id': proxyId };
+
+    addImageEntity(crate, {
+      path: 'photo.jpg',
+      exif: { Regions: { RegionList: { Name: 'Jane Smith', Type: 'Face', Area: { x: 0.5, y: 0.4, w: 0.2, h: 0.2 } } } },
+    });
+
+    expect(crate.getEntity(standoff.regionId)).toBeUndefined();
+    expect(crate.getEntity(proxyId)).toBeUndefined();
+    expect(crate.getEntity(personEntityId('Jane Smith'))).toBeTruthy();
   });
 
   it('leaves an unrelated standoff region for a different person alone when another name is superseded', () => {
@@ -769,21 +793,35 @@ describe('removeImageEntity', () => {
     expect(crate.rootDataset.hasPart?.some((ref) => ref['@id'] === 'photo.jpg')).toBeFalsy();
   });
 
-  it('also removes a standoff region\'s own body proxy, not just the region itself', () => {
+  it('removes a standoff region but not the Person its body names, which other photos also depict', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: {} });
+    addImageEntity(crate, { path: 'other.jpg', exif: { Regions: { RegionList: { Name: 'Jane Smith', Type: 'Face' } } } });
+    const { regionId } = addStandoffFaceRegion(crate, 'photo.jpg', {
+      name: 'Jane Smith', subjectId: personEntityId('Jane Smith'), subjectType: 'Person', box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 },
+    });
+
+    removeImageEntity(crate, 'photo.jpg');
+
+    expect(crate.getEntity(regionId)).toBeUndefined();
+    expect(crate.getEntity(personEntityId('Jane Smith'))).toBeTruthy();
+    expect(crate.getEntity('other.jpg').about[0]['@id']).toEqual(personEntityId('Jane Smith'));
+  });
+
+  it('removes a body proxy written before bodies named the person directly, but still not the person', () => {
     const crate = loadOrCreateCrate(null);
     addImageEntity(crate, { path: 'photo.jpg', exif: {} });
     const { regionId } = addStandoffFaceRegion(crate, 'photo.jpg', {
       name: 'Jane Smith', subjectId: personEntityId('Jane Smith'), subjectType: 'Person', box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 },
     });
-    const bodyId = crate.getEntity(regionId)['oa:hasBody'][0]['@id'];
+    const proxyId = `${regionId}-body`;
+    crate.addEntity({ '@id': proxyId, '@type': 'Person', 'prov:specializationOf': { '@id': personEntityId('Jane Smith') } });
+    crate.getEntity(regionId)['oa:hasBody'] = { '@id': proxyId };
 
     removeImageEntity(crate, 'photo.jpg');
 
-    expect(crate.getEntity(regionId)).toBeUndefined();
-    expect(crate.getEntity(bodyId)).toBeUndefined();
-    // The shared Person entity itself is untouched (same rule as an
-    // EXIF-derived region's Person/Pet) - not asserted further here,
-    // covered by the test below.
+    expect(crate.getEntity(proxyId)).toBeUndefined();
+    expect(crate.getEntity(personEntityId('Jane Smith'))).toBeTruthy();
   });
 
   it('leaves the Person/Pet entity it depicted alone, since another image may still depict them', () => {
@@ -818,10 +856,12 @@ describe('renamePersonInCrate', () => {
     expect(changed).toBe(true);
     const record = readImageRecord(crate, 'photo.jpg');
     expect(record.people).toEqual(['Jane Smith']);
-    expect(record.regions).toEqual([{ name: 'Jane Smith', type: 'Face', area: { x: 0.5, y: 0.5, w: 0.2, h: 0.2 } }]);
-    expect(crate.getEntity('photo.jpg').about[0]['@id']).toEqual('#person-JaneSmith');
-    expect(crate.getEntity('#person-JaneSmith')['prov:specializationOf'][0]['@id']).toEqual(targetId);
+    expect(record.regions).toEqual([{ name: 'Jane Smith', nameInFile: null, type: 'Face', area: { x: 0.5, y: 0.5, w: 0.2, h: 0.2 } }]);
+    expect(crate.getEntity('photo.jpg').about[0]['@id']).toEqual(targetId);
     expect(crate.getEntity(targetId).name).toEqual(['Jane Smith']);
+    // No instance is coined on the way: one exists only where somebody
+    // deliberately recorded a local name.
+    expect(crate.getEntity('#person-JaneSmith')).toBeUndefined();
   });
 
   it('re-points a standoff region\'s body-proxy specialization', () => {
@@ -841,14 +881,14 @@ describe('renamePersonInCrate', () => {
   it('dedupes the image\'s about array if it somehow already referenced both identities', () => {
     const crate = loadOrCreateCrate(null);
     addImageEntity(crate, { path: 'photo.jpg', exif: {} });
-    crate.addEntity({ '@id': '#person-janesmith', '@type': 'Person', name: 'jane smith', 'prov:specializationOf': { '@id': sourceId } }, { replace: true });
-    crate.addEntity({ '@id': '#person-JaneSmith', '@type': 'Person', name: 'Jane Smith', 'prov:specializationOf': { '@id': targetId } }, { replace: true });
-    crate.addValues('photo.jpg', 'about', [{ '@id': '#person-janesmith' }, { '@id': '#person-JaneSmith' }]);
+    crate.addEntity({ '@id': sourceId, '@type': 'Person', name: 'jane smith' }, { replace: true });
+    crate.addEntity({ '@id': targetId, '@type': 'Person', name: 'Jane Smith' }, { replace: true });
+    crate.addValues('photo.jpg', 'about', [{ '@id': sourceId }, { '@id': targetId }]);
 
     renamePersonInCrate(crate, 'photo.jpg', renameArgs);
 
     expect(crate.getEntity('photo.jpg').about).toHaveLength(1);
-    expect(crate.getEntity('photo.jpg').about[0]['@id']).toEqual('#person-JaneSmith');
+    expect(crate.getEntity('photo.jpg').about[0]['@id']).toEqual(targetId);
   });
 
   it('is a no-op, returning false, for an image that never referenced the source identity', () => {
@@ -878,8 +918,8 @@ describe('renamePersonInCrate', () => {
 
     expect(renamePersonInCrate(crate, 'photo.jpg', renameArgs)).toBe(true);
 
-    expect(crate.getEntity('photo.jpg').about.map((ref) => ref['@id'])).toEqual(['#person-JaneSmith']);
-    expect(unwrapId(crate.getEntity('photo.jpg#region-0').about)).toEqual('#person-JaneSmith');
+    expect(crate.getEntity('photo.jpg').about.map((ref) => ref['@id'])).toEqual([targetId]);
+    expect(unwrapId(crate.getEntity('photo.jpg#region-0').about)).toEqual(targetId);
     expect(readImageRecord(crate, 'photo.jpg').people).toEqual(['Jane Smith']);
   });
 
@@ -889,58 +929,70 @@ describe('renamePersonInCrate', () => {
   });
 });
 
-describe('per-crate Person/Pet instances', () => {
-  it('points an image and its EXIF region at this crate\'s instance, which specializes the shared identity', () => {
+describe('Person/Pet references', () => {
+  it('points an image and its EXIF region straight at the shared identity', () => {
     const crate = loadOrCreateCrate(null);
     addImageEntity(crate, { path: 'a.jpg', exif: { Regions: { RegionList: { Name: 'Jane Smith', Type: 'Face', Area: { x: 0.3, y: 0.3, w: 0.1, h: 0.1 } } } } });
 
-    expect(crate.getEntity('a.jpg').about[0]['@id']).toEqual('#person-JaneSmith');
-    expect(unwrapId(crate.getEntity('a.jpg#region-0').about)).toEqual('#person-JaneSmith');
+    const janeId = personEntityId('Jane Smith');
+    expect(crate.getEntity('a.jpg').about[0]['@id']).toEqual(janeId);
+    expect(unwrapId(crate.getEntity('a.jpg#region-0').about)).toEqual(janeId);
 
-    const instance = crate.getEntity('#person-JaneSmith');
-    expect(instance['@type']).toEqual(['Person']);
-    expect(instance.name).toEqual(['Jane Smith']);
-    expect(unwrapId(instance['prov:specializationOf'])).toEqual(personEntityId('Jane Smith'));
-    // The shared identity is still present, so the crate reads standalone.
-    expect(crate.getEntity(personEntityId('Jane Smith')).name).toEqual(['Jane Smith']);
+    // The identity is copied into this crate so it reads standalone,
+    // carrying its name and nothing else — the root crate's copy is the
+    // one that holds a description or a birth date.
+    const person = crate.getEntity(janeId);
+    expect(person['@type']).toEqual(['Person']);
+    expect(person.name).toEqual(['Jane Smith']);
+
+    // No per-crate instance is coined. One exists only where somebody
+    // deliberately recorded a different local name, so its presence is
+    // the statement that the difference is meant.
+    expect(crate.getEntity('#person-JaneSmith')).toBeUndefined();
   });
 
-  it('gives a pet its own instance id space, so a Person and a Pet of the same name never collide', () => {
+  it('keeps a Person and a Pet of the same name apart', () => {
     const crate = loadOrCreateCrate(null);
     addImageEntity(crate, { path: 'a.jpg', exif: { Regions: { RegionList: [
       { Name: 'Rex', Type: 'Face' }, { Name: 'Rex', Type: 'Pet' },
     ] } } });
 
-    expect(subjectInstanceId('Rex', 'Person')).toEqual('#person-Rex');
-    expect(subjectInstanceId('Rex', 'Pet')).toEqual('#pet-Rex');
-    expect(crate.getEntity('a.jpg').about.map((ref) => ref['@id']).sort()).toEqual(['#person-Rex', '#pet-Rex']);
-    expect(unwrapId(crate.getEntity('#pet-Rex')['prov:specializationOf'])).toEqual(petEntityId('Rex'));
+    expect(crate.getEntity('a.jpg').about.map((ref) => ref['@id']).sort())
+      .toEqual([personEntityId('Rex'), petEntityId('Rex')].sort());
+    expect(crate.getEntity(petEntityId('Rex'))['@type']).toEqual(['Pet']);
   });
 
-  it('shares one instance between every photo in the crate depicting them', () => {
+  it('records the identity once however many photos in the crate depict them', () => {
     const crate = loadOrCreateCrate(null);
     for (const path of ['a.jpg', 'b.jpg']) {
       addImageEntity(crate, { path, exif: { Regions: { RegionList: { Name: 'Jane Smith', Type: 'Face' } } } });
     }
 
-    expect(crate.getEntity('a.jpg').about[0]['@id']).toEqual('#person-JaneSmith');
-    expect(crate.getEntity('b.jpg').about[0]['@id']).toEqual('#person-JaneSmith');
-    const instances = crate.toJSON()['@graph'].filter((e) => e['@id'] === '#person-JaneSmith');
-    expect(instances).toHaveLength(1);
+    const janeId = personEntityId('Jane Smith');
+    expect(crate.getEntity('a.jpg').about[0]['@id']).toEqual(janeId);
+    expect(crate.getEntity('b.jpg').about[0]['@id']).toEqual(janeId);
+    expect(crate.toJSON()['@graph'].filter((e) => e['@id'] === janeId)).toHaveLength(1);
   });
 
-  it('still reads back the person\'s name through readImageRecord, unchanged by the extra hop', () => {
-    const crate = loadOrCreateCrate(null);
-    addImageEntity(crate, { path: 'a.jpg', exif: { Regions: { RegionList: [
-      { Name: 'Jane Smith', Type: 'Face' }, { Name: 'Rex', Type: 'Pet' },
-    ] } } });
+  it('reads back the name of a person a crate written earlier reaches through an instance', () => {
+    // Nothing writes this shape now, but crates full of it exist and a
+    // scan only rewrites an image whose file actually changed.
+    const crate = loadOrCreateCrate(JSON.stringify({
+      '@context': ['https://w3id.org/ro/crate/1.2/context', { '@vocab': 'http://schema.org/' }],
+      '@graph': [
+        { '@id': './', '@type': 'Dataset', name: '2005', hasPart: { '@id': 'a.jpg' } },
+        { '@id': 'ro-crate-metadata.json', '@type': 'CreativeWork', about: { '@id': './' }, conformsTo: { '@id': 'https://w3id.org/ro/crate/1.2' } },
+        { '@id': personEntityId('Jane Smith'), '@type': 'Person', name: 'Jane Smith' },
+        { '@id': '#person-JaneSmith', '@type': 'Person', name: 'Jane Smith', 'prov:specializationOf': { '@id': personEntityId('Jane Smith') } },
+        { '@id': 'a.jpg', '@type': 'ImageObject', name: 'a.jpg', about: [{ '@id': '#person-JaneSmith' }] },
+      ],
+    }));
 
-    const record = readImageRecord(crate, 'a.jpg');
-    expect(record.people).toEqual(['Jane Smith']);
-    expect(record.pets).toEqual(['Rex']);
+    expect(readImageRecord(crate, 'a.jpg').people).toEqual(['Jane Smith']);
+    expect(subjectInstanceId('Jane Smith', 'Person')).toEqual('#person-JaneSmith');
   });
 
-  it('survives a rescan that preserves a standoff region, keeping the about link on the instance', () => {
+  it('keeps a preserved standoff region pointing at the person across a rescan', () => {
     const crate = loadOrCreateCrate(null);
     addImageEntity(crate, { path: 'a.jpg', exif: {} });
     addStandoffFaceRegion(crate, 'a.jpg', {
@@ -948,18 +1000,89 @@ describe('per-crate Person/Pet instances', () => {
     });
     addImageEntity(crate, { path: 'a.jpg', exif: {} }); // rescan, still no EXIF regions
 
-    expect(crate.getEntity('a.jpg').about.map((ref) => ref['@id'])).toEqual(['#person-BobJones']);
+    expect(crate.getEntity('a.jpg').about.map((ref) => ref['@id'])).toEqual([personEntityId('Bob Jones')]);
     expect(readImageRecord(crate, 'a.jpg').people).toEqual(['Bob Jones']);
   });
 });
 
+describe('a name this crate already records, against what the file says', () => {
+  const area = { x: 0.5, y: 0.5, w: 0.2, h: 0.2 };
+  const exifWith = (Name, Area = area) => ({ Regions: { RegionList: { Name, Type: 'Face', Area } } });
+
+  it('keeps the crate\'s name when the file disagrees, and records what the file says', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: exifWith('jane smith') });
+    renamePersonInCrate(crate, 'photo.jpg', {
+      sourceId: personEntityId('jane smith'), sourceName: 'jane smith',
+      targetId: personEntityId('Jane Smith'), targetName: 'Jane Smith', subjectType: 'Person',
+    });
+
+    // --reprocess: the file was never written to, so its EXIF still
+    // carries the old spelling. Re-deriving from it would undo the
+    // rename without saying so.
+    addImageEntity(crate, { path: 'photo.jpg', exif: exifWith('jane smith') });
+
+    const record = readImageRecord(crate, 'photo.jpg');
+    expect(record.people).toEqual(['Jane Smith']);
+    expect(record.regions).toEqual([{ name: 'Jane Smith', nameInFile: 'jane smith', type: 'Face', area }]);
+    expect(crate.getEntity('photo.jpg').about[0]['@id']).toEqual(personEntityId('Jane Smith'));
+  });
+
+  it('stops recording the disagreement once the file has caught up', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: exifWith('jane smith') });
+    renamePersonInCrate(crate, 'photo.jpg', {
+      sourceId: personEntityId('jane smith'), sourceName: 'jane smith',
+      targetId: personEntityId('Jane Smith'), targetName: 'Jane Smith', subjectType: 'Person',
+    });
+    addImageEntity(crate, { path: 'photo.jpg', exif: exifWith('jane smith') });
+    expect(readImageRecord(crate, 'photo.jpg').regions[0].nameInFile).toEqual('jane smith');
+
+    // Write-back has since put the new name in the file, and
+    // rescanImageMetadata re-reads it (see scanImage.js).
+    addImageEntity(crate, { path: 'photo.jpg', exif: exifWith('Jane Smith') });
+
+    expect(readImageRecord(crate, 'photo.jpg').regions[0].nameInFile).toBeNull();
+    expect(crate.getEntity('photo.jpg#region-0').nameInFile).toBeUndefined();
+  });
+
+  it('takes the file\'s name for a region that has moved, which is a different tag', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: exifWith('Jane Smith') });
+
+    // Re-tagged in another tool: a different box, so there is no local
+    // edit to protect and the file is the only thing that knows.
+    addImageEntity(crate, { path: 'photo.jpg', exif: exifWith('Bob Jones', { x: 0.1, y: 0.1, w: 0.2, h: 0.2 }) });
+
+    const record = readImageRecord(crate, 'photo.jpg');
+    expect(record.people).toEqual(['Bob Jones']);
+    expect(record.regions[0].nameInFile).toBeNull();
+  });
+
+  it('keeps the old name out of the keywords, which the tagging tool also writes it into', () => {
+    const crate = loadOrCreateCrate(null);
+    addImageEntity(crate, { path: 'photo.jpg', exif: exifWith('jane smith') });
+    renamePersonInCrate(crate, 'photo.jpg', {
+      sourceId: personEntityId('jane smith'), sourceName: 'jane smith',
+      targetId: personEntityId('Jane Smith'), targetName: 'Jane Smith', subjectType: 'Person',
+    });
+
+    const record = addImageEntity(crate, {
+      path: 'photo.jpg',
+      exif: { ...exifWith('jane smith'), Keywords: ['jane smith', 'holiday'] },
+    });
+
+    expect(record.keywords).toEqual(['holiday']);
+  });
+});
+
 describe('syncRootCrateSubjects', () => {
-  it('records each identity once and lists it on the root dataset\'s mentions', () => {
+  it('records each identity once, without linking it from the root dataset', () => {
     const crate = loadOrCreateCrate(null);
     syncRootCrateSubjects(crate, [{ name: 'Jane Smith', subjectType: 'Person' }, { name: 'Rex', subjectType: 'Pet' }]);
     syncRootCrateSubjects(crate, [{ name: 'Jane Smith', subjectType: 'Person' }, { name: 'Rex', subjectType: 'Pet' }]);
 
-    expect(crate.rootDataset.mentions.map((ref) => ref['@id']).sort()).toEqual([petEntityId('Rex'), personEntityId('Jane Smith')].sort());
+    expect(crate.rootDataset.mentions).toBeUndefined();
     expect(crate.getEntity(personEntityId('Jane Smith'))['@type']).toEqual(['Person']);
     expect(crate.getEntity(petEntityId('Rex'))['@type']).toEqual(['Pet']);
     expect(crate.toJSON()['@graph'].filter((e) => e['@id'] === personEntityId('Jane Smith'))).toHaveLength(1);
@@ -975,14 +1098,90 @@ describe('syncRootCrateSubjects', () => {
     expect(crate.getEntity(personEntityId('Jane Smith')).birthDate).toEqual(['1984-02-03']);
   });
 
-  it('drops an identity no longer depicted anywhere, so a merged-away name does not linger', () => {
+  it('drops an identity no longer depicted anywhere, when its name is all this function ever wrote', () => {
     const crate = loadOrCreateCrate(null);
     syncRootCrateSubjects(crate, [{ name: 'jane smith', subjectType: 'Person' }, { name: 'Jane Smith', subjectType: 'Person' }]);
 
     syncRootCrateSubjects(crate, [{ name: 'Jane Smith', subjectType: 'Person' }]);
 
     expect(crate.getEntity(personEntityId('jane smith'))).toBeUndefined();
-    expect(crate.rootDataset.mentions.map((ref) => ref['@id'])).toEqual([personEntityId('Jane Smith')]);
+    expect(crate.getEntity(personEntityId('Jane Smith'))).toBeTruthy();
+  });
+
+  it('drops one an older crate still lists on mentions, and the mention with it', () => {
+    const crate = loadOrCreateCrate(null);
+    syncRootCrateSubjects(crate, [{ name: 'jane smith', subjectType: 'Person' }]);
+    crate.addValues(crate.rootId, 'mentions', { '@id': personEntityId('jane smith') });
+
+    syncRootCrateSubjects(crate, []);
+
+    expect(crate.getEntity(personEntityId('jane smith'))).toBeUndefined();
+    expect(crate.rootDataset.mentions ?? []).toEqual([]);
+  });
+
+  it('leaves alone a Person somebody else points at, and one that is not a bare identity', () => {
+    const crate = loadOrCreateCrate(null);
+    crate.addEntity({ '@id': '#photographer', '@type': 'Person', name: 'Pat' });
+    crate.addValues(crate.rootId, 'author', { '@id': '#photographer' });
+
+    syncRootCrateSubjects(crate, []);
+
+    expect(crate.getEntity('#photographer')).toBeTruthy();
+  });
+
+  it('keeps an identity nothing depicts once somebody has written something about them', () => {
+    // A region removed in another tool, the last photo of someone put
+    // in the trash, or a person written down before any photo of them
+    // was tagged. A scan cannot reconstruct a description from photos,
+    // so deleting the node would destroy the only copy.
+    const crate = loadOrCreateCrate(null);
+    syncRootCrateSubjects(crate, [{ name: 'Great Aunt Mabel', subjectType: 'Person' }]);
+    crate.getEntity(personEntityId('Great Aunt Mabel')).description = 'Emigrated 1952. Never photographed.';
+
+    syncRootCrateSubjects(crate, []);
+
+    const mabel = crate.getEntity(personEntityId('Great Aunt Mabel'));
+    expect(mabel.description).toEqual(['Emigrated 1952. Never photographed.']);
+  });
+});
+
+describe('foldSubjectInto', () => {
+  const sourceId = personEntityId('jane smith');
+  const targetId = personEntityId('Jane Smith');
+
+  it('removes a merged-away identity even though a description would otherwise protect it', () => {
+    const crate = loadOrCreateCrate(null);
+    syncRootCrateSubjects(crate, [{ name: 'jane smith', subjectType: 'Person' }, { name: 'Jane Smith', subjectType: 'Person' }]);
+    crate.getEntity(sourceId).description = 'Gran';
+
+    foldSubjectInto(crate, { sourceId, targetId });
+
+    expect(crate.getEntity(sourceId)).toBeUndefined();
+    expect(crate.getEntity(targetId)).toBeTruthy();
+  });
+
+  it('carries what the merged-away record knew over to the survivor', () => {
+    const crate = loadOrCreateCrate(null);
+    syncRootCrateSubjects(crate, [{ name: 'jane smith', subjectType: 'Person' }, { name: 'Jane Smith', subjectType: 'Person' }]);
+    crate.getEntity(sourceId).description = 'Gran';
+    crate.getEntity(sourceId).birthDate = '1948';
+
+    foldSubjectInto(crate, { sourceId, targetId });
+
+    expect(crate.getEntity(targetId).description).toEqual(['Gran']);
+    expect(crate.getEntity(targetId).birthDate).toEqual(['1948']);
+  });
+
+  it('never overwrites something the survivor already says', () => {
+    const crate = loadOrCreateCrate(null);
+    syncRootCrateSubjects(crate, [{ name: 'jane smith', subjectType: 'Person' }, { name: 'Jane Smith', subjectType: 'Person' }]);
+    crate.getEntity(sourceId).description = 'the older note';
+    crate.getEntity(targetId).description = 'the one being kept';
+
+    foldSubjectInto(crate, { sourceId, targetId });
+
+    expect(crate.getEntity(targetId).description).toEqual(['the one being kept']);
+    expect(crate.getEntity(targetId).name).toEqual(['Jane Smith']);
   });
 });
 

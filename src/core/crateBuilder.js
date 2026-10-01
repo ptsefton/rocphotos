@@ -1,6 +1,7 @@
 import { ROCrate } from 'ro-crate';
 import { keywordsFromExif, ratingFromExif, regionsFromExif, titleFromExif, descriptionFromExif } from './exif.js';
 import { personEntityId, petEntityId, nameSlug } from './db/store.js';
+import { resolveSubjectId, subjectIdInCrate } from './subjects.js';
 
 export const CRATE_FILE_NAME = 'ro-crate-metadata.json';
 
@@ -29,10 +30,17 @@ const EXIF_TABLE_FIELDS = ['Make', 'Model', 'ImageWidth', 'ImageHeight', 'Orient
 const ROCPHOTOS_TERMS_NAMESPACE = 'https://w3id.org/ldac/rocphotos/terms#';
 const ROCPHOTOS_TERMS = [
   'Pet', 'ImageRegion', 'FaceEmbedding',
-  'regions', 'regionType', 'xPosition', 'yPosition', 'writtenToFile',
+  'regions', 'regionType', 'xPosition', 'yPosition', 'writtenToFile', 'nameInFile',
   'rating', 'processingError',
   'embedding', 'embeddingModel', 'embeddingModelVersion', 'sourceImage', 'sourceRegion',
 ];
+
+// Records in Contexts, for the relationships between people (see the
+// rocphotos MASP profile's relationship classes, which specialize
+// rico:Relation). Bound as a prefix rather than term by term because
+// the crate writes the prefixed names — `rico:relationConnects` — and
+// those are what the profile's rules name too.
+const RICO_NAMESPACE = 'https://www.ica.org/standards/RiC/ontology#';
 
 /**
  * Loads a crate from an existing ro-crate-metadata.json text, or creates a
@@ -58,6 +66,7 @@ export function loadOrCreateCrate(existingJsonText) {
   // repeatedly gains it exactly once. An older crate picks it up the next
   // time anything rewrites it.
   crate.addTermDefinition('oa', 'http://www.w3.org/ns/oa#');
+  crate.addTermDefinition('rico', RICO_NAMESPACE);
   // Same idempotent, write-into-the-existing-context call as `oa` above,
   // so an older crate picks these up the next time anything rewrites it
   // and a crate read and written back repeatedly gains each exactly once.
@@ -65,6 +74,37 @@ export function loadOrCreateCrate(existingJsonText) {
     crate.addTermDefinition(term, `${ROCPHOTOS_TERMS_NAMESPACE}${term}`);
   }
   return crate;
+}
+
+/**
+ * An IRI written the short way the crate's own context allows.
+ *
+ * `crate.getTerm` answers for a term defined outright — the ones this
+ * file binds individually — but not for one reached through a prefix
+ * like `rico:`, and a crate that binds a prefix should use it rather
+ * than spelling out the namespace on every entity. Read off the
+ * context rather than from a list here, so a prefix added later is
+ * honoured without changing this.
+ *
+ * @param {ROCrate} crate
+ * @param {string} iri
+ * @returns {string} the compact form, or the IRI unchanged
+ */
+export function compactIri(crate, iri) {
+  const exact = crate.getTerm?.(iri);
+  if (exact) return exact;
+
+  const context = [].concat(crate.toJSON()['@context'] ?? []).filter((entry) => entry && typeof entry === 'object');
+  let best = null;
+  for (const entry of context) {
+    for (const [prefix, namespace] of Object.entries(entry)) {
+      if (typeof namespace !== 'string' || prefix.includes(':') || !iri.startsWith(namespace)) continue;
+      // The longest matching namespace wins, so a prefix nested inside
+      // another produces the shorter, more specific name.
+      if (!best || namespace.length > best.namespace.length) best = { prefix, namespace };
+    }
+  }
+  return best ? `${best.prefix}:${iri.slice(best.namespace.length)}` : iri;
 }
 
 export function serializeCrate(crate) {
@@ -179,6 +219,11 @@ export function dateCreatedFromExif(exif) {
 // property in a one-element array when read back (an array-valued
 // property, such as hasPart or exifData, is returned as-is). This unwraps
 // the scalar case, for reading a value back out of an existing entity.
+function asTypes(entity) {
+  const types = entity?.['@type'];
+  return types === undefined || types === null ? [] : (Array.isArray(types) ? types : [types]);
+}
+
 function unwrap(value) {
   return Array.isArray(value) ? value[0] : value;
 }
@@ -232,35 +277,101 @@ export function subjectInstanceId(name, subjectType) {
 }
 
 /**
- * Records a Person/Pet in a crate as two nodes, and returns the id of
- * the one everything in the crate should point at.
+ * Records a Person/Pet in a crate and returns the id everything in the
+ * crate should point at — the shared `arcp://` identity itself.
  *
- * The `arcp://` node is the identity itself, shared collection-wide and
+ * The node written here is a copy of the collection-wide identity,
  * duplicated into every crate depicting them (per RO-Crate convention,
- * so each crate reads standalone); the root crate's copy is the one that
- * carries their full description (see syncRootCrateSubjects). The
- * instance node is *them, here*: one per crate, `prov:specializationOf`
- * the shared identity, and what an image's `about` and a region point
- * at.
+ * so each crate reads standalone). It carries `name` and nothing else:
+ * the root crate's copy is the one that holds their description, birth
+ * date and the rest (see syncRootCrateSubjects), so the only thing a
+ * sub-collection copy can drift on is the name, and a rename rewrites
+ * every crate that references them.
  *
- * The indirection is what lets the same person be recorded under a
- * different name in a different part of the collection — a married name
- * in the 2015 crates and a maiden name in the 2005 ones — while both
- * still resolve to one identity. Every reference inside a crate goes
- * through its instance, so there is one place per crate to say how they
- * were known then.
+ * ## Why there is no per-crate instance node any more
+ *
+ * This used to write a second node as well — `#person-<Slug>`,
+ * `prov:specializationOf` the identity — and point every reference at
+ * that instead, so that one person could be recorded under the name
+ * they went by in that part of the collection. Written unconditionally,
+ * it could not do that job: a node that is always there says nothing by
+ * being there, so a sub-crate name differing from the root's was
+ * indistinguishable from a copy nobody had got round to updating.
+ *
+ * An instance is now exceptional. Nothing writes one automatically; one
+ * exists only where somebody deliberately recorded a local name, and
+ * its presence is itself the statement that the difference is meant.
+ * Crates written before this still have instances and still resolve
+ * correctly — readers follow `about` one level and find a node with a
+ * `@type` and a `name` either way — and renamePersonInCrate migrates
+ * them as it passes.
  *
  * @param {ROCrate} crate
  * @param {{name: string, subjectId: string, subjectType: 'Person'|'Pet'}} subject
- * @returns {string} the instance id
+ * @returns {string} the id to reference, i.e. subjectId
  */
-function addSubjectInstance(crate, { name, subjectId, subjectType }) {
-  const instanceId = subjectInstanceId(name, subjectType);
+function addSubjectIdentity(crate, { name, subjectId, subjectType }) {
   crate.addEntity({ '@id': subjectId, '@type': subjectType, name }, { replace: true });
-  crate.addEntity({
-    '@id': instanceId, '@type': subjectType, name, 'prov:specializationOf': { '@id': subjectId },
-  }, { replace: true });
-  return instanceId;
+  return subjectId;
+}
+
+// How close two region boxes must be to count as the same region across
+// a re-read of the same file. Re-reading unchanged bytes gives identical
+// fractions, so this only absorbs the rounding a round trip through
+// another tool's EXIF writer introduces. Two genuinely different faces
+// would have to sit within 0.2% of the image of each other to be
+// confused, and the cost if they ever were is that the file's name wins
+// — which is what happened for every region before any of this.
+const SAME_REGION_TOLERANCE = 0.002;
+
+function sameArea(a, b) {
+  if (!a || !b) return false;
+  return ['x', 'y', 'w', 'h'].every((key) => Math.abs(Number(a[key]) - Number(b[key])) <= SAME_REGION_TOLERANCE);
+}
+
+/**
+ * The EXIF-derived regions a crate already holds for an image, as
+ * `{area, name}`, so a fresh read of the file can be matched against
+ * what is already recorded. Standoff regions are excluded: they have no
+ * EXIF counterpart to disagree with.
+ */
+function existingExifRegions(crate, entity) {
+  const existing = [];
+  for (const ref of entity.regions ?? []) {
+    const region = crate.getEntity(ref['@id']);
+    if (!region || region.xPosition === undefined) continue;
+    existing.push({
+      name: unwrap(region.name),
+      area: {
+        x: unwrap(region.xPosition), y: unwrap(region.yPosition), w: unwrap(region.width), h: unwrap(region.height),
+      },
+    });
+  }
+  return existing;
+}
+
+/**
+ * Decides what a freshly-read EXIF region should be called.
+ *
+ * The crate wins. A name in the crate that differs from the one in the
+ * file is evidence that somebody changed it here — renaming a person
+ * rewrites every crate that depicts them, and it cannot rewrite the
+ * photo files unless write-back is turned on — so re-deriving from EXIF
+ * would silently undo that edit on the next `--reprocess`. What the file
+ * says is kept alongside, as `nameInFile`, rather than thrown away:
+ * somebody has to be able to see that the two disagree and decide, and
+ * once the region is written back to the file the two agree again and
+ * the property stops being written.
+ *
+ * Only a region in the same place counts as the same region. A box that
+ * has moved is a different tag, and whatever the file calls it stands.
+ *
+ * @returns {{name: string, nameInFile: string|null}}
+ */
+function resolveRegionName(region, existing) {
+  const match = existing.find((candidate) => sameArea(candidate.area, region.area));
+  if (!match || !match.name || match.name === region.name) return { name: region.name, nameInFile: null };
+  return { name: match.name, nameInFile: region.name };
 }
 
 /**
@@ -302,14 +413,17 @@ export function addStandoffFaceRegion(crate, path, { name, subjectId, subjectTyp
   const nextIndex = usedStandoffIndexes.length > 0 ? Math.max(...usedStandoffIndexes) + 1 : 0;
 
   const regionId = `${path}#region-standoff-${nextIndex}`;
-  const bodyId = `${regionId}-body`;
 
-  // The body proxy specializes this crate's instance of them, which in
-  // turn specializes the shared identity (see addSubjectInstance) — so
-  // every path from a region to a Person/Pet runs through the one
-  // instance node, rather than some going straight to the arcp id.
-  const instanceId = addSubjectInstance(crate, { name, subjectId, subjectType });
-  crate.addEntity({ '@id': bodyId, '@type': subjectType, 'prov:specializationOf': { '@id': instanceId } }, { replace: true });
+  // `oa:hasBody` names the Person/Pet itself, which is what the Web
+  // Annotation vocabulary expects of an identifying annotation. This
+  // used to interpose a `#...-body` proxy specializing them, so the
+  // region could later carry something of its own without touching the
+  // shared entity; written for every region whether or not it had
+  // anything to say, the proxy was a node per region that only ever
+  // held a pointer. One gets added back when a region genuinely needs
+  // properties of its own — see addSubjectIdentity on the same reasoning
+  // for per-crate instances.
+  addSubjectIdentity(crate, { name, subjectId, subjectType });
   crate.addEntity({
     '@id': regionId,
     '@type': ['ImageRegion', 'oa:Annotation'],
@@ -317,14 +431,44 @@ export function addStandoffFaceRegion(crate, path, { name, subjectId, subjectTyp
     regionType: subjectType === 'Person' ? 'Face' : 'Pet',
     'oa:motivatedBy': { '@id': 'oa:identifying' },
     'oa:hasTarget': { '@id': toXywhPercentFragment(path, box) },
-    'oa:hasBody': { '@id': bodyId },
+    'oa:hasBody': { '@id': subjectId },
     writtenToFile: false,
   }, { replace: true });
 
   crate.addValues(path, 'regions', { '@id': regionId });
-  crate.addValues(path, 'about', { '@id': instanceId });
+  crate.addValues(path, 'about', { '@id': subjectId });
 
   return { regionId };
+}
+
+/**
+ * The Person/Pet a region points at, whichever shape it was written in:
+ * a standoff region's `oa:hasBody` (the subject itself now, a proxy
+ * specializing it in crates written earlier) or an EXIF-derived
+ * region's own `about`.
+ *
+ * @param {ROCrate} crate
+ * @param {object} region
+ * @returns {string|null}
+ */
+function regionSubjectId(crate, region) {
+  const bodyId = unwrap(region['oa:hasBody'])?.['@id'];
+  if (bodyId) {
+    const body = crate.getEntity(bodyId);
+    return unwrap(body?.['prov:specializationOf'])?.['@id'] ?? bodyId;
+  }
+  return unwrap(region.about)?.['@id'] ?? null;
+}
+
+/**
+ * A standoff region's body node, but only when it is the region's own
+ * proxy rather than the shared Person/Pet the region now points at
+ * directly. Deleting the latter would take an entity other images in
+ * the same crate still reference.
+ */
+function ownedBodyId(region, regionId) {
+  const bodyId = unwrap(region['oa:hasBody'])?.['@id'];
+  return bodyId === `${regionId}-body` ? bodyId : null;
 }
 
 /**
@@ -352,6 +496,7 @@ export function addStandoffFaceRegion(crate, path, { name, subjectId, subjectTyp
  * @param {string|null} [options.thumbnailPath] - thumbnail path, relative to the crate directory, if one was generated
  * @param {string|null} [options.thumbnailError] - error message from thumbnail generation, if it failed
  * @param {number|null} [options.sourceModifiedAt] - the source file's modification time (epoch ms) as of this processing pass, used to detect whether it needs reprocessing on a later scan
+ * @param {((name: string, subjectType: 'Person'|'Pet') => string|null)|null} [options.subjectLookup] - the collection-wide name-to-id registry (see subjects.js), consulted for a person this crate does not already know
  * @returns {{path: string, name: string, title: string, dateCreated: string|null, description: string|null, processingError: string|null, thumbnailPath: string|null, exifEntries: Array<{name: string, value: string}>, keywords: string[], rating: number|null, people: string[], pets: string[], regions: Array<{name: string, type: 'Face'|'Pet', area: {x: number, y: number, w: number, h: number}|null}>}}
  */
 export function addImageEntity(crate, {
@@ -361,18 +506,25 @@ export function addImageEntity(crate, {
   thumbnailPath = null,
   thumbnailError = null,
   sourceModifiedAt = null,
+  subjectLookup = null,
 }) {
   const fileName = path.split('/').pop();
   const entity = crate.getEntity(path) ?? { '@id': path, '@type': 'ImageObject' };
   entity.name = fileName;
   const dateCreated = dateCreatedFromExif(exif);
   const exifEntries = [];
-  const regions = exifError ? [] : regionsFromExif(exif);
-  const regionNames = new Set(regions.map((region) => region.name));
-  // A region's name is also written into the keyword fields by the
-  // tagging tool itself (confirmed against real files) — once it is
-  // recorded as its own Person/Pet entity below, it is no longer also a
-  // plain keyword.
+  // Each region keeps whatever this crate already calls it, where that
+  // differs from the file (see resolveRegionName): the crate is the
+  // record of what somebody decided, the file is a source this app does
+  // not control and may not be allowed to write to.
+  const alreadyRecorded = existingExifRegions(crate, entity);
+  const regions = (exifError ? [] : regionsFromExif(exif))
+    .map((region) => ({ ...region, ...resolveRegionName(region, alreadyRecorded) }));
+  // Both spellings are taken out of the keywords: a tagging tool writes
+  // the region's name into the keyword fields too (confirmed against
+  // real files), and after a rename here the file still carries the old
+  // one, which must not reappear as a plain keyword.
+  const regionNames = new Set(regions.flatMap((region) => [region.name, region.nameInFile]).filter(Boolean));
   const keywords = (exifError ? [] : keywordsFromExif(exif)).filter((keyword) => !regionNames.has(keyword));
   const rating = exifError ? null : ratingFromExif(exif);
   let people = regions.filter((region) => region.type === 'Face').map((region) => region.name);
@@ -436,15 +588,18 @@ export function addImageEntity(crate, {
       const existingRegion = crate.getEntity(ref['@id']);
       if (!existingRegion || unwrap(existingRegion.writtenToFile) !== false) continue;
       const name = unwrap(existingRegion.name);
-      const bodyId = unwrap(existingRegion['oa:hasBody'])?.['@id'];
       if (freshNames.has(name)) {
-        if (bodyId) crate.deleteEntity(bodyId);
+        // Only the region's own proxy goes, never the shared Person/Pet
+        // that `oa:hasBody` now names directly — deleting that would
+        // take an entity the rest of this crate still points at.
+        const ownedBody = ownedBodyId(existingRegion, ref['@id']);
+        if (ownedBody) crate.deleteEntity(ownedBody);
         crate.deleteEntity(ref['@id']);
         continue;
       }
       preservedRegionRefs.push(ref);
-      const instanceId = unwrap(crate.getEntity(bodyId)?.['prov:specializationOf'])?.['@id'];
-      if (instanceId) preservedAboutRefs.push({ '@id': instanceId });
+      const subjectId = regionSubjectId(crate, existingRegion);
+      if (subjectId) preservedAboutRefs.push({ '@id': subjectId });
       const type = unwrap(existingRegion.regionType);
       if (type === 'Face') people = [...people, name];
       else if (type === 'Pet') pets = [...pets, name];
@@ -458,10 +613,17 @@ export function addImageEntity(crate, {
       // standalone description of what it contains, rather than relying
       // on a Person/Pet node defined only in some other crate's file.
       regions.forEach((region, index) => {
-        const subjectId = region.type === 'Face' ? personEntityId(region.name) : petEntityId(region.name);
         const subjectType = region.type === 'Face' ? 'Person' : 'Pet';
-        const instanceId = addSubjectInstance(crate, { name: region.name, subjectId, subjectType });
-        about.push({ '@id': instanceId });
+        // Resolved, never recomputed from the name: a person keeps the
+        // id they were first minted under, so correcting a spelling
+        // does not move them (see subjects.js). The crate's own copy of
+        // the identity answers this for anybody it already depicts,
+        // which is almost always, and `subjectLookup` links somebody
+        // appearing here for the first time to the id the rest of the
+        // collection already uses for them.
+        const subjectId = resolveSubjectId(region.name, subjectType, { crate, lookup: subjectLookup });
+        addSubjectIdentity(crate, { name: region.name, subjectId, subjectType });
+        about.push({ '@id': subjectId });
 
         // A stable, index-based id, same reasoning as the EXIF
         // PropertyValue nodes above: a rescan overwrites the same region
@@ -471,7 +633,12 @@ export function addImageEntity(crate, {
         // level of a reference is resolved when this crate is served as
         // JSON (see entityCrate.js).
         const regionId = `${path}#region-${index}`;
-        const regionEntity = { '@id': regionId, '@type': 'ImageRegion', name: region.name, regionType: region.type, about: { '@id': instanceId } };
+        const regionEntity = { '@id': regionId, '@type': 'ImageRegion', name: region.name, regionType: region.type, about: { '@id': subjectId } };
+        // Only when the photo file itself says something different (see
+        // resolveRegionName). Its absence is the ordinary case and means
+        // the two agree, so writing the region back to the file makes
+        // this stop being written on the next pass.
+        if (region.nameInFile) regionEntity.nameInFile = region.nameInFile;
         if (region.area) {
           regionEntity.xPosition = region.area.x;
           regionEntity.yPosition = region.area.y;
@@ -571,11 +738,18 @@ export function readImageRecord(crate, path) {
   // it belongs in without needing a second, parallel property.
   const people = [];
   const pets = [];
+  // Both the name and the id each one is recorded under. An id is
+  // minted once and frozen (see subjects.js), so a caller that
+  // recomputed one from the name would mint a second identity for
+  // anybody whose spelling has since been corrected — `subjects` is
+  // what lets the index be updated without doing that.
+  const subjects = [];
   for (const about of entity.about ?? []) {
     const type = unwrap(about['@type']);
     const name = unwrap(about.name);
-    if (type === 'Person') people.push(name);
-    else if (type === 'Pet') pets.push(name);
+    if (type !== 'Person' && type !== 'Pet') continue;
+    (type === 'Person' ? people : pets).push(name);
+    subjects.push({ id: about['@id'], name, subjectType: type });
   }
 
   // Each element of entity.regions is likewise already the resolved
@@ -590,13 +764,17 @@ export function readImageRecord(crate, path) {
   const regions = (entity.regions ?? []).map((region) => {
     const name = unwrap(region.name);
     const type = unwrap(region.regionType);
+    // Null unless the photo file's own tag disagrees with the name this
+    // crate keeps (see resolveRegionName), so a caller can show which
+    // regions are waiting on somebody to decide between the two.
+    const nameInFile = unwrap(region.nameInFile) ?? null;
     if (region.xPosition !== undefined) {
-      return { name, type, area: { x: unwrap(region.xPosition), y: unwrap(region.yPosition), w: unwrap(region.width), h: unwrap(region.height) } };
+      return { name, nameInFile, type, area: { x: unwrap(region.xPosition), y: unwrap(region.yPosition), w: unwrap(region.width), h: unwrap(region.height) } };
     }
     const targetId = unwrap(region['oa:hasTarget'])?.['@id'];
     const box = parseXywhPercentFragment(targetId);
     const area = box ? { x: box.x + box.w / 2, y: box.y + box.h / 2, w: box.w, h: box.h } : null;
-    return { name, type, area };
+    return { name, nameInFile, type, area };
   });
 
   return {
@@ -612,6 +790,7 @@ export function readImageRecord(crate, path) {
     rating: unwrap(entity.rating) ?? null,
     people,
     pets,
+    subjects,
     regions,
   };
 }
@@ -695,17 +874,62 @@ export function setImageDescription(crate, path, description) {
 }
 
 /**
- * Moves one image from one Person/Pet identity to another — the
- * mechanics of merging two into one, or renaming one (see Spec.md's
- * People section).
+ * Changes what a crate calls a Person/Pet, leaving their identity alone.
  *
- * Every reference within a crate goes through that crate's *instance* of
- * the identity (see addSubjectInstance), so this swaps the source
- * instance for the target one wherever it appears on this image: its own
- * `about`, each of its regions' `about` (EXIF shape) and body-proxy
- * `prov:specializationOf` (standoff shape), plus the region's own
- * duplicated `name`. The target's instance and shared-identity nodes are
- * created here if this crate did not already know them.
+ * This is what renaming is now. An id is minted once and frozen (see
+ * subjects.js), so correcting a spelling moves nothing: the identity
+ * node keeps its `@id` and gains a new `name`, and every region that
+ * duplicates the name for display is brought into line. No reference
+ * anywhere changes, which is the whole point — renaming used to mean
+ * rewriting every `about` in every crate that depicted them.
+ *
+ * Merging two people is still a different operation, because that
+ * really does collapse two identities into one; see
+ * renamePersonInCrate below.
+ *
+ * @param {ROCrate} crate
+ * @param {{subjectId: string, newName: string}} options
+ * @returns {boolean} whether this crate held anything to change
+ */
+export function renameSubjectInCrate(crate, { subjectId, newName }) {
+  let changed = false;
+
+  const identity = crate.getEntity(subjectId);
+  if (identity && unwrap(identity.name) !== newName) {
+    identity.name = newName;
+    changed = true;
+  }
+
+  // A region duplicates the name so a reader need not resolve `about`
+  // for it (see addImageEntity), which means every copy has to follow.
+  for (const entity of crate.entities()) {
+    if (!asTypes(entity).includes('ImageRegion')) continue;
+    const points = unwrap(entity.about)?.['@id'] ?? unwrap(entity['oa:hasBody'])?.['@id'];
+    if (points !== subjectId) continue;
+    if (unwrap(entity.name) === newName) continue;
+    entity.name = newName;
+    changed = true;
+  }
+
+  return changed;
+}
+
+/**
+ * Moves one image from one Person/Pet identity to another — the
+ * mechanics of merging two into one (see Spec.md's People section).
+ *
+ * References within a crate name the shared identity directly (see
+ * addSubjectIdentity), so this swaps the source id for the target one
+ * wherever it appears on this image: its own `about`, each region's
+ * `about` (EXIF shape) and `oa:hasBody` (standoff shape), plus the
+ * region's own duplicated `name`. The target's identity node is created
+ * here if this crate did not already know it.
+ *
+ * A crate written before identities were referenced directly points at
+ * a `#person-<Slug>` instance, or at a region body proxy specializing
+ * one. Both count as the source and both are rewritten to the target
+ * id, so a rename migrates the old shape as it passes; the proxy node,
+ * which belongs to its one region, is deleted on the way.
  *
  * Leaves the source's own nodes in place — the caller removes them once,
  * after every image across every crate referencing them has been moved
@@ -726,24 +950,17 @@ export function renamePersonInCrate(crate, imagePath, { sourceId, sourceName, ta
   const entity = crate.getEntity(imagePath);
   if (!entity) return false;
 
-  // Everything inside a crate points at its instance of a Person/Pet,
-  // not at the shared identity (see addSubjectInstance), so a rename is
-  // a swap of one instance for another — which also brings the new
-  // name, since an instance carries it.
-  const targetInstanceId = subjectInstanceId(targetName, subjectType);
-  // Either shape counts as "the source": a crate written before
-  // instances existed points straight at the arcp id, and a scan only
-  // rewrites an image whose file actually changed, so the two can sit
-  // side by side in one crate indefinitely. Matching both is what stops
-  // a merge silently skipping the un-migrated ones; whichever it finds,
-  // it writes the instance, which migrates that reference on the way
-  // past.
+  // Either shape counts as "the source": the shared identity, or the
+  // `#person-<Slug>` instance a crate written earlier points at. A scan
+  // only rewrites an image whose file actually changed, so the two can
+  // sit side by side in one crate indefinitely, and matching both is
+  // what stops a merge silently skipping the un-migrated ones.
   const sourceIds = new Set([subjectInstanceId(sourceName, subjectType), sourceId]);
   let changed = false;
 
   if ((entity.about ?? []).some((ref) => sourceIds.has(ref['@id']))) {
     const ids = new Set(entity.about.map((ref) => ref['@id']).filter((id) => !sourceIds.has(id)));
-    ids.add(targetInstanceId);
+    ids.add(targetId);
     entity.about = [...ids].map((id) => ({ '@id': id }));
     changed = true;
   }
@@ -753,14 +970,23 @@ export function renamePersonInCrate(crate, imagePath, { sourceId, sourceName, ta
     if (!region) continue;
 
     if (sourceIds.has(unwrap(region.about)?.['@id'])) {
-      region.about = { '@id': targetInstanceId };
+      region.about = { '@id': targetId };
       changed = true;
     }
     const bodyId = unwrap(region['oa:hasBody'])?.['@id'];
-    const body = bodyId ? crate.getEntity(bodyId) : null;
-    if (body && sourceIds.has(unwrap(body['prov:specializationOf'])?.['@id'])) {
-      body['prov:specializationOf'] = { '@id': targetInstanceId };
+    if (bodyId && sourceIds.has(bodyId)) {
+      region['oa:hasBody'] = { '@id': targetId };
       changed = true;
+    } else if (bodyId) {
+      const body = crate.getEntity(bodyId);
+      if (body && sourceIds.has(unwrap(body['prov:specializationOf'])?.['@id'])) {
+        // The old proxy shape. The region now names the person itself,
+        // and the proxy — which belonged to this one region and held
+        // nothing but the pointer — goes with it.
+        region['oa:hasBody'] = { '@id': targetId };
+        if (ownedBodyId({ 'oa:hasBody': { '@id': bodyId } }, ref['@id'])) crate.deleteEntity(bodyId);
+        changed = true;
+      }
     }
     if (unwrap(region.name) === sourceName) {
       region.name = targetName;
@@ -769,37 +995,175 @@ export function renamePersonInCrate(crate, imagePath, { sourceId, sourceName, ta
   }
 
   if (changed) {
-    addSubjectInstance(crate, { name: targetName, subjectId: targetId, subjectType });
+    addSubjectIdentity(crate, { name: targetName, subjectId: targetId, subjectType });
   }
   return changed;
 }
 
+// Everything syncRootCrateSubjects writes is an @id, a @type and a
+// name; anything more came from somewhere else, and a scan has no way
+// to put it back.
+const DERIVED_SUBJECT_KEYS = new Set(['@id', '@type', '@reverse', 'name']);
+
+const SUBJECT_TYPES = new Set(['Person', 'Pet']);
+
+function describedByHand(entity) {
+  if (!entity) return false;
+  return Object.keys(entity).some((key) => !DERIVED_SUBJECT_KEYS.has(key));
+}
+
+/**
+ * Whether anything in the crate points at this entity. `mentions` on
+ * the root dataset is not counted: nothing writes it any more, and
+ * where an older crate still has it, it lists every identity and so
+ * says nothing about whether anybody wants this one kept.
+ *
+ * A person can be somebody's `parent` and have no photographs — of
+ * their own, or any more. Deleting them because nothing depicts them
+ * would leave that `parent` pointing at a node that is not there.
+ */
+function referencedElsewhere(entity) {
+  const inbound = entity?.['@reverse'] ?? {};
+  return Object.entries(inbound).some(([property, refs]) => property !== 'mentions' && (refs ?? []).length > 0);
+}
+
+/**
+ * Every property on every entity that names `fromId` now names `toId`.
+ *
+ * Walked over the whole graph rather than over the properties expected
+ * to hold one — an image's `about`, a region's `about` and
+ * `oa:hasBody`, a person's `parent` — so that a reference somewhere
+ * unanticipated is repointed too, instead of being left dangling at an
+ * entity about to be deleted. The set of properties that can name a
+ * person grows every time the profile does, and a rename that only
+ * knew about the ones written when it was written would quietly break
+ * the newest ones.
+ *
+ * @param {ROCrate} crate
+ * @param {string} fromId
+ * @param {string} toId
+ */
+export function repointReferences(crate, fromId, toId) {
+  for (const entity of crate.entities()) {
+    for (const [property, value] of Object.entries(entity)) {
+      if (property === '@id' || property === '@type' || property === '@reverse') continue;
+      const values = Array.isArray(value) ? value : [value];
+      if (!values.some((item) => item && typeof item === 'object' && item['@id'] === fromId)) continue;
+
+      const rewritten = [];
+      for (const item of values) {
+        const nextId = item && typeof item === 'object' && item['@id'] === fromId ? toId : unwrap(item)?.['@id'];
+        if (nextId === undefined) {
+          rewritten.push(item);
+        } else if (!rewritten.some((kept) => kept['@id'] === nextId)) {
+          // Deduped: something naming both the old and the new id would
+          // otherwise end up naming the new one twice.
+          rewritten.push({ '@id': nextId });
+        }
+      }
+      entity[property] = rewritten.length === 1 ? rewritten[0] : rewritten;
+    }
+  }
+}
+
+/**
+ * Folds one root-crate identity into another and removes it.
+ *
+ * Used when a name has been merged away, which is the one case where an
+ * identity nothing depicts should still go: it has been superseded
+ * rather than merely untagged, so leaving it would put a person in the
+ * crate that the People tab does not list. syncRootCrateSubjects
+ * deliberately will not do it (see its own note) once anything has been
+ * written about them, so a merge has to say so explicitly.
+ *
+ * Whatever the source said and the survivor does not is carried across
+ * first. Merging two records of one person is not a reason to throw
+ * away what one of them knew, and a description typed against the
+ * spelling that lost exists nowhere else.
+ *
+ * @param {ROCrate} rootCrate
+ * @param {{sourceId: string, targetId: string}} options
+ */
+export function foldSubjectInto(rootCrate, { sourceId, targetId }) {
+  if (sourceId === targetId) return;
+  const source = rootCrate.getEntity(sourceId);
+  if (!source) return;
+
+  const target = rootCrate.getEntity(targetId);
+  if (target) {
+    for (const key of Object.keys(source)) {
+      if (DERIVED_SUBJECT_KEYS.has(key)) continue;
+      const existing = target[key];
+      if (existing === undefined || (Array.isArray(existing) && existing.length === 0)) target[key] = source[key];
+    }
+  }
+
+  // Anything that named the old identity now names the survivor —
+  // another person's `parent`, above all. Without this the reference
+  // would be left pointing at a node this is about to delete, and
+  // nothing would say so.
+  repointReferences(rootCrate, sourceId, targetId);
+  // Only an older crate still lists it here (see the
+  // remove-root-mentions migration).
+  rootCrate.deleteValues(rootCrate.rootId, 'mentions', { '@id': sourceId });
+  rootCrate.deleteEntity(sourceId);
+}
+
 /**
  * Brings the root crate's own set of Person/Pet entities in line with
- * `subjects` — the collection-wide identities, listed on the root
- * dataset's `mentions` so they are reachable rather than floating
- * unreferenced in the graph.
+ * `subjects` — the collection-wide identities. They are not linked
+ * from the root dataset: a contextual entity nothing points at is
+ * fine, and keeping a list of them in step was housekeeping for its
+ * own sake.
  *
  * This is where a person is described in full: the sub-collection crates
  * carry a minimal copy of each identity for standalone readability (see
- * addSubjectInstance), but the root crate's copy is the one meant to
+ * addSubjectIdentity), but the root crate's copy is the one meant to
  * grow relationships, dates and the rest (Section 1's "coming soon").
  * Anything already recorded on an entity here is therefore preserved —
- * only `name` is kept in step — and an identity no longer depicted
- * anywhere is dropped, so a merged-away name does not linger.
+ * only `name` is kept in step.
+ *
+ * An identity nothing depicts any more is dropped, so a merged-away name
+ * does not linger — but only if this function is all that ever wrote it
+ * and nothing else in the crate points at it.
+ *
+ * A node carrying anything beyond its name holds something no scan can
+ * reconstruct from the photos, typed in by somebody (see the profile
+ * editor in Spec.md), and the whole reason the root crate keeps people
+ * is to accumulate exactly that. Deleting it because nobody happens to
+ * be tagged in a photo right now would throw away the only copy — and
+ * the cases where that happens are ordinary ones: a region removed in
+ * another tool, the last photo of someone moved to the trash, or a
+ * person written down before any photo of them has been tagged.
+ *
+ * A node something else references is kept for a different reason: a
+ * person can be somebody's `parent` and have no photographs, and
+ * deleting them would leave that `parent` pointing at nothing.
  *
  * @param {ROCrate} rootCrate
- * @param {Array<{name: string, subjectType: 'Person'|'Pet'}>} subjects
+ * @param {Array<{id?: string|null, name: string, subjectType: 'Person'|'Pet'}>} subjects
  */
 export function syncRootCrateSubjects(rootCrate, subjects) {
+  // The caller's id, never one recomputed from the name: an identity
+  // is minted once and frozen (see subjects.js), so deriving it here
+  // would hand a renamed person a second, brand new node and leave
+  // their real one looking undepicted. Falls back to what this crate
+  // already calls them, then to minting, for a subject the caller
+  // could not put an id to.
   const wanted = new Map(subjects.map((subject) => [
-    subject.subjectType === 'Pet' ? petEntityId(subject.name) : personEntityId(subject.name),
+    subject.id
+      ?? subjectIdInCrate(rootCrate, subject.name, subject.subjectType)
+      ?? (subject.subjectType === 'Pet' ? petEntityId(subject.name) : personEntityId(subject.name)),
     subject,
   ]));
 
-  for (const ref of rootCrate.rootDataset.mentions ?? []) {
-    const id = ref['@id'];
-    if (wanted.has(id)) continue;
+  for (const existing of [...rootCrate.entities()]) {
+    const id = existing['@id'];
+    const types = Array.isArray(existing['@type']) ? existing['@type'] : [existing['@type']];
+    if (!types.some((type) => SUBJECT_TYPES.has(type)) || wanted.has(id)) continue;
+    if (describedByHand(existing) || referencedElsewhere(existing)) continue;
+    // Only an older crate still lists it here (see the
+    // remove-root-mentions migration).
     rootCrate.deleteValues(rootCrate.rootId, 'mentions', { '@id': id });
     rootCrate.deleteEntity(id);
   }
@@ -810,7 +1174,6 @@ export function syncRootCrateSubjects(rootCrate, subjects) {
     // here is the point of this crate holding them at all.
     if (existing) existing.name = name;
     else rootCrate.addEntity({ '@id': id, '@type': subjectType, name });
-    rootCrate.addValues(rootCrate.rootId, 'mentions', { '@id': id });
   }
 }
 
@@ -837,12 +1200,13 @@ export function removeImageEntity(crate, path) {
   }
   for (const ref of entity.regions ?? []) {
     const region = crate.getEntity(ref['@id']);
-    // A standoff region's body is its own small proxy entity (see
-    // addStandoffFaceRegion), exclusively owned by this one region the
-    // same way its EXIF PropertyValue nodes are — never the shared
-    // Person/Pet entity itself, which prov:specializationOf points to
-    // and which this deliberately leaves alone.
-    const bodyId = unwrap(region?.['oa:hasBody'])?.['@id'];
+    // A standoff region's `oa:hasBody` names the shared Person/Pet
+    // itself (see addStandoffFaceRegion), which other images in this
+    // same crate also depict and which must therefore survive. Only a
+    // `#...-body` proxy, written by an earlier version and owned by
+    // this one region the same way its EXIF PropertyValue nodes are,
+    // is removed with it.
+    const bodyId = region ? ownedBodyId(region, ref['@id']) : null;
     if (bodyId) crate.deleteEntity(bodyId);
     crate.deleteEntity(ref['@id']);
   }

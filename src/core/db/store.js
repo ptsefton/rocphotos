@@ -369,23 +369,37 @@ export function listImageIdsByCrate(driver) {
 }
 
 /**
- * Every Person/Pet depicted anywhere in the collection, by name — what
- * the root crate records as its contextual entities (see
- * crateBuilder.js's syncRootCrateSubjects). Read from the index rather
- * than the crates for the same reason the root preview is: only the
- * index knows about every sub-collection at once, including those a
- * given scan run did not touch.
+ * Every Person/Pet depicted anywhere in the collection, with the id
+ * each one is recorded under — what the root crate holds as its
+ * contextual entities (see crateBuilder.js's syncRootCrateSubjects).
+ * Read from the index rather than the crates for the same reason the
+ * root preview is: only the index knows about every sub-collection at
+ * once, including those a given scan run did not touch.
+ *
+ * The facet rows store names, so the id comes from joining to the
+ * identity's own row. That join is what stops a rename being undone:
+ * an id is minted once and then frozen (see subjects.js), so a caller
+ * recomputing one from the name would mint a second identity for
+ * somebody whose spelling had since been corrected. `id` is null for a
+ * name with no identity row yet — a facet written before its person
+ * was — and the caller mints one.
  *
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
- * @returns {Array<{name: string, subjectType: 'Person'|'Pet'}>}
+ * @returns {Array<{id: string|null, name: string, subjectType: 'Person'|'Pet'}>}
  */
 export function listDepictedSubjects(driver) {
   return driver
     .all(
-      `SELECT DISTINCT facet_name, value FROM entity_facets
-       WHERE facet_name IN ('people', 'pets') ORDER BY facet_name, value`,
+      `SELECT DISTINCT f.facet_name, f.value, e.id
+         FROM entity_facets f
+         LEFT JOIN entities e
+           ON e.name = f.value
+          AND e.entity_type = CASE f.facet_name WHEN 'pets' THEN ? ELSE ? END
+        WHERE f.facet_name IN ('people', 'pets')
+        ORDER BY f.facet_name, f.value`,
+      [ENTITY_TYPE_PET, ENTITY_TYPE_PERSON],
     )
-    .map((row) => ({ name: row.value, subjectType: row.facet_name === 'pets' ? 'Pet' : 'Person' }));
+    .map((row) => ({ id: row.id ?? null, name: row.value, subjectType: row.facet_name === 'pets' ? 'Pet' : 'Person' }));
 }
 
 /**

@@ -257,11 +257,11 @@ export async function scanCollection({ fsAdapter, db, rootName, subdirs = [], re
       // found; upserting on every later sighting (here, and in every other
       // crate that also depicts them) is a no-op beyond that first time,
       // since name is all there currently is to record about them.
-      for (const name of record.people) {
-        upsertEntity(db, { id: personEntityId(name), roCrateId: crateEntityId(crateDirPath), entityType: ENTITY_TYPE_PERSON, name });
-      }
-      for (const name of record.pets) {
-        upsertEntity(db, { id: petEntityId(name), roCrateId: crateEntityId(crateDirPath), entityType: ENTITY_TYPE_PET, name });
+      // The id the crate records, not one recomputed from the name —
+      // see subjects.js, and syncImageIndexFromCrate, which does the
+      // same for a single image.
+      for (const { id, name, subjectType } of record.subjects ?? []) {
+        upsertEntity(db, { id, roCrateId: crateEntityId(crateDirPath), entityType: subjectType === 'Pet' ? ENTITY_TYPE_PET : ENTITY_TYPE_PERSON, name });
       }
       upsertFile(db, {
         id: entityId,
