@@ -12,7 +12,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "build:pages": "ROCPHOTOS_BASE=${ROCPHOTOS_BASE:-/rocphotos/} vite build"
+    "build:pages": "ROCPHOTOS_BASE=${ROCPHOTOS_BASE:-/rocphotos/} vite build",
+    "sync:masp": "node scripts/sync-masp.js"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

@@ -1,0 +1,23 @@
+{
+  "source": {
+    "dir": "/Users/pt/working/language-research-technology/masp/ro-crate-masp",
+    "commit": "fd8c97ce1e5249fe0e622063006e295f155d895e",
+    "dirty": true,
+    "remote": "git@github.com:Language-Research-Technology/ro-crate-masp.git"
+  },
+  "syncedAt": "2026-10-01T23:32:44.069Z",
+  "files": [
+    {
+      "from": "lib/masp-validator.js",
+      "file": "masp-validator.cjs",
+      "bytes": 67562,
+      "sha256": "c1dea208eecb7ed649e10cdf75c80e1fa79c587f9d32f6032f02f1f9826c5df3"
+    },
+    {
+      "from": "profiles/rocphotos/profile-crate/ro-crate-metadata.json",
+      "file": "rocphotos-profile.json",
+      "bytes": 59176,
+      "sha256": "041bda7e164818a1cb2a8495913d8f10a449b92e155aca2cfa1077f02fa15bc1"
+    }
+  ]
+}
