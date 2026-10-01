@@ -1,5 +1,6 @@
 import { renderOverviewTree, selectedOverviewPaths, setAllCrateCheckboxes } from './overviewUI.js';
 import { DETECTION_MIN_CONFIDENCE, isReliableForMatching } from './faceQuality.js';
+import { createEntityForm } from './masp/entityForm.js';
 
 // Where this app's own API lives, relative to wherever this page is
 // being served from. `rocphotos serve` puts the page at / and the API
@@ -2390,6 +2391,12 @@ function showPhotosForPerson(name) {
 
 function renderPeopleList(people) {
   peopleListEl.innerHTML = '';
+  // Rebuilding the list takes any open editor with it — on every filter
+  // keystroke, among other things — so the record of which one is open
+  // has to go too, or the next Edit click would think it was closing a
+  // panel that no longer exists.
+  openPersonEditorName = null;
+  personEditorTrail = [];
   for (const { name, imageCount } of people) {
     // A plain div, not a label wrapping the whole row: the name beside
     // the checkbox is now itself clickable, and a click on it inside a
@@ -2408,19 +2415,460 @@ function renderPeopleList(people) {
       updatePeopleMergeButton();
     });
 
-    const nameEl = document.createElement('button');
-    nameEl.type = 'button';
-    nameEl.className = 'person-name';
-    nameEl.textContent = name;
-    nameEl.title = `Show every photo of ${name}`;
-    nameEl.addEventListener('click', () => showPhotosForPerson(name));
+    // The name opens this person's record, which is what somebody
+    // reading a list of people is nearly always after. Leaving the
+    // whole grid one stray click away was a trap: the photos are now
+    // their own control, over on the right where it cannot be hit by
+    // accident.
+    const nameEl = entityButton(name, () => {
+      togglePersonEditor(name).catch((err) => { peopleStatusEl.textContent = `Error: ${err.message}`; });
+    });
+    nameEl.classList.add('person-name');
+    nameEl.title = `Edit what the collection records about ${name}`;
 
     const countEl = document.createElement('span');
     countEl.className = 'person-image-count';
     countEl.textContent = imageCount === 1 ? '1 photo' : `${imageCount} photos`;
 
-    row.append(checkbox, nameEl, countEl);
+    const photosEl = document.createElement('button');
+    photosEl.type = 'button';
+    photosEl.className = 'person-photos';
+    photosEl.textContent = 'Photos';
+    photosEl.title = `Show every photo of ${name}`;
+    photosEl.addEventListener('click', () => showPhotosForPerson(name));
+
+    row.append(checkbox, nameEl, countEl, photosEl);
     peopleListEl.appendChild(row);
+  }
+}
+
+// An entity, as something to click through to. Everything referring to
+// a person — a row in the list, the other end of a relationship —
+// looks the same and behaves the same, so a reference reads as the
+// thing it names rather than as an arrow pointing somewhere.
+//
+// The icon says what kind of thing it is. Only people have one for
+// now, and FACET_ICONS already settled what a person looks like in
+// this app, so it is reused rather than a second answer invented.
+const ENTITY_ICONS = { Person: FACET_ICONS.people, Pet: FACET_ICONS.pets };
+
+/**
+ * Follows a reference to another person, from a form that may have
+ * unsaved work in it.
+ *
+ * Refused rather than confirmed: navigating away would discard what
+ * somebody typed, and Save is one click away and keeps them where they
+ * are. `from` is the person whose editor this is, which is what the
+ * trail of crumbs is built from.
+ */
+function openPersonFromRelationship(name, from, form) {
+  if (form?.isDirty?.()) {
+    form.setStatus('Save or Cancel first — following this would discard what you have typed.', 'error');
+    return;
+  }
+  if (name === from) return;
+  openPersonEditor(name, [...personEditorTrail, from])
+    .catch((err) => { peopleStatusEl.textContent = `Error: ${err.message}`; });
+}
+
+function entityButton(label, onClick, { kind = 'Person' } = {}) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'entity-button';
+  button.append(
+    Object.assign(document.createElement('span'), { className: 'entity-icon', textContent: ENTITY_ICONS[kind] ?? ENTITY_ICONS.Person, ariaHidden: 'true' }),
+    Object.assign(document.createElement('span'), { className: 'entity-label', textContent: label }),
+  );
+  button.addEventListener('click', onClick);
+  return button;
+}
+
+// What a relationship looks like at a glance: one way for a directed
+// kind, both ways for one that reads the same from either side. Taken
+// from whether the class has two slots to exchange (see
+// swappableParticipants), so a kind added later picks up the right one
+// without being listed here.
+const ORIENTED_ARROW = '\u2192';
+const UNDIRECTED_ARROW = '\u2194';
+
+// The profile-driven editor for one person's canonical record (Spec.md's
+// "Editing metadata against a MASP profile"). Opened under the row it
+// belongs to rather than in a dialog, so the list stays visible and the
+// name being edited is the one directly above the form.
+//
+// Nothing here knows which fields a Person has. The server answers with
+// field descriptors derived from the MASP profile and createEntityForm
+// renders them, so a property added to the profile appears here without
+// a change to this file — which is also why the form is a separate
+// component: this function is about one person in one list, that one is
+// about any entity of any class in any profile.
+let openPersonEditorName = null;
+// The people walked through to reach the one on screen, oldest first,
+// so following a chain of parents can be retraced. Each entry is a
+// name; a crumb reopens that person and drops everything after it.
+let personEditorTrail = [];
+function closePersonEditor() {
+  peopleListEl.querySelector('.person-editor')?.remove();
+  for (const row of peopleListEl.querySelectorAll('.person-row')) row.classList.remove('open');
+  openPersonEditorName = null;
+  personEditorTrail = [];
+}
+
+function personRowFor(name) {
+  return [...peopleListEl.querySelectorAll('.person-row')]
+    .find((row) => row.querySelector('.person-name .entity-label')?.textContent === name) ?? null;
+}
+
+// Where this person's editor goes. Under their own row when the list
+// has one, and at the top of the list when it does not — a parent with
+// no photographs of their own is a real case (the People tab lists who
+// is depicted, not everyone the collection knows about), and following
+// a reference to them has to work the same way as anybody else.
+function placePersonEditor(name, panel) {
+  const row = personRowFor(name);
+  if (row) {
+    row.after(panel);
+    // Marks which row the open panel belongs to, since the name that
+    // opened it is also what closes it again.
+    row.classList.add('open');
+  } else {
+    peopleListEl.prepend(panel);
+  }
+}
+
+function renderPersonEditorTrail(name) {
+  if (personEditorTrail.length === 0) return null;
+  const trail = document.createElement('nav');
+  trail.className = 'person-editor-trail';
+  personEditorTrail.forEach((previous, index) => {
+    const crumb = document.createElement('button');
+    crumb.type = 'button';
+    crumb.className = 'person-editor-crumb';
+    crumb.textContent = previous;
+    crumb.title = `Back to ${previous}`;
+    crumb.addEventListener('click', () => {
+      openPersonEditor(previous, personEditorTrail.slice(0, index))
+        .catch((err) => { peopleStatusEl.textContent = `Error: ${err.message}`; });
+    });
+    trail.append(crumb, Object.assign(document.createElement('span'), { className: 'person-editor-crumb-sep', textContent: '›' }));
+  });
+  trail.append(Object.assign(document.createElement('span'), { className: 'person-editor-here', textContent: name }));
+  return trail;
+}
+
+async function togglePersonEditor(name) {
+  if (openPersonEditorName === name) {
+    closePersonEditor();
+    return;
+  }
+  await openPersonEditor(name, []);
+}
+
+/**
+ * Opens the profile-driven editor for one person, replacing whatever
+ * was open.
+ *
+ * `trail` is how this person was reached — empty from the list, and the
+ * people walked through when following a parent — which is what makes
+ * the chain retraceable. Following a reference and then another is the
+ * point: a parent is a person like any other, so the same editor opens
+ * on them and a parent can be chosen for them in turn.
+ */
+async function openPersonEditor(name, trail = []) {
+  closePersonEditor();
+  openPersonEditorName = name;
+  personEditorTrail = trail;
+
+  const panel = document.createElement('div');
+  panel.className = 'person-editor';
+  panel.textContent = 'Loading…';
+  placePersonEditor(name, panel);
+
+  const response = await fetch(`${API}/api/people/person?name=${encodeURIComponent(name)}`);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error ?? `Failed to load ${name}: ${response.status}`);
+  // Another Edit click while this was in flight: that one owns the
+  // panel now, and writing into it would show this person's values
+  // under the other person's name.
+  if (openPersonEditorName !== name) return;
+
+  const form = createEntityForm({
+    fields: payload.fields,
+    values: payload.values,
+    submitLabel: 'Save',
+    onCancel: () => closePersonEditor(),
+    onSubmit: (values) => { savePerson(name, values, form).catch((err) => form.setStatus(`Error: ${err.message}`, 'error')); },
+    referenceIcon: ENTITY_ICONS.Person,
+    onOpenReference: (fieldName, id) => {
+      const option = payload.fields.find((field) => field.name === fieldName)?.options?.find((candidate) => candidate.id === id);
+      if (option) openPersonFromRelationship(option.name, name, form);
+    },
+  });
+  panel.replaceChildren(form.element);
+  if (payload.class.description) {
+    panel.prepend(Object.assign(document.createElement('p'), { className: 'person-editor-about', textContent: payload.class.description }));
+  }
+  const trailEl = renderPersonEditorTrail(name);
+  if (trailEl) panel.prepend(trailEl);
+  panel.append(renderRelationships(name, payload));
+  // What the profile already finds missing, shown before anything is
+  // typed — the form is as much a way to see what is not recorded yet
+  // as a way to record it.
+  form.setProblems(payload.check.problems);
+
+  // Focus goes to the panel, not to the first field. The first field is
+  // the name, and a name is not an ordinary field: changing it renames
+  // the person across every crate in the collection. Opening the editor
+  // with a caret already sitting in it both invites an accidental edit
+  // to the most expensive thing on the form and makes the person
+  // reading it wonder what that mark after their name is. The panel
+  // still takes focus, so a keyboard or screen-reader user lands on the
+  // form rather than back at the top of the list.
+  panel.tabIndex = -1;
+  panel.focus();
+  panel.scrollIntoView({ block: 'nearest' });
+}
+
+/**
+ * The Relationships section of a person's editor.
+ *
+ * A relationship is an entity of its own joining two people, not a
+ * property of either (see core/people/relationships.js), so each one
+ * gets its own form — the same profile-driven form the person above it
+ * uses, over a different class. Nothing here names a field or a kind:
+ * the classes, their fields, and the terms each kind can take all come
+ * from the server, which reads them off the MASP profile.
+ */
+function renderRelationships(personName, payload) {
+  const section = document.createElement('section');
+  section.className = 'person-relationships';
+  section.append(Object.assign(document.createElement('h3'), { textContent: 'Relationships' }));
+
+  const list = document.createElement('div');
+  list.className = 'relationship-list';
+  section.append(list);
+
+  const reload = () => {
+    openPersonEditor(personName, personEditorTrail)
+      .catch((err) => { peopleStatusEl.textContent = `Error: ${err.message}`; });
+  };
+
+  for (const relationship of payload.relationships) {
+    list.append(renderRelationship(personName, payload, relationship, reload));
+  }
+  if (payload.relationships.length === 0) {
+    list.append(Object.assign(document.createElement('p'), {
+      className: 'relationship-empty',
+      textContent: 'Nothing recorded yet.',
+    }));
+  }
+
+  // Adding one: pick which kind, and the person whose editor this is
+  // goes into the first slot that takes a person — which for a
+  // directed relationship is the source, so these read "from" them.
+  const chooser = document.createElement('select');
+  chooser.className = 'relationship-kind';
+  for (const relationshipClass of payload.relationshipClasses) {
+    chooser.append(Object.assign(document.createElement('option'), { value: relationshipClass.id, textContent: relationshipClass.name }));
+  }
+  const addButton = Object.assign(document.createElement('button'), { type: 'button', className: 'relationship-add', textContent: 'Add' });
+  addButton.addEventListener('click', () => {
+    const relationshipClass = payload.relationshipClasses.find((candidate) => candidate.id === chooser.value);
+    const [firstParticipant] = relationshipClass.participants;
+    const seeded = relationshipClass.fields.find((field) => field.name === firstParticipant)?.multiple
+      ? [payload.id, '']
+      : [payload.id];
+    list.querySelector('.relationship-empty')?.remove();
+    list.append(renderRelationship(personName, payload, {
+      id: null, classRuleId: relationshipClass.id, values: { [firstParticipant]: seeded }, others: [],
+    }, reload));
+  });
+
+  const controls = document.createElement('div');
+  controls.className = 'relationship-controls';
+  controls.append(chooser, addButton);
+  section.append(controls);
+  return section;
+}
+
+function renderRelationship(personName, payload, relationship, reload) {
+  const relationshipClass = payload.relationshipClasses.find((candidate) => candidate.id === relationship.classRuleId);
+  const row = document.createElement('div');
+  row.className = 'relationship';
+
+  const heading = document.createElement('p');
+  heading.className = 'relationship-heading';
+  heading.append(
+    Object.assign(document.createElement('span'), {
+      className: 'relationship-arrow',
+      textContent: relationshipClass.swappable ? ORIENTED_ARROW : UNDIRECTED_ARROW,
+      title: relationshipClass.swappable ? 'Runs one way' : 'Reads the same from either side',
+    }),
+    Object.assign(document.createElement('span'), { className: 'relationship-kind-name', textContent: relationshipClass.name }),
+  );
+  // Who is in which slot, not just who else is involved: this person
+  // turns up in a parent-child relationship from either end, and
+  // "with Peter" does not say which of them is the parent. The others
+  // are buttons, so a relationship can be read and then followed.
+  //
+  // Roles are named only where there are two slots to tell apart. An
+  // undirected relationship puts everybody in one field, so naming it
+  // would read "Gail as spouses, with Peter as spouses" — a label
+  // repeated twice to say nothing.
+  const namesRoles = Boolean(relationshipClass.swappable);
+  if (namesRoles && relationship.role) {
+    heading.append(document.createTextNode(` — ${personName} as ${relationship.role.toLowerCase()},`));
+  }
+  for (const [index, other] of relationship.others.entries()) {
+    heading.append(document.createTextNode(index === 0 ? (namesRoles ? ' with ' : ' — with ') : ', '));
+    heading.append(entityButton(other.name, () => openPersonFromRelationship(other.name, personName, form)));
+    if (namesRoles && other.fieldLabel) {
+      heading.append(Object.assign(document.createElement('span'), {
+        className: 'relationship-role', textContent: ` as ${other.fieldLabel.toLowerCase()}`,
+      }));
+    }
+  }
+  row.append(heading);
+  // The class's own words, which is where a directed relationship says
+  // which end plays which role. It has to be visible at the point of
+  // entry: the field labels alone cannot say whether the source is the
+  // parent or the child, and that varies by kind.
+  if (relationshipClass.description) {
+    row.append(Object.assign(document.createElement('p'), {
+      className: 'relationship-about', textContent: relationshipClass.description,
+    }));
+  }
+
+  const form = createEntityForm({
+    fields: relationshipClass.fields,
+    values: relationship.values,
+    submitLabel: relationship.id ? 'Save' : 'Create',
+    onCancel: relationship.id ? null : () => row.remove(),
+    swap: relationshipClass.swappable,
+    onSubmit: (values) => {
+      saveRelationship({ id: relationship.id, classRuleId: relationship.classRuleId, values }, form, reload)
+        .catch((err) => form.setStatus(`Error: ${err.message}`, 'error'));
+    },
+    // The same lookup the person form offers, so a relationship can be
+    // followed to whoever is on the other end of it.
+    referenceIcon: ENTITY_ICONS.Person,
+    onOpenReference: (fieldName, id) => {
+      const option = relationshipClass.fields.find((field) => field.name === fieldName)?.options?.find((candidate) => candidate.id === id);
+      if (option) openPersonFromRelationship(option.name, personName, form);
+    },
+  });
+  row.append(form.element);
+
+  if (relationship.id) {
+    const remove = Object.assign(document.createElement('button'), {
+      type: 'button', className: 'relationship-remove', textContent: 'Remove this relationship',
+    });
+    remove.addEventListener('click', () => {
+      // Removing the statement, not the people it was about — they
+      // exist independently of anything said about them.
+      removeRelationship(relationship.id, form, reload)
+        .catch((err) => form.setStatus(`Error: ${err.message}`, 'error'));
+    });
+    form.element.querySelector('.masp-actions')?.append(remove);
+  }
+
+  if (relationship.check) form.setProblems(relationship.check.problems);
+  return row;
+}
+
+async function saveRelationship(request, form, reload) {
+  form.setBusy(true);
+  form.setStatus('Saving…');
+  try {
+    const response = await fetch(`${API}/api/people/relationship`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    const result = await response.json();
+    if (response.status === 422) {
+      form.setProblems(result.problems);
+      form.setStatus('Nothing was saved — see the notes above.', 'error');
+      return;
+    }
+    if (!response.ok) throw new Error(result.error ?? `Save failed: ${response.status}`);
+    form.markSaved();
+    // Reopened rather than patched in place: a new relationship has an
+    // id now, and both ends of it need their summary lines rebuilt.
+    reload();
+  } finally {
+    form.setBusy(false);
+  }
+}
+
+async function removeRelationship(id, form, reload) {
+  form.setBusy(true);
+  form.setStatus('Removing…');
+  try {
+    const response = await fetch(`${API}/api/people/relationship/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? `Failed: ${response.status}`);
+    reload();
+  } finally {
+    form.setBusy(false);
+  }
+}
+
+// Images the index still lists but their crate no longer holds (see
+// people/handler.js's mergeNames): a rename skips those rather than
+// failing outright, so it has to say it did — otherwise the photo count
+// would quietly be lower than the one shown beside the name.
+function staleIndexNote(unreadable) {
+  if (!unreadable || unreadable.length === 0) return '';
+  const count = `${unreadable.length} photo${unreadable.length === 1 ? '' : 's'}`;
+  return ` ${count} could not be read from ${unreadable.length === 1 ? 'its crate' : 'their crates'} and ${unreadable.length === 1 ? 'was' : 'were'} skipped — rescan to clear ${unreadable.length === 1 ? 'it' : 'them'} from the index.`;
+}
+
+async function savePerson(originalName, values, form) {
+  form.setBusy(true);
+  form.setStatus('Saving…');
+  try {
+    const response = await fetch(`${API}/api/people/person`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: originalName, values }),
+    });
+    const result = await response.json();
+    if (response.status === 422) {
+      // Refused: a value that was filled in does not match the profile.
+      // Shown against its own field and left on screen to be corrected.
+      form.setProblems(result.problems);
+      form.setStatus('Nothing was saved — see the notes above.', 'error');
+      return;
+    }
+    if (!response.ok) throw new Error(result.error ?? `Save failed: ${response.status}`);
+
+    // Saved. What is on screen is now what is stored, so the form is no
+    // longer dirty — without this the guard on following a reference
+    // would go on refusing, having nothing else to tell it otherwise.
+    form.markSaved();
+
+    // A rename changes which photos point where, so the list behind the
+    // form is now out of date; anything else leaves it alone.
+    const renamed = result.renamedFrom && result.renamedFrom !== result.name;
+    form.setProblems(result.check.problems);
+    const stillMissing = result.check.problems.length > 0
+      ? ` Still to record: ${result.check.problems.map(({ field }) => field).join(', ')}.`
+      : '';
+    if (renamed) {
+      closePersonEditor();
+      await loadPeople();
+      const photos = `${result.imagesUpdated} photo${result.imagesUpdated === 1 ? '' : 's'} updated`;
+      peopleStatusEl.textContent = `Renamed "${result.renamedFrom}" to "${result.name}" (${photos}).${staleIndexNote(result.unreadable)}${stillMissing}`;
+    } else {
+      form.setStatus(`Saved.${stillMissing}`, stillMissing ? '' : 'ok');
+    }
+  } finally {
+    form.setBusy(false);
   }
 }
 
@@ -2471,9 +2919,9 @@ async function mergeSelectedPeople() {
     selectedPeopleNames = new Set();
     await loadPeople();
     const photos = `${result.imagesUpdated} photo${result.imagesUpdated === 1 ? '' : 's'} updated`;
-    peopleStatusEl.textContent = renaming
+    peopleStatusEl.textContent = (renaming
       ? `Renamed "${sourceNames[0]}" to "${result.targetName}" (${photos}).`
-      : `Merged into "${result.targetName}" (${photos}).`;
+      : `Merged into "${result.targetName}" (${photos}).`) + staleIndexNote(result.unreadable);
   } catch (err) {
     peopleStatusEl.textContent = `Error: ${err.message}`;
     updatePeopleMergeButton();
@@ -2512,6 +2960,209 @@ regeneratePreviewsButtonEl.addEventListener('click', async () => {
     regeneratePreviewsButtonEl.disabled = false;
   }
 });
+
+// Settings' MASP profile section (src/core/masp/collectionProfile.js).
+// The profile decides what the People tab can record and how it is
+// checked, so being able to swap one in without a new build is what
+// lets somebody try a change to it and see what it does.
+//
+// The file is read in the page and posted as text: the same request
+// works whether a server or the Service Worker is answering it, which
+// is what makes this available in every run mode.
+const maspCurrentEl = document.querySelector('#settings-masp-current');
+const maspFileEl = document.querySelector('#settings-masp-file');
+const maspInstallEl = document.querySelector('#settings-masp-install');
+const maspResetEl = document.querySelector('#settings-masp-reset');
+const maspStatusEl = document.querySelector('#settings-masp-status');
+
+function renderActiveProfile(profile) {
+  const list = document.createElement('dl');
+  const row = (term, value) => {
+    list.append(
+      Object.assign(document.createElement('dt'), { textContent: term }),
+      Object.assign(document.createElement('dd'), { textContent: value }),
+    );
+  };
+  row('In use', profile.source === 'collection' ? "This collection's own profile" : 'The profile built into this app');
+  row('From', profile.path);
+  if (profile.person) row('Person', `${profile.person.name} (${profile.person.id})`);
+  row('Relationships', profile.relationshipClasses.length > 0
+    ? profile.relationshipClasses.map((relationshipClass) => relationshipClass.name).join(', ')
+    : 'none declared');
+  maspCurrentEl.replaceChildren(list);
+  maspResetEl.hidden = profile.source !== 'collection';
+}
+
+async function loadActiveProfile() {
+  const response = await fetch(`${API}/api/admin/masp`);
+  const profile = await response.json();
+  if (!response.ok) throw new Error(profile.error ?? `Failed to load the profile: ${response.status}`);
+  renderActiveProfile(profile);
+}
+
+maspFileEl.addEventListener('change', () => {
+  maspInstallEl.disabled = maspFileEl.files.length === 0;
+  maspStatusEl.textContent = '';
+});
+
+maspInstallEl.addEventListener('click', async () => {
+  const [file] = maspFileEl.files;
+  if (!file) return;
+  maspInstallEl.disabled = true;
+  maspStatusEl.textContent = 'Installing…';
+  try {
+    const response = await fetch(`${API}/api/admin/masp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: await file.text() }),
+    });
+    const result = await response.json();
+    if (response.status === 422) {
+      // Refused, with the reasons: a profile this app cannot edit
+      // through would break the People tab rather than change it.
+      maspStatusEl.textContent = [`${file.name} was not installed:`, ...result.problems.map((problem) => `  • ${problem}`)].join('\n');
+      return;
+    }
+    if (!response.ok) throw new Error(result.error ?? `Failed: ${response.status}`);
+    renderActiveProfile(result);
+    maspStatusEl.textContent = `Installed ${file.name}. The People tab is built from it from now on — reopen a person to see it.`;
+    maspFileEl.value = '';
+  } catch (err) {
+    maspStatusEl.textContent = `Error: ${err.message}`;
+  } finally {
+    maspInstallEl.disabled = maspFileEl.files.length === 0;
+  }
+});
+
+maspResetEl.addEventListener('click', async () => {
+  maspResetEl.disabled = true;
+  maspStatusEl.textContent = 'Reverting…';
+  try {
+    const response = await fetch(`${API}/api/admin/masp/reset`, { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? `Failed: ${response.status}`);
+    renderActiveProfile(result);
+    maspStatusEl.textContent = 'Back to the profile built into this app.';
+  } catch (err) {
+    maspStatusEl.textContent = `Error: ${err.message}`;
+  } finally {
+    maspResetEl.disabled = false;
+  }
+});
+
+// Settings' Migrations section (src/core/migrate.js): one-off sweeps
+// that rewrite every crate in the collection to catch up with a change
+// to the data model. The list comes from the server rather than being
+// written out here, so adding a migration needs no change to this file
+// — and the same route backs `rocphotos migrate` on the command line.
+//
+// Dry Run first is the default path on offer: these rewrite thousands
+// of files somebody cannot easily undo, so seeing the count before
+// committing to it matters more than saving a click.
+const migrationsListEl = document.querySelector('#settings-migrations');
+const migrateDryRunButtonEl = document.querySelector('#settings-migrate-dry-run');
+const migrateRunButtonEl = document.querySelector('#settings-migrate-run');
+const migrateStatusEl = document.querySelector('#settings-migrate-status');
+
+function selectedMigrations() {
+  return [...migrationsListEl.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value);
+}
+
+function updateMigrateButtons() {
+  const none = selectedMigrations().length === 0;
+  migrateDryRunButtonEl.disabled = none;
+  // Only ever enabled by a dry run that found something (see below), so
+  // the destructive button is never the first one reachable.
+  if (none) migrateRunButtonEl.disabled = true;
+}
+
+async function loadMigrations() {
+  const response = await fetch(`${API}/api/admin/migrations`);
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error ?? `Failed to load migrations: ${response.status}`);
+
+  migrationsListEl.replaceChildren();
+  if (result.migrations.length === 0) {
+    migrationsListEl.textContent = 'Nothing to migrate — this version has no migrations.';
+    return;
+  }
+  for (const { name, description, selected } of result.migrations) {
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = `migration-${name}`;
+    checkbox.value = name;
+    // Ticked to match the collection's own `migrations` config list, so
+    // the CLI and this screen agree about what is about to run.
+    checkbox.checked = selected;
+    checkbox.addEventListener('change', () => {
+      migrateRunButtonEl.disabled = true; // the dry run no longer describes this selection
+      updateMigrateButtons();
+    });
+
+    const label = document.createElement('label');
+    label.htmlFor = checkbox.id;
+    label.append(
+      Object.assign(document.createElement('span'), { className: 'migration-name', textContent: name }),
+      Object.assign(document.createElement('span'), { className: 'migration-description', textContent: description }),
+    );
+
+    const row = document.createElement('div');
+    row.className = 'migration';
+    row.append(checkbox, label);
+    migrationsListEl.append(row);
+  }
+  updateMigrateButtons();
+}
+
+function describeMigrationResult(result) {
+  const lines = [
+    `${result.dryRun ? 'Would rewrite' : 'Rewrote'} ${result.cratesChanged} of ${result.cratesScanned} crate${result.cratesScanned === 1 ? '' : 's'}.`,
+  ];
+  for (const [name, totals] of Object.entries(result.changes ?? {})) {
+    const counts = Object.entries(totals).filter(([, value]) => typeof value === 'number' && value > 0);
+    if (counts.length > 0) lines.push(`${name}: ${counts.map(([key, value]) => `${value} ${key}`).join(', ')}`);
+    for (const kept of totals.keptLocalNames ?? []) {
+      lines.push(`kept ${kept.id} ("${kept.name}") in ${kept.crate} — a local name differing from the identity's, left alone`);
+    }
+  }
+  for (const failure of result.failed ?? []) lines.push(`could not read ${failure.path}: ${failure.message}`);
+  if (result.unknown?.length > 0) lines.push(`unknown migration(s): ${result.unknown.join(', ')}`);
+  return lines.join('\n');
+}
+
+async function runMigrationsFromSettings(dryRun) {
+  const only = selectedMigrations();
+  if (only.length === 0) return;
+
+  migrateDryRunButtonEl.disabled = true;
+  migrateRunButtonEl.disabled = true;
+  migrateStatusEl.textContent = dryRun ? 'Checking…' : 'Migrating…';
+  try {
+    const response = await fetch(`${API}/api/admin/migrate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ only, dryRun }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? `Failed: ${response.status}`);
+
+    migrateStatusEl.textContent = describeMigrationResult(result);
+    if (dryRun && result.cratesChanged > 0) {
+      migrateRunButtonEl.disabled = false;
+      migrateStatusEl.textContent += '\nNothing has been written. Run Migrations to apply this.';
+    }
+    if (!dryRun && result.cratesChanged > 0) {
+      migrateStatusEl.textContent += '\nDone. Reload the browsing view to see the collection as it now stands.';
+    }
+  } catch (err) {
+    migrateStatusEl.textContent = `Error: ${err.message}`;
+  } finally {
+    migrateDryRunButtonEl.disabled = selectedMigrations().length === 0;
+  }
+}
+
+migrateDryRunButtonEl.addEventListener('click', () => { runMigrationsFromSettings(true); });
+migrateRunButtonEl.addEventListener('click', () => { runMigrationsFromSettings(false); });
 
 // The "Sub-collections" scan screen — letting a large, decades-spanning
 // collection be scanned a few sub-collections at a time from here, the
@@ -2617,6 +3268,11 @@ async function loadSettings() {
     settingsExportWithMetadataCheckbox.checked = config.exportWithMetadata;
     settingsExcludeDirsEl.value = config.excludeDirectories.join('\n');
     settingsExcludeFilesEl.value = config.excludeFiles.join('\n');
+    // Each its own request and its own failure: a version with no
+    // migrations, or a route that is not there, must not stop the
+    // settings themselves from loading.
+    await loadActiveProfile().catch((err) => { maspStatusEl.textContent = `Error: ${err.message}`; });
+    await loadMigrations().catch((err) => { migrateStatusEl.textContent = `Error: ${err.message}`; });
     settingsStatusEl.textContent = '';
     settingsLoadedOnce = true;
   } catch (err) {

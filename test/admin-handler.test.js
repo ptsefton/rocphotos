@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import fs from 'node:fs';
 import { createNodeFsAdapter } from '../src/adapters/nodeFs.js';
 import { openNodeSqlite } from '../src/adapters/nodeSqlite.js';
 import { ensureSchema, searchEntities, ENTITY_TYPE_IMAGE } from '../src/core/db/store.js';
@@ -197,5 +198,43 @@ describe('GET/POST /config', () => {
 
     const res = await handleRequest({ method: 'GET', path: '/config' });
     expect(JSON.parse(res.body).exportPath).toBeNull();
+  });
+});
+
+describe('/masp', () => {
+  const builtIn = () => fs.readFileSync('vendor/masp/rocphotos-profile.json', 'utf8');
+
+  it('reports the profile built into the app until one is installed', async () => {
+    const res = await handleRequest({ method: 'GET', path: '/masp' });
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body).source).toEqual('built-in');
+  });
+
+  it('installs one a colleague uploaded, and uses it from then on', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/masp', body: { profile: builtIn() } });
+    expect(res.status).toEqual(200);
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true, source: 'collection' });
+
+    // Stored in the collection, so handing somebody the folder hands
+    // them the profile their metadata was written against.
+    expect((await handleRequest({ method: 'GET', path: '/masp' })).body).toContain('"source":"collection"');
+  });
+
+  it('refuses one it cannot edit through, and keeps the built-in', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/masp', body: { profile: '{"nope": true}' } });
+    expect(res.status).toEqual(422);
+    expect(JSON.parse(res.body).problems.length).toBeGreaterThan(0);
+    expect((await handleRequest({ method: 'GET', path: '/masp' })).body).toContain('"source":"built-in"');
+  });
+
+  it('wants the profile text, not a filename', async () => {
+    expect((await handleRequest({ method: 'POST', path: '/masp', body: {} })).status).toEqual(400);
+  });
+
+  it('goes back to the built-in profile', async () => {
+    await handleRequest({ method: 'POST', path: '/masp', body: { profile: builtIn() } });
+
+    const res = await handleRequest({ method: 'POST', path: '/masp/reset' });
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true, removed: true, source: 'built-in' });
   });
 });

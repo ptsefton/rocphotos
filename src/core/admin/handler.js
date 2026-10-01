@@ -7,10 +7,15 @@ import {
   loadWriteMetadataToFilesSetting,
   loadExportPathSetting,
   loadExportWithMetadataSetting,
+  loadConfig,
   saveConfig,
 } from '../config.js';
 import { isAbsoluteExportPath, EXPORTS_DIR_NAME } from '../export.js';
 import { regeneratePreviews } from '../previews.js';
+import { runMigrations, MIGRATIONS } from '../migrate.js';
+import {
+  describeActiveProfile, installCollectionProfile, removeCollectionProfile, COLLECTION_PROFILE_PATH,
+} from '../masp/collectionProfile.js';
 import { serializeWrites } from '../writeQueue.js';
 
 // The browser's driver keeps the index in memory and only writes it back
@@ -135,6 +140,71 @@ export function createAdminHandler({ db, fsAdapter, rootName, crateCache = new M
       return serializeWrites(async () => {
         const { written, skipped } = await regeneratePreviews({ fsAdapter, db, rootName });
         return json(200, { written: written.length, skipped });
+      });
+    }
+
+    // Which MASP profile this collection is edited through, and the
+    // two ways to change it. A profile is vendored into each build
+    // (see vendor/masp/README.md), which is what stops an experiment
+    // upstream changing what this app accepts without anyone
+    // noticing — and leaves no way to try a change and see what it
+    // does. A collection may carry its own, which these install.
+    if (method === 'GET' && path === '/masp') {
+      return json(200, await describeActiveProfile(fsAdapter));
+    }
+
+    if (method === 'POST' && path === '/masp') {
+      const text = typeof body?.profile === 'string' ? body.profile : null;
+      if (!text) return badRequest('profile is required (the text of a MASP profile crate)');
+
+      // Serialized like the crate writers: installing one changes what
+      // every subsequent edit is checked against, so it must not land
+      // half-way through one.
+      return serializeWrites(async () => {
+        const { installed, problems } = await installCollectionProfile(fsAdapter, text);
+        if (!installed) return json(422, { error: 'That profile cannot be used', problems });
+        // The People tab's forms are built from the profile, so what
+        // the web view is showing is now out of date.
+        crateCache?.clear();
+        return json(200, { ok: true, path: COLLECTION_PROFILE_PATH, ...(await describeActiveProfile(fsAdapter)) });
+      });
+    }
+
+    if (method === 'POST' && path === '/masp/reset') {
+      return serializeWrites(async () => {
+        const removed = await removeCollectionProfile(fsAdapter);
+        crateCache?.clear();
+        return json(200, { ok: true, removed, ...(await describeActiveProfile(fsAdapter)) });
+      });
+    }
+
+    // The migrations this version knows about, and which of them this
+    // collection has asked for — what the Settings screen lists, so the
+    // browser does not need its own copy of either (see migrate.js).
+    if (method === 'GET' && path === '/migrations') {
+      const config = await loadConfig(fsAdapter);
+      const selected = Array.isArray(config.migrations) ? config.migrations : [];
+      return json(200, {
+        migrations: MIGRATIONS.map(({ name, description }) => ({ name, description, selected: selected.includes(name) })),
+      });
+    }
+
+    // Rewrites crate JSON-LD across the whole collection to catch up
+    // with a change to the data model (see migrate.js). Serialized like
+    // /scan, and for the stronger version of the same reason: it writes
+    // every crate in the collection, so anything else writing one at
+    // the same time would be working from a copy this is replacing.
+    //
+    // The index is deliberately left alone. A migration changes how a
+    // crate is arranged, not what it says, so nothing indexed moves —
+    // and `crateCache` is cleared for the same reason /scan clears it,
+    // since the cached crates are now the superseded shape.
+    if (method === 'POST' && path === '/migrate') {
+      const only = Array.isArray(body?.only) ? body.only.map((name) => String(name)) : null;
+      return serializeWrites(async () => {
+        const result = await runMigrations({ fsAdapter, only, dryRun: body?.dryRun === true });
+        if (!result.dryRun && result.cratesChanged > 0) crateCache?.clear();
+        return json(200, result);
       });
     }
 

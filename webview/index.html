@@ -134,9 +134,85 @@
     #people-filter { display: block; width: 100%; max-width: 40rem; box-sizing: border-box; font-size: 0.85rem; padding: 0.35rem 0.6rem; border: 1px solid #bbb; border-radius: 4px; margin-bottom: 0.6rem; }
     #people-list { max-width: 40rem; }
     .person-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.35rem 0.2rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
-    .person-row .person-name { flex: 1; text-align: left; background: none; border: none; padding: 0; font: inherit; color: #1a5fb4; cursor: pointer; }
-    .person-row .person-name:hover { text-decoration: underline; }
+    /* An entity you can click through to: an icon saying what kind of
+       thing it is, then its name. Used for a row in the people list and
+       for the other end of a relationship, so the two read alike. */
+    .entity-button { display: inline-flex; align-items: baseline; gap: 0.35rem; background: none; border: none; padding: 0; font: inherit; color: #1a5fb4; cursor: pointer; text-align: left; }
+    .entity-button:hover .entity-label { text-decoration: underline; }
+    .entity-icon { font-size: 0.9em; opacity: 0.75; }
+    .person-row .person-name { flex: 1; }
+    .person-row.open .person-name .entity-label { font-weight: 600; }
     .person-row .person-image-count { color: #888; font-size: 0.82rem; }
+    .person-row .person-photos { background: none; border: 1px solid #bbb; border-radius: 4px; padding: 0.1rem 0.5rem; font-size: 0.78rem; cursor: pointer; color: #333; }
+    .person-row .person-photos:hover { background: #f0f0f0; }
+
+    /* The MASP entity editor (webview/masp/entityForm.js). The .masp-*
+       rules style whatever fields a profile declares, so they are
+       written against the component's own classes rather than against
+       the three a Person happens to have today. */
+    .person-editor { border-bottom: 1px solid #eee; padding: 0.8rem 0.2rem 1rem; background: #fafafa; }
+    /* The panel takes focus when it opens (see app.js's
+       togglePersonEditor) so that a keyboard user lands on the form
+       rather than at the top of the list. It is tabindex="-1", so this
+       only ever fires for that programmatic focus, never for a Tab. */
+    .person-editor:focus { outline: none; }
+    .person-editor-about { margin: 0 0 0.8rem; font-size: 0.82rem; color: #666; max-width: 44rem; }
+    .masp-field { margin-bottom: 0.9rem; }
+    .masp-label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.15rem; }
+    .masp-required { font-weight: 400; font-size: 0.72rem; color: #a04000; margin-left: 0.4rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .masp-help { margin: 0 0 0.35rem; font-size: 0.78rem; color: #666; max-width: 44rem; }
+    .masp-value { display: flex; gap: 0.4rem; align-items: flex-start; margin-bottom: 0.3rem; }
+    .masp-input { flex: 1; max-width: 32rem; box-sizing: border-box; font: inherit; font-size: 0.85rem; padding: 0.3rem 0.5rem; border: 1px solid #bbb; border-radius: 4px; }
+    .masp-input:focus { outline: 2px solid #1a5fb4; outline-offset: -1px; }
+    textarea.masp-input { resize: vertical; }
+    .masp-remove { background: none; border: 1px solid #ccc; border-radius: 4px; color: #777; cursor: pointer; font-size: 0.85rem; line-height: 1; padding: 0.3rem 0.45rem; }
+    .masp-open { background: none; border: 1px solid #ccc; border-radius: 4px; color: #1a5fb4; cursor: pointer; font-size: 0.85rem; line-height: 1; padding: 0.3rem 0.45rem; }
+    .masp-open:hover:not(:disabled) { background: #eef4fc; border-color: #1a5fb4; }
+    .masp-open:disabled { opacity: 0.35; cursor: default; }
+    .person-editor-trail { font-size: 0.8rem; margin-bottom: 0.6rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem; }
+    .person-editor-crumb { background: none; border: none; padding: 0; font: inherit; color: #1a5fb4; cursor: pointer; }
+    .person-editor-crumb:hover { text-decoration: underline; }
+    .person-editor-crumb-sep { color: #999; }
+    .person-editor-here { font-weight: 600; }
+    .masp-remove:hover { background: #f0f0f0; color: #a04000; }
+    .masp-add { background: none; border: none; padding: 0; color: #1a5fb4; cursor: pointer; font: inherit; font-size: 0.78rem; }
+    .masp-add:hover { text-decoration: underline; }
+    .masp-problem { margin: 0.2rem 0 0; font-size: 0.78rem; color: #a04000; }
+    .masp-actions { display: flex; gap: 0.6rem; margin-top: 0.8rem; }
+    .masp-submit { background: #1a5fb4; color: #fff; border: none; border-radius: 4px; padding: 0.3rem 0.9rem; font-size: 0.85rem; cursor: pointer; }
+    .masp-cancel { background: none; border: 1px solid #bbb; border-radius: 4px; color: #333; padding: 0.3rem 0.9rem; font-size: 0.85rem; cursor: pointer; }
+    .masp-submit:disabled, .masp-cancel:disabled { opacity: 0.5; cursor: default; }
+    /* The two fields that can be exchanged, with the control beside
+       them rather than down among Save and Cancel: what it does is
+       local to this pair, and a button at the foot of the form would
+       not say so. */
+    .masp-swap-pair { display: flex; align-items: center; gap: 0.5rem; }
+    /* Sized to the boxes rather than the column, so the button lands
+       just past the pair instead of out at the panel's edge. */
+    .masp-swap-fields { flex: 0 1 auto; min-width: 0; }
+    .masp-swap-fields .masp-help, .masp-swap-fields .masp-input { max-width: 30rem; }
+    .masp-swap-fields .masp-field:last-child { margin-bottom: 0.9rem; }
+    .masp-swap { background: none; border: 1px solid #bbb; border-radius: 4px; color: #555; padding: 0.35rem 0.55rem; font-size: 1.15rem; line-height: 1; cursor: pointer; flex-shrink: 0; }
+    .masp-swap:hover { background: #f0f0f0; border-color: #1a5fb4; color: #1a5fb4; }
+    .masp-swap:disabled { opacity: 0.5; cursor: default; }
+    .masp-status { margin: 0.6rem 0 0; font-size: 0.82rem; color: #555; }
+    .masp-status-error { color: #a04000; }
+    .masp-status-ok { color: #26734d; }
+    .person-relationships { margin-top: 1.2rem; border-top: 1px solid #ddd; padding-top: 0.8rem; }
+    .person-relationships h3 { font-size: 0.9rem; margin: 0 0 0.5rem; }
+    .relationship { border: 1px solid #e3e3e3; border-radius: 6px; padding: 0.6rem 0.8rem; margin-bottom: 0.7rem; background: #fff; }
+    .relationship-heading { margin: 0 0 0.5rem; font-size: 0.85rem; }
+    .relationship-kind-name { font-weight: 600; }
+    .relationship-arrow { font-size: 1.05rem; margin-right: 0.35rem; color: #666; }
+    .relationship-role { color: #666; }
+    .relationship-about { margin: 0 0 0.6rem; font-size: 0.8rem; color: #555; max-width: 44rem; }
+    .relationship-empty { color: #777; font-size: 0.82rem; margin: 0 0 0.6rem; }
+    .relationship-controls { display: flex; gap: 0.5rem; align-items: center; }
+    .relationship-kind { font: inherit; font-size: 0.85rem; padding: 0.3rem 0.5rem; border: 1px solid #bbb; border-radius: 4px; }
+    .relationship-add { background: none; border: 1px solid #bbb; border-radius: 4px; color: #333; padding: 0.3rem 0.9rem; font-size: 0.85rem; cursor: pointer; }
+    .relationship-add:hover { background: #f0f0f0; }
+    .relationship-remove { background: none; border: none; padding: 0.3rem 0; color: #a04000; cursor: pointer; font: inherit; font-size: 0.8rem; margin-left: auto; }
+    .relationship-remove:hover { text-decoration: underline; }
     #overview-controls { display: flex; gap: 0.6rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
     #overview-controls button { background: none; border: 1px solid #bbb; border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.8rem; cursor: pointer; color: #333; }
     #overview-controls button:hover { background: #f0f0f0; }
@@ -167,6 +243,28 @@
     #settings-regenerate-previews:disabled { opacity: 0.5; cursor: default; }
     #settings-previews-note { color: #555; font-size: 0.82rem; margin: 0.2rem 0 0.6rem; max-width: 40rem; }
     #settings-previews-status { color: #555; font-size: 0.85rem; margin-top: 0.5rem; }
+    #settings-masp-note { color: #555; font-size: 0.82rem; margin: 0.2rem 0 0.6rem; max-width: 40rem; }
+    #settings-masp-current { max-width: 40rem; font-size: 0.85rem; border: 1px solid #e3e3e3; border-radius: 6px; padding: 0.6rem 0.9rem; margin-bottom: 0.7rem; background: #fff; }
+    #settings-masp-current dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 0.8rem; }
+    #settings-masp-current dt { color: #666; font-size: 0.8rem; }
+    #settings-masp-current dd { margin: 0; }
+    #settings-masp-controls { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+    #settings-masp-file { font-size: 0.82rem; max-width: 20rem; }
+    #settings-masp-install { background: #1a5fb4; color: #fff; border: none; border-radius: 4px; padding: 0.4rem 1rem; font-size: 0.85rem; cursor: pointer; }
+    #settings-masp-reset { background: none; border: 1px solid #bbb; border-radius: 4px; color: #333; padding: 0.4rem 1rem; font-size: 0.85rem; cursor: pointer; }
+    #settings-masp-install:disabled { opacity: 0.5; cursor: default; }
+    #settings-masp-status { color: #555; font-size: 0.85rem; margin-top: 0.5rem; white-space: pre-wrap; }
+    #settings-migrate-note { color: #555; font-size: 0.82rem; margin: 0.2rem 0 0.6rem; max-width: 40rem; }
+    #settings-migrations { max-width: 40rem; margin-bottom: 0.7rem; }
+    .migration { display: flex; gap: 0.5rem; align-items: flex-start; padding: 0.4rem 0; border-bottom: 1px solid #eee; }
+    .migration label { font-size: 0.85rem; }
+    .migration .migration-name { display: block; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .migration .migration-description { display: block; color: #555; font-size: 0.8rem; margin-top: 0.1rem; }
+    #settings-migrate-controls { display: flex; gap: 0.6rem; }
+    #settings-migrate-dry-run { background: none; border: 1px solid #bbb; border-radius: 4px; color: #333; padding: 0.4rem 1rem; font-size: 0.85rem; cursor: pointer; }
+    #settings-migrate-run { background: #1a5fb4; color: #fff; border: none; border-radius: 4px; padding: 0.4rem 1rem; font-size: 0.85rem; cursor: pointer; }
+    #settings-migrate-dry-run:disabled, #settings-migrate-run:disabled { opacity: 0.5; cursor: default; }
+    #settings-migrate-status { color: #555; font-size: 0.85rem; margin-top: 0.5rem; white-space: pre-wrap; }
 
     #selection-bar { display: none; align-items: center; gap: 0.6rem; background: #eef4fc; border: 1px solid #bcd6f2; border-radius: 4px; padding: 0.5rem 0.7rem; margin-bottom: 1rem; font-size: 0.85rem; flex-wrap: wrap; }
     #selection-bar.visible { display: flex; }
@@ -383,12 +481,85 @@
       padding: 0.6rem 0.9rem;
     }
     #admin-status, #settings-status, #people-status,
+    #settings-masp-note, #settings-masp-status { color: var(--muted); }
+    #settings-masp-current { background: var(--panel); border-color: var(--border); border-radius: var(--radius); }
+    #settings-masp-current dt { color: var(--muted); }
+    #settings-masp-install {
+      background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent);
+      border-radius: 8px; font-weight: 600;
+    }
+    #settings-masp-reset {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--ink); font-weight: 600;
+    }
+    #settings-masp-reset:hover { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
+    #settings-migrate-note, #settings-migrate-status, .migration .migration-description { color: var(--muted); }
+    .migration { border-bottom-color: var(--border); }
+    #settings-migrations { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.3rem 0.9rem; }
+    #settings-migrate-dry-run {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--ink); font-weight: 600;
+    }
+    #settings-migrate-dry-run:hover { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
+    #settings-migrate-run {
+      background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent);
+      border-radius: 8px; font-weight: 600;
+    }
+    #settings-migrate-dry-run:disabled, #settings-migrate-run:disabled { opacity: 0.5; }
     #settings-previews-note, #settings-previews-status, #settings-export-with-metadata-note,
     #settings-form label.field-label { color: var(--muted); }
     #settings-write-metadata-warning { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); border-radius: 8px; }
     .person-row { border-bottom-color: var(--border); }
     .person-row .person-name { color: var(--accent); }
     .person-row .person-image-count { color: var(--muted); }
+    .entity-button { color: var(--accent); }
+    .person-row .person-photos {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--ink); font-weight: 600;
+    }
+    .person-row .person-photos:hover { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
+    .relationship-arrow, .relationship-role { color: var(--muted); }
+
+    /* The MASP entity editor (webview/masp/entityForm.js) */
+    .person-editor { border-bottom-color: var(--border); background: var(--panel-2); border-radius: var(--radius); margin: 0.3rem 0; }
+    .person-editor-about, .masp-help, .masp-status { color: var(--muted); }
+    .masp-input {
+      background: var(--panel); color: var(--ink); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.45rem 0.6rem;
+    }
+    .masp-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+    .masp-add { color: var(--accent); }
+    .masp-required, .masp-problem, .masp-status-error { color: var(--warn); }
+    .masp-status-ok { color: var(--ok); }
+    .person-relationships { border-top-color: var(--border); }
+    .relationship { background: var(--panel); border-color: var(--border); border-radius: var(--radius); }
+    .relationship-empty, .relationship-about { color: var(--muted); }
+    .relationship-kind, .relationship-add {
+      background: var(--panel); color: var(--ink); border: 1px solid var(--border); border-radius: 8px;
+    }
+    .relationship-add { font-weight: 600; }
+    .relationship-add:hover { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
+    .relationship-remove { color: var(--warn); }
+    .masp-remove { background: var(--panel); border: 1px solid var(--border); color: var(--muted); border-radius: 8px; }
+    .masp-open { background: var(--panel); border: 1px solid var(--border); color: var(--accent); border-radius: 8px; }
+    .masp-open:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+    .person-editor-crumb { color: var(--accent); }
+    .person-editor-crumb-sep { color: var(--muted); }
+    .masp-remove:hover { background: var(--panel-2); border-color: var(--warn); color: var(--warn); }
+    .masp-submit {
+      background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent);
+      border-radius: 8px; padding: 0.4rem 1rem; font-weight: 600;
+    }
+    .masp-cancel {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.4rem 1rem; color: var(--ink); font-weight: 600;
+    }
+    .masp-submit:disabled, .masp-cancel:disabled, .masp-swap:disabled { opacity: 0.5; }
+    .masp-swap {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--muted);
+    }
+    .masp-swap:hover { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
     .status-badge { font-weight: 600; }
     .status-badge.not-scanned { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
     .status-badge.out-of-date { background: var(--warn-bg); color: var(--warn); }
@@ -532,6 +703,25 @@
     <p id="settings-previews-note">Rewrites every <code>ro-crate-preview.html</code> from the crates and index as they stand — including the People list on each page — without re-reading any photos.</p>
     <button type="button" id="settings-regenerate-previews">Regenerate Preview HTML</button>
     <div id="settings-previews-status"></div>
+
+    <h2>MASP profile</h2>
+    <p id="settings-masp-note">The profile decides what can be recorded about a person and how it is checked — the fields on the People tab come straight from it. Each build of this app carries one; a collection can carry its own instead, so a change to the profile can be tried out here before it goes anywhere. The file is a MASP profile crate's <code>ro-crate-metadata.json</code>, and it is stored in the collection, so handing somebody the folder hands them the profile too.</p>
+    <div id="settings-masp-current"></div>
+    <div id="settings-masp-controls">
+      <input type="file" id="settings-masp-file" accept=".json,application/json" />
+      <button type="button" id="settings-masp-install" disabled>Install</button>
+      <button type="button" id="settings-masp-reset" hidden>Use the built-in profile</button>
+    </div>
+    <div id="settings-masp-status"></div>
+
+    <h2>Migrations</h2>
+    <p id="settings-migrate-note">One-off sweeps that bring every <code>ro-crate-metadata.json</code> in this collection up to date with a change to the data model. No photo is re-read and no thumbnail is made, so this is quick even on a very large collection, and running it twice is harmless. Tick what to run, then <strong>Dry Run</strong> first to see what it would change.</p>
+    <div id="settings-migrations"></div>
+    <div id="settings-migrate-controls">
+      <button type="button" id="settings-migrate-dry-run">Dry Run</button>
+      <button type="button" id="settings-migrate-run" disabled>Run Migrations</button>
+    </div>
+    <div id="settings-migrate-status"></div>
   </div>
 
   <div id="viewer">
