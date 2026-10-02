@@ -63,7 +63,7 @@ describe('which profile a collection is edited through', () => {
 
     expect(active.source).toEqual('built-in');
     expect(active.path).toEqual('vendor/masp/rocphotos-profile.json');
-    expect(active.relationshipClasses.map((c) => c.name)).toEqual(['Married', 'Parent and child']);
+    expect(active.relationshipClasses.map((c) => c.name)).toEqual(['Spouses', 'Parent and child']);
   });
 
   it('uses the collection\'s own once one is installed, and says so', async () => {
@@ -100,7 +100,7 @@ describe('which profile a collection is edited through', () => {
     const fsAdapter = await collection();
     expect((await installCollectionProfile(fsAdapter, builtIn())).installed).toBe(true);
     expect((await describeActiveProfile(fsAdapter)).relationshipClasses.map((c) => c.name))
-      .toEqual(['Married', 'Parent and child']);
+      .toEqual(['Spouses', 'Parent and child']);
   });
 });
 

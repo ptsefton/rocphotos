@@ -30,8 +30,19 @@ describe('a kind of relationship is a class, so it can explain itself', () => {
     // way to say which end plays which role, so the direction could
     // only be written as prose on a property every kind shared — true
     // of all of them by convention, guaranteed of none.
-    expect(editor.classInfo(PARENT_CHILD).description).toMatch(/the parent is the source, the child is the target/);
-    expect(editor.classInfo(SPOUSE).description).toMatch(/Not oriented/);
+    //
+    // Asserted on the participants rather than on the class gloss. Each
+    // kind declares its own participant rules, so that is where a role
+    // can be named at all — and it is what the form puts beside the
+    // box. The class gloss is free to say what the relationship covers
+    // without having to repeat which end is which.
+    const [parent, child] = editor.fields(PARENT_CHILD);
+    expect([parent.label, child.label]).toEqual(['Parent', 'Child']);
+    expect(parent.help).toMatch(/the parent is its source/);
+    expect(child.help).toMatch(/target of the relationship/);
+
+    const [spouses] = editor.fields(SPOUSE);
+    expect(spouses.help).toMatch(/Neither comes first/);
   });
 
   it('runs the way RiC runs it: down a generation, from the parent', () => {
