@@ -124,9 +124,30 @@
     figcaption .error { color: var(--error); }
 
     .browser-note { color: var(--muted); font-size: 0.84rem; margin: 24px auto 0; max-width: 46rem; padding: 0 16px; }
+
+    /* The first thing on the page, deliberately. This app writes to a
+       folder of irreplaceable originals, and with one setting on it
+       rewrites the photo files themselves — so the warning sits above
+       the title rather than in with the settings it applies to. */
+    .experimental-banner {
+      margin: 0; /* flush to the top edge, so it reads as a banner rather than a note */
+      background: var(--warn-bg); color: var(--warn);
+      border-bottom: 2px solid var(--warn);
+      font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+      text-align: center; padding: 12px 16px; font-size: 0.95rem;
+    }
+    .experimental-banner .detail {
+      display: block; margin-top: 4px;
+      font-weight: 400; letter-spacing: normal; text-transform: none; font-size: 0.84rem;
+    }
   </style>
 </head>
 <body>
+  <p class="experimental-banner" role="alert">
+    ⚠️ This is experimental software — use with caution
+    <span class="detail">It reads and writes the photo folder you choose. Keep a backup you have not given it.</span>
+  </p>
+
   <header class="site-header">
     <h1>RO-Crate Photo Manager</h1>
     <p class="tagline">Keep a photo collection as nested RO-Crates, on your own disk. Browse by date, keyword, rating and the people in them — with face recognition to help find who is who.</p>
