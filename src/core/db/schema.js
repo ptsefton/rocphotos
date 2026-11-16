@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS entity_facets (
 CREATE INDEX IF NOT EXISTS idx_entities_ro_crate_id ON entities(ro_crate_id);
 CREATE INDEX IF NOT EXISTS idx_entities_member_of ON entities(member_of);
 CREATE INDEX IF NOT EXISTS idx_entities_date_created ON entities(date_created);
+-- listDepictedSubjects joins every people/pets facet value to the entity
+-- of that name, once per scan request; without this that is a full scan
+-- of entities per value (34s per sub-collection on a 69k-entity index).
+CREATE INDEX IF NOT EXISTS idx_entities_name_type ON entities(name, entity_type);
 CREATE INDEX IF NOT EXISTS idx_files_entity_id ON files(entity_id);
 CREATE INDEX IF NOT EXISTS idx_entity_facets_name_value ON entity_facets(facet_name, value);
 CREATE INDEX IF NOT EXISTS idx_entity_facets_entity_id ON entity_facets(entity_id);
