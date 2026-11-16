@@ -19,7 +19,9 @@
     .screen.active { display: block; overflow-y: auto; padding: 1.5rem; box-sizing: border-box; }
     #explore-screen.active { display: flex; padding: 0; overflow: visible; }
     #sidebar { width: 260px; flex-shrink: 0; padding: 1rem; overflow-y: auto; border-right: 1px solid #ddd; box-sizing: border-box; }
-    #main { flex: 1; overflow-y: auto; padding: 1rem; box-sizing: border-box; }
+    #main { flex: 1; overflow-y: auto; padding: 0 1rem 1rem; box-sizing: border-box; }
+    /* Pinned to the top of the grid as it scrolls (#12), so the selection's actions are always in reach. */
+    #explore-toolbar { position: sticky; top: 0; z-index: 5; background: var(--bg, #fff); padding: 1rem 0 0.75rem; margin-bottom: 0.25rem; }
     h1 { font-size: 1.1rem; margin: 0 0 1rem; }
     /* A whole sidebar nav section (Collection Folders, Dates) rolls up
        entirely behind its own <summary>, collapsed by default (no `open`
@@ -67,7 +69,7 @@
     .facet-value.active .count { color: #cfe0f5; }
     #active-filters { margin-bottom: 1rem; font-size: 0.85rem; }
     #active-filters button { margin-left: 0.4rem; cursor: pointer; }
-    #status-bar { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 1rem; }
+    #status-bar { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.6rem; }
     #status { color: #555; font-size: 0.9rem; }
     #select-all, #recognize-faces-button, #new-album-button, #export-album-button { background: none; border: 1px solid #bbb; border-radius: 4px; padding: 0.2rem 0.6rem; font-size: 0.8rem; cursor: pointer; color: #333; }
     #select-all:hover, #recognize-faces-button:hover, #new-album-button:hover, #export-album-button:hover { background: #f0f0f0; }
@@ -266,8 +268,8 @@
     #settings-migrate-dry-run:disabled, #settings-migrate-run:disabled { opacity: 0.5; cursor: default; }
     #settings-migrate-status { color: #555; font-size: 0.85rem; margin-top: 0.5rem; white-space: pre-wrap; }
 
-    #selection-bar { display: none; align-items: center; gap: 0.6rem; background: #eef4fc; border: 1px solid #bcd6f2; border-radius: 4px; padding: 0.5rem 0.7rem; margin-bottom: 1rem; font-size: 0.85rem; flex-wrap: wrap; }
-    #selection-bar.visible { display: flex; }
+    #selection-bar { display: flex; align-items: center; gap: 0.6rem; background: #eef4fc; border: 1px solid #bcd6f2; border-radius: 4px; padding: 0.5rem 0.7rem; font-size: 0.85rem; flex-wrap: wrap; }
+    #selection-bar button:disabled { opacity: 0.45; cursor: default; }
     #selection-bar button { background: #1a5fb4; color: #fff; border: none; border-radius: 4px; padding: 0.3rem 0.7rem; font-size: 0.82rem; cursor: pointer; }
     #selection-bar button.danger { background: #b00020; }
     #selection-bar #selection-count { font-weight: 600; margin-right: 0.4rem; }
@@ -327,6 +329,8 @@
     #album-picker-cancel { padding: 0.3rem 0.8rem; font-size: 0.82rem; border-radius: 4px; cursor: pointer; background: none; border: 1px solid #bbb; }
 
     #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; }
+    #grid-more { display: flex; justify-content: center; padding: 1.5rem 0 0.5rem; }
+    #grid-more.hidden { display: none; }
     figure { position: relative; margin: 0; border: 1px solid #ddd; border-radius: 4px; padding: 0.5rem; cursor: pointer; }
     figure img { width: 100%; height: 120px; object-fit: cover; border-radius: 2px; background: #eee; }
     figcaption { font-size: 0.75rem; margin-top: 0.3rem; word-break: break-word; color: #555; }
@@ -638,6 +642,7 @@
       <div id="facets"></div>
     </div>
     <div id="main">
+      <div id="explore-toolbar">
       <div id="status-bar">
         <div id="status">Loading…</div>
         <button id="select-all">Select All</button>
@@ -651,10 +656,13 @@
         <button id="selection-remove-keyword">Remove keyword</button>
         <button id="selection-set-rating">Set rating</button>
         <button id="selection-add-to-album">Add to album</button>
+        <button id="selection-remove-from-album" class="hidden">Remove from album</button>
         <button id="selection-delete" class="danger">Delete</button>
         <button id="selection-clear">Clear selection</button>
       </div>
+      </div>
       <div id="grid"></div>
+      <div id="grid-more" class="hidden"><button id="load-more">Load more</button></div>
     </div>
   </div>
 
@@ -737,6 +745,8 @@
     <div id="viewer-controls">
       <button id="viewer-faces-toggle" disabled>Show faces</button>
       <button id="viewer-add-keyword">Add keyword</button>
+      <button id="viewer-add-to-album">Add to album</button>
+      <button id="viewer-remove-from-album" class="hidden">Remove from album</button>
       <button id="viewer-edit-title">Edit title</button>
       <button id="viewer-edit-description">Edit description</button>
       <button id="viewer-delete">Delete</button>

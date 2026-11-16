@@ -39,6 +39,8 @@ const datesAllEl = document.querySelector('#dates-all');
 const datesTreeEl = document.querySelector('#dates-tree');
 const albumsListEl = document.querySelector('#albums-list');
 const exportAlbumButtonEl = document.querySelector('#export-album-button');
+const selectionRemoveFromAlbumEl = document.querySelector('#selection-remove-from-album');
+const viewerRemoveFromAlbumEl = document.querySelector('#viewer-remove-from-album');
 const modeButtonEls = { explore: document.querySelector('#mode-explore'), people: document.querySelector('#mode-people'), scan: document.querySelector('#mode-scan'), settings: document.querySelector('#mode-settings') };
 const screenEls = { explore: document.querySelector('#explore-screen'), people: document.querySelector('#people-screen'), scan: document.querySelector('#scan-screen'), settings: document.querySelector('#settings-screen') };
 const peopleStatusEl = document.querySelector('#people-status');
@@ -70,6 +72,8 @@ let albumsById = new Map();
 const statusEl = document.querySelector('#status');
 const selectAllButtonEl = document.querySelector('#select-all');
 const gridEl = document.querySelector('#grid');
+const gridMoreEl = document.querySelector('#grid-more');
+const loadMoreButtonEl = document.querySelector('#load-more');
 const selectionBarEl = document.querySelector('#selection-bar');
 const selectionCountEl = document.querySelector('#selection-count');
 const keywordDialogEl = document.querySelector('#keyword-dialog');
@@ -128,18 +132,23 @@ let currentViewerEntityId = null;
 // forward into a new result set would be more surprising than useful.
 let selectedIds = new Set();
 
-// The ids currently rendered in the grid, for "Select All" — only ever
-// selects what is actually on screen for the current search, not every
-// entity matching it (the search itself is capped at 200 results; there
-// is no pagination yet for "all" to mean more than that).
+// The ids of the photos loaded into the grid so far — a page at a time
+// (PAGE_SIZE), so possibly fewer than the search matches (searchTotal).
 let currentEntityIds = [];
 
-// The full entities currently rendered in the grid, in the same order —
-// lets the viewer's Prev/Next buttons and arrow-key navigation step
-// through whatever result set (or collection) was being browsed when it
-// was opened, via openViewer's own entity shape, without an extra fetch
-// per step. Same 200-result cap as currentEntityIds above.
+// The full entities loaded into the grid, in the same order — lets the
+// viewer's Prev/Next buttons and arrow-key navigation step through
+// whatever result set was being browsed when it was opened, via
+// openViewer's own entity shape, without an extra fetch per step.
 let currentEntities = [];
+
+const PAGE_SIZE = 200;
+// How many photos the current search matches, loaded or not.
+let searchTotal = 0;
+// Bumped by every search(), so a page still in flight from an earlier
+// one is dropped rather than appended to a grid that has moved on.
+let searchGeneration = 0;
+let loadingMore = null;
 
 // Every search implicitly scopes to images: this is a photo browser, not
 // a general entity browser, so sub-collection Dataset entities never show
@@ -166,7 +175,30 @@ async function postEdit(path, body) {
   return result;
 }
 
+// The filters the grid is showing, which tell a refresh after an edit
+// (the same photos) from moving the grid somewhere else.
+let shownFilters = null;
+
+// Moving the grid elsewhere drops the selection, so with photos still
+// selected it asks first (#12; Spec.md, Editing). Saying no puts the
+// filters back and resolves false, leaving the grid as it was.
+function confirmLeavingSelection() {
+  const count = selectedIds.size;
+  if (count === 0) return true;
+  return window.confirm(`${count} photo${count === 1 ? ' is' : 's are'} selected and nothing has been done with ${count === 1 ? 'it' : 'them'}. Move on and lose the selection?`);
+}
+
 async function search() {
+  if (shownFilters && !sameFilters(activeFilters, shownFilters) && !confirmLeavingSelection()) {
+    activeFilters = { ...shownFilters };
+    return false;
+  }
+  // The same filters means a refresh after an edit: as many photos as
+  // were already loaded come back, so the grid stays where it was.
+  const refreshing = shownFilters && sameFilters(activeFilters, shownFilters);
+  shownFilters = { ...activeFilters };
+  recordRoute();
+  const generation = ++searchGeneration;
   statusEl.textContent = 'Loading…';
   try {
     const response = await fetch(`${API}/api/search`, {
@@ -175,14 +207,16 @@ async function search() {
       body: JSON.stringify({
         filters: { ...activeFilters, entityType: IMAGE_ENTITY_TYPE },
         facets: FACET_NAMES,
-        limit: 200,
+        limit: refreshing ? Math.max(PAGE_SIZE, currentEntities.length) : PAGE_SIZE,
       }),
     });
     if (!response.ok) {
       throw new Error(`Search failed: ${response.status}`);
     }
     const result = await response.json();
+    if (generation !== searchGeneration) return true;
     selectedIds = new Set();
+    searchTotal = result.total;
     renderFacets(result.facets);
     renderActiveFilters();
     renderGrid(result.entities);
@@ -191,11 +225,85 @@ async function search() {
     syncDatesActiveState();
     syncAlbumsActiveState();
     updateExportAlbumButton();
-    statusEl.textContent = `${result.total} image${result.total === 1 ? '' : 's'}`;
+    renderGridStatus();
   } catch (err) {
     statusEl.textContent = `Error: ${err.message}`;
   }
+  return true;
 }
+
+function plural(count, noun) {
+  return `${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+// Says when the grid is only part of the result, which it otherwise
+// gives no sign of.
+function renderGridStatus() {
+  const loaded = currentEntities.length;
+  const remaining = searchTotal - loaded;
+  statusEl.textContent = remaining > 0
+    ? `Showing ${loaded.toLocaleString()} of ${plural(searchTotal, 'image')}`
+    : plural(searchTotal, 'image');
+  gridMoreEl.classList.toggle('hidden', remaining <= 0);
+  loadMoreButtonEl.textContent = `Load more (${remaining.toLocaleString()} not shown)`;
+}
+
+// The next page of the current search, appended to the grid. Calls
+// made while one is in flight share it.
+function loadMore() {
+  if (loadingMore) return loadingMore;
+  if (currentEntities.length >= searchTotal) return Promise.resolve();
+  const generation = searchGeneration;
+  loadMoreButtonEl.disabled = true;
+  loadMoreButtonEl.textContent = 'Loading…';
+  loadingMore = (async () => {
+    try {
+      const response = await fetch(`${API}/api/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filters: { ...shownFilters, entityType: IMAGE_ENTITY_TYPE },
+          facets: [],
+          limit: PAGE_SIZE,
+          offset: currentEntities.length,
+        }),
+      });
+      if (!response.ok) throw new Error(`Search failed: ${response.status}`);
+      const result = await response.json();
+      if (generation !== searchGeneration) return;
+      searchTotal = result.total;
+      appendGridTiles(result.entities);
+      updateViewerNavButtons();
+    } catch (err) {
+      statusEl.textContent = `Error: ${err.message}`;
+    } finally {
+      loadingMore = null;
+      loadMoreButtonEl.disabled = false;
+      if (generation === searchGeneration) renderGridStatus();
+    }
+  })();
+  return loadingMore;
+}
+
+// Every photo the current search matches, loaded into the grid or not —
+// for actions that mean "all of these", which would otherwise quietly
+// stop at the pages someone happened to scroll through.
+async function allMatchingIds() {
+  if (currentEntities.length >= searchTotal) return [...currentEntityIds];
+  const response = await fetch(`${API}/api/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filters: { ...shownFilters, entityType: IMAGE_ENTITY_TYPE }, facets: [], limit: searchTotal }),
+  });
+  if (!response.ok) throw new Error(`Search failed: ${response.status}`);
+  return (await response.json()).entities.map((entity) => entity.id);
+}
+
+// Reloading, closing the tab, or Pick folder: the browser's own prompt,
+// for the same reason as confirmLeavingSelection.
+window.addEventListener('beforeunload', (event) => {
+  if (selectedIds.size > 0) event.preventDefault();
+});
 
 function toggleFilter(facetName, value) {
   if (activeFilters[facetName] === value) {
@@ -212,7 +320,8 @@ function toggleFilter(facetName, value) {
 // rather than opening back up on the same photo.
 function applyFilterAndCloseViewer(facetName, value) {
   activeFilters[facetName] = value;
-  closeViewer();
+  // Recorded once, by search(), so Back returns to the photo.
+  closeViewer({ record: false });
   search();
 }
 
@@ -232,7 +341,7 @@ function applyDateFilter(year, month, day) {
 }
 
 function applyDateFilterAndCloseViewer(year, month, day) {
-  closeViewer();
+  closeViewer({ record: false });
   applyDateFilter(year, month, day);
 }
 
@@ -553,6 +662,12 @@ function updateExportAlbumButton() {
   const name = activeFilters.albums;
   exportAlbumTarget = name ? [...albumsById.values()].find((album) => album.name === name) ?? null : null;
   exportAlbumButtonEl.classList.toggle('hidden', !exportAlbumTarget);
+  // Remove from album only makes sense while looking at one album, so
+  // it follows the same filter as Export.
+  for (const button of [selectionRemoveFromAlbumEl, viewerRemoveFromAlbumEl]) {
+    button.classList.toggle('hidden', !exportAlbumTarget);
+    if (exportAlbumTarget) button.textContent = `Remove from ${exportAlbumTarget.name}`;
+  }
   if (exportAlbumTarget) {
     exportAlbumButtonEl.textContent = `Export ${exportAlbumTarget.name} Album`;
   }
@@ -609,6 +724,7 @@ function addViewerTag(facetName, value, container = viewerTagsEl) {
   const icon = FACET_ICONS[facetName];
   tag.textContent = icon ? `${icon} ${value}` : value;
   tag.title = `Filter to ${FACET_LABELS[facetName] ?? facetName}: ${value}`;
+  if (facetName === 'albums') tag.dataset.albumName = value;
   tag.addEventListener('click', () => applyFilterAndCloseViewer(facetName, value));
   container.appendChild(tag);
 }
@@ -704,7 +820,7 @@ function currentViewerIndex() {
 function updateViewerNavButtons() {
   const index = currentViewerIndex();
   viewerPrevEl.disabled = index <= 0;
-  viewerNextEl.disabled = index === -1 || index >= currentEntities.length - 1;
+  viewerNextEl.disabled = index === -1 || index >= searchTotal - 1;
 }
 
 // Steps to the next/previous entity in whatever result set (or
@@ -712,11 +828,15 @@ function updateViewerNavButtons() {
 // order the grid itself renders in (see renderGrid/currentEntities),
 // so Prev/Next and the arrow keys below walk it the same way paging
 // through the grid by eye would.
-function openViewerAtOffset(delta) {
+async function openViewerAtOffset(delta) {
   const index = currentViewerIndex();
   const nextIndex = index + delta;
+  // Past the last loaded photo: the next page, not the end.
+  if (nextIndex >= currentEntities.length && nextIndex < searchTotal) await loadMore();
   if (index === -1 || nextIndex < 0 || nextIndex >= currentEntities.length) return;
-  openViewer(currentEntities[nextIndex]);
+  // Replaces rather than adds, so Back leaves the viewer instead of
+  // walking back through every photo seen in it.
+  openViewer(currentEntities[nextIndex], { replace: true });
 }
 
 viewerPrevEl.addEventListener('click', () => openViewerAtOffset(-1));
@@ -731,8 +851,9 @@ document.addEventListener('keydown', (event) => {
   else if (event.key === 'ArrowRight') openViewerAtOffset(1);
 });
 
-async function openViewer(entity) {
+async function openViewer(entity, { replace = false } = {}) {
   currentViewerEntityId = entity.id;
+  recordRoute({ replace });
   viewerImageEl.src = entityUrl(`${API}/api/file`, entity.id);
   viewerImageEl.alt = entity.title;
   // entity.title/description/rating all come from the same search result
@@ -770,6 +891,12 @@ async function openViewer(entity) {
       if (about['@type'] === 'Person') addViewerTag('people', about.name);
       else if (about['@type'] === 'Pet') addViewerTag('pets', about.name);
     }
+    // From the search result, not the metadata document: an image's
+    // albums are recorded on each album, not on the image (see
+    // entityToJson in the arocapi handler).
+    for (const album of entity.albums ?? []) {
+      addViewerTag('albums', album);
+    }
     renderViewerMetadata(metadata.exifData);
     renderViewerBreadcrumb(unwrapJsonLdValue(metadata.dateCreated));
 
@@ -787,10 +914,11 @@ async function openViewer(entity) {
   }
 }
 
-function closeViewer() {
+function closeViewer({ record = true } = {}) {
   viewerEl.classList.remove('open');
   viewerImageEl.src = '';
   currentViewerEntityId = null;
+  if (record) recordRoute();
 }
 
 // A region's drawable box, as a top-left fraction (0-1) of the full
@@ -905,8 +1033,14 @@ function renderStarRating(rating, onRate) {
 
 function renderGrid(entities) {
   gridEl.innerHTML = '';
-  currentEntityIds = entities.map((entity) => entity.id);
-  currentEntities = entities;
+  currentEntityIds = [];
+  currentEntities = [];
+  appendGridTiles(entities);
+}
+
+function appendGridTiles(entities) {
+  currentEntityIds.push(...entities.map((entity) => entity.id));
+  currentEntities.push(...entities);
   for (const entity of entities) {
     const figure = document.createElement('figure');
 
@@ -949,9 +1083,12 @@ function renderGrid(entities) {
   }
 }
 
+// Always on screen (#12); with nothing selected it says so and its
+// buttons do nothing.
 function renderSelectionBar() {
-  selectionBarEl.classList.toggle('visible', selectedIds.size > 0);
-  selectionCountEl.textContent = `${selectedIds.size} selected`;
+  const count = selectedIds.size;
+  selectionCountEl.textContent = count > 0 ? `${count} selected` : 'No photos selected';
+  for (const button of selectionBarEl.querySelectorAll('button')) button.disabled = count === 0;
 }
 
 function promptKeyword(actionLabel, description) {
@@ -1363,14 +1500,33 @@ document.querySelector('#new-album-button').addEventListener('click', async () =
 document.querySelector('#selection-add-to-album').addEventListener('click', async () => {
   const album = await promptAlbumPicker(`Add ${selectedIds.size} image(s) to album:`);
   if (!album) return;
+  const count = selectedIds.size;
   try {
     await postEdit(`/albums/${encodeURIComponent(album.id)}/add`, { imageIds: [...selectedIds] });
-    statusEl.textContent = `Added ${selectedIds.size} image(s) to "${album.name}".`;
+    // So the viewer's album tags (taken from the search result) include
+    // it next time one of these images is opened. Clears the selection,
+    // as every other bulk edit's refresh does.
+    await search();
     // Bumps the album to the top of the sidebar list, matching its new
     // "most recently used" position (see touchAlbum in db/store.js).
     await loadAlbumsList();
+    statusEl.textContent = `Added ${count} image(s) to "${album.name}".`;
   } catch (err) {
     window.alert(`Could not add to that album: ${err.message}`);
+  }
+});
+
+selectionRemoveFromAlbumEl.addEventListener('click', async () => {
+  if (!exportAlbumTarget) return;
+  const { id, name } = exportAlbumTarget;
+  const count = selectedIds.size;
+  try {
+    await postEdit(`/albums/${encodeURIComponent(id)}/remove`, { imageIds: [...selectedIds] });
+    // The grid is filtered to this album, so the refresh drops them.
+    await search();
+    statusEl.textContent = `Removed ${count} image(s) from "${name}".`;
+  } catch (err) {
+    window.alert(`Could not remove from that album: ${err.message}`);
   }
 });
 
@@ -1396,8 +1552,22 @@ async function runEditAction(action) {
   }
 }
 
-selectAllButtonEl.addEventListener('click', () => {
-  selectedIds = new Set(currentEntityIds);
+loadMoreButtonEl.addEventListener('click', () => loadMore());
+// Loads the next page by itself as the bottom of the grid comes into
+// view; the button is there for anyone who gets there first.
+new IntersectionObserver((entries) => {
+  if (entries.some((entry) => entry.isIntersecting)) loadMore();
+}, { root: document.querySelector('#main'), rootMargin: '400px' }).observe(gridMoreEl);
+
+selectAllButtonEl.addEventListener('click', async () => {
+  try {
+    // Including photos not loaded yet: a tile that loads later shows
+    // its checkbox from selectedIds.
+    selectedIds = new Set(await allMatchingIds());
+  } catch (err) {
+    window.alert(`Could not select them all: ${err.message}`);
+    return;
+  }
   gridEl.querySelectorAll('input[type="checkbox"]').forEach((el) => { el.checked = true; });
   renderSelectionBar();
 });
@@ -1451,6 +1621,46 @@ document.querySelector('#viewer-add-keyword').addEventListener('click', async ()
     await search();
   } catch (err) {
     window.alert(`Could not apply that change: ${err.message}`);
+  }
+});
+
+document.querySelector('#viewer-add-to-album').addEventListener('click', async () => {
+  const album = await promptAlbumPicker('Add this image to album:');
+  if (!album) return;
+  try {
+    await postEdit(`/albums/${encodeURIComponent(album.id)}/add`, { imageIds: [currentViewerEntityId] });
+    // Shown straight away, as Add keyword does: search() refreshes the
+    // grid, not the open viewer. Skipped if it was already in the album.
+    const alreadyTagged = [...viewerTagsEl.querySelectorAll('.viewer-tag')].some((tag) => tag.dataset.albumName === album.name);
+    if (!alreadyTagged) addViewerTag('albums', album.name);
+    // Refreshed so the image's albums are current if the viewer steps
+    // away and back to it; before the status line, which search()
+    // overwrites with the result count.
+    await search();
+    // Same as the selection bar's Add to album: bumps the album to the
+    // top of the sidebar list.
+    await loadAlbumsList();
+    statusEl.textContent = `Added this image to "${album.name}".`;
+  } catch (err) {
+    window.alert(`Could not add to that album: ${err.message}`);
+  }
+});
+
+viewerRemoveFromAlbumEl.addEventListener('click', async () => {
+  if (!exportAlbumTarget) return;
+  const { id, name } = exportAlbumTarget;
+  const index = currentViewerIndex();
+  try {
+    await postEdit(`/albums/${encodeURIComponent(id)}/remove`, { imageIds: [currentViewerEntityId] });
+    // The photo has just left the result set the viewer steps through,
+    // so move on to whichever one now sits where it was, or close if
+    // the album is empty.
+    await search();
+    if (currentEntities.length === 0) closeViewer();
+    else openViewer(currentEntities[Math.min(Math.max(index, 0), currentEntities.length - 1)], { replace: true });
+    statusEl.textContent = `Removed an image from "${name}".`;
+  } catch (err) {
+    window.alert(`Could not remove from that album: ${err.message}`);
   }
 });
 
@@ -1729,12 +1939,13 @@ async function backfillExistingRegions(imageIds) {
 }
 
 recognizeFacesButtonEl.addEventListener('click', async () => {
-  if (currentEntityIds.length === 0) {
+  if (searchTotal === 0) {
     window.alert('No images in the current view to scan.');
     return;
   }
   recognizeFacesButtonEl.disabled = true;
   try {
+    const imageIds = await allMatchingIds();
     statusEl.textContent = 'Loading face recognition models…';
     await ensureFaceApiModelsLoaded();
 
@@ -1742,7 +1953,7 @@ recognizeFacesButtonEl.addEventListener('click', async () => {
     const undetectableCount = await backfillExistingRegions(await fetchAllImageIds());
 
     const { toScan } = await postEdit('/faces/scan-status', {
-      imageIds: currentEntityIds, modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION,
+      imageIds, modelName: FACE_MODEL_NAME, modelVersion: FACE_MODEL_VERSION,
     });
 
     for (let i = 0; i < toScan.length; i += 1) {
@@ -1754,7 +1965,8 @@ recognizeFacesButtonEl.addEventListener('click', async () => {
     const undetectableNote = undetectableCount > 0
       ? ` (${undetectableCount} already-tagged face${undetectableCount === 1 ? '' : 's'} could not be re-matched automatically — see Spec.md)`
       : '';
-    statusEl.textContent = `${currentEntityIds.length} image${currentEntityIds.length === 1 ? '' : 's'}${undetectableNote}`;
+    renderGridStatus();
+    statusEl.textContent += undetectableNote;
     await openFacesReview();
   } catch (err) {
     window.alert(`Could not run face recognition: ${err.message}`);
@@ -2313,8 +2525,150 @@ document.querySelector('#faces-review-close').addEventListener('click', () => {
 let overviewLoadedOnce = false;
 let settingsLoadedOnce = false;
 let peopleLoadedOnce = false;
+// Settles once the People list first loaded by switchMode is on screen,
+// which a person's record has to wait for (see applyRoute).
+let peopleLoading = Promise.resolve();
+let currentMode = 'explore';
 
-function switchMode(mode) {
+// --- Address bar (see Spec.md, Section 4.1) ---
+//
+// The fragment records where you are, so Back and Forward work:
+// `#explore?people=Gail&photo=<id>`, `#people?person=Gail`, `#scan`.
+
+const ROUTE_FILTER_NAMES = new Set([...FACET_NAMES, 'month', 'day', 'memberOf']);
+
+// Set while applyRoute is putting the page into a state taken from the
+// URL, so the steps it takes are not recorded as new history entries.
+let applyingRoute = false;
+
+// Each entry this page adds is numbered, so that when a Back or Forward
+// is refused (a selection the person chose to keep) the step can be
+// undone in the right direction. Survives a reload with the entry.
+let routeIndex = history.state?.routeIndex ?? 0;
+// Set while undoing such a step, so the popstate it causes is ignored.
+let undoingRouteStep = false;
+
+function routeHash() {
+  const params = new URLSearchParams();
+  if (currentMode === 'explore') {
+    // Sorted, so the same filters always give the same URL whatever
+    // order they were chosen in.
+    for (const name of Object.keys(activeFilters).sort()) params.set(name, activeFilters[name]);
+    if (currentViewerEntityId) params.set('photo', currentViewerEntityId);
+  } else if (currentMode === 'people' && openPersonEditorName) {
+    params.set('person', openPersonEditorName);
+  }
+  const query = params.toString();
+  return `#${currentMode}${query ? `?${query}` : ''}`;
+}
+
+function recordRoute({ replace = false } = {}) {
+  if (applyingRoute) return;
+  const hash = routeHash();
+  if (hash === location.hash) return;
+  if (replace) history.replaceState({ routeIndex }, '', hash);
+  else history.pushState({ routeIndex: ++routeIndex }, '', hash);
+}
+
+function parseRoute(hash) {
+  const body = hash.replace(/^#/, '');
+  const queryStart = body.indexOf('?');
+  const modeName = queryStart === -1 ? body : body.slice(0, queryStart);
+  const params = new URLSearchParams(queryStart === -1 ? '' : body.slice(queryStart + 1));
+  const filters = {};
+  for (const [name, value] of params) {
+    if (ROUTE_FILTER_NAMES.has(name)) filters[name] = value;
+  }
+  return {
+    mode: Object.hasOwn(screenEls, modeName) ? modeName : 'explore',
+    filters,
+    photo: params.get('photo'),
+    person: params.get('person'),
+  };
+}
+
+function sameFilters(a, b) {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
+}
+
+// A photo from a URL may not be in the page of results on screen (a
+// bookmark, or Back after the grid has moved on), so it is looked up by
+// id when it is not.
+async function openViewerById(id) {
+  let entity = currentEntities.find((candidate) => candidate.id === id);
+  if (!entity) {
+    const response = await fetch(entityUrl(`${API}/api/entity`, id));
+    if (!response.ok) return;
+    entity = await response.json();
+  }
+  await openViewer(entity);
+}
+
+async function applyRoute({ initial = false } = {}) {
+  if (undoingRouteStep) {
+    undoingRouteStep = false;
+    return;
+  }
+  const { mode, filters, photo, person } = parseRoute(location.hash);
+  // Asked before anything changes, so saying no leaves the page exactly
+  // as it was (the mode too), with the history step undone.
+  // Only a step that lands on Explore moves the grid; one to another
+  // mode leaves it, and its selection, alone.
+  if (!initial && mode === 'explore' && !sameFilters(filters, activeFilters) && !confirmLeavingSelection()) {
+    const arrivedAt = history.state?.routeIndex;
+    if (arrivedAt !== undefined && arrivedAt !== routeIndex) {
+      undoingRouteStep = true;
+      history.go(routeIndex - arrivedAt);
+    } else {
+      // A fragment typed by hand: no step to undo, so the URL is put
+      // back to what is on screen instead.
+      history.replaceState({ routeIndex }, '', routeHash());
+    }
+    return;
+  }
+  routeIndex = history.state?.routeIndex ?? routeIndex;
+  applyingRoute = true;
+  try {
+    switchMode(mode);
+    if (mode === 'explore') {
+      if (initial || !sameFilters(filters, activeFilters)) {
+        activeFilters = filters;
+        // The selection was already confirmed away above.
+        selectedIds = new Set();
+        await search();
+      }
+      if (photo && photo !== currentViewerEntityId) await openViewerById(photo);
+      else if (!photo && currentViewerEntityId) closeViewer();
+    } else {
+      if (initial) {
+        // Explore is not on screen, but its grid is still what the
+        // viewer and the sidebar are built from.
+        activeFilters = {};
+        search();
+      }
+      if (mode === 'people') {
+        await peopleLoading;
+        if (person && person !== openPersonEditorName) await openPersonEditor(person);
+        else if (!person && openPersonEditorName) closePersonEditor();
+      }
+    }
+  } catch (err) {
+    // A URL naming somebody who has since been renamed, say: the mode
+    // still switched, which is the most it can do.
+    statusEl.textContent = `Error: ${err.message}`;
+  } finally {
+    applyingRoute = false;
+  }
+  // Whatever the URL said, it now says what is actually on screen.
+  history.replaceState({ routeIndex }, '', routeHash());
+}
+
+function switchMode(mode, { replace = false } = {}) {
+  currentMode = mode;
+  // The viewer belongs to Explore; left open it would sit over the
+  // other screen with a URL that no longer mentions it.
+  if (mode !== 'explore' && currentViewerEntityId) closeViewer({ record: false });
   for (const key of Object.keys(screenEls)) {
     screenEls[key].classList.toggle('active', key === mode);
     modeButtonEls[key].classList.toggle('active', key === mode);
@@ -2326,8 +2680,9 @@ function switchMode(mode) {
     loadSettings().catch((err) => { settingsStatusEl.textContent = `Error: ${err.message}`; });
   }
   if (mode === 'people' && !peopleLoadedOnce) {
-    loadPeople().catch((err) => { peopleStatusEl.textContent = `Error: ${err.message}`; });
+    peopleLoading = loadPeople().catch((err) => { peopleStatusEl.textContent = `Error: ${err.message}`; });
   }
+  recordRoute({ replace });
 }
 
 // "Pick folder" goes back to the landing page, which is where the
@@ -2397,6 +2752,7 @@ function renderPeopleList(people) {
   // panel that no longer exists.
   openPersonEditorName = null;
   personEditorTrail = [];
+  recordRoute({ replace: true });
   for (const { name, imageCount } of people) {
     // A plain div, not a label wrapping the whole row: the name beside
     // the checkbox is now itself clickable, and a click on it inside a
@@ -2507,11 +2863,12 @@ let openPersonEditorName = null;
 // so following a chain of parents can be retraced. Each entry is a
 // name; a crumb reopens that person and drops everything after it.
 let personEditorTrail = [];
-function closePersonEditor() {
+function closePersonEditor({ record = true, replace = false } = {}) {
   peopleListEl.querySelector('.person-editor')?.remove();
   for (const row of peopleListEl.querySelectorAll('.person-row')) row.classList.remove('open');
   openPersonEditorName = null;
   personEditorTrail = [];
+  if (record) recordRoute({ replace });
 }
 
 function personRowFor(name) {
@@ -2575,9 +2932,10 @@ async function togglePersonEditor(name) {
  * on them and a parent can be chosen for them in turn.
  */
 async function openPersonEditor(name, trail = []) {
-  closePersonEditor();
+  closePersonEditor({ record: false });
   openPersonEditorName = name;
   personEditorTrail = trail;
+  recordRoute();
 
   const panel = document.createElement('div');
   panel.className = 'person-editor';
@@ -2860,7 +3218,8 @@ async function savePerson(originalName, values, form) {
       ? ` Still to record: ${result.check.problems.map(({ field }) => field).join(', ')}.`
       : '';
     if (renamed) {
-      closePersonEditor();
+      // Replaced, not added: Back to the old name would find nobody.
+      closePersonEditor({ replace: true });
       await loadPeople();
       const photos = `${result.imagesUpdated} photo${result.imagesUpdated === 1 ? '' : 's'} updated`;
       peopleStatusEl.textContent = `Renamed "${result.renamedFrom}" to "${result.name}" (${photos}).${staleIndexNote(result.unreadable)}${stillMissing}`;
@@ -3308,7 +3667,8 @@ settingsFormEl.addEventListener('submit', async (event) => {
 loadCollections();
 loadDates();
 loadAlbumsList();
-search();
+applyRoute({ initial: true });
+window.addEventListener('popstate', () => applyRoute());
 
 // A brand new (or not-yet-touched) collection has nothing in the grid to
 // show yet — switched to the Scan screen automatically here so there is
@@ -3320,7 +3680,7 @@ fetchOverview()
     if (overview.subCollections.length > 0 && overview.subCollections.every((s) => s.status === 'not-scanned')) {
       renderOverviewTree({ sectionEl: overviewSectionEl, treeEl: overviewTreeEl, overview });
       overviewLoadedOnce = true;
-      switchMode('scan');
+      switchMode('scan', { replace: true });
     }
   })
   .catch(() => {});
