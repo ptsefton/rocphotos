@@ -200,6 +200,37 @@ export function setAlbumEntity(rootCrate, { id, name, description, memberIds }) 
 }
 
 /**
+ * Takes images out of an album, keeping every other member's proxy —
+ * and anything recorded on it about how that photo appears here — while
+ * renumbering the proxies to match their new positions. setAlbumEntity
+ * relies on `#item-<n>` being the member at position n (it reuses
+ * whatever proxy already sits there), so simply dropping one from the
+ * middle would leave the next add pointing a proxy at the wrong image.
+ * An id not in the album is ignored. Safe to call repeatedly.
+ *
+ * @param {ROCrate} rootCrate
+ * @param {string} id - the album's own id
+ * @param {string[]} imageIds
+ * @returns {string[]} the remaining member ids, in order
+ */
+export function removeAlbumMembers(rootCrate, id, imageIds) {
+  const album = rootCrate.getEntity(id);
+  if (!album) return [];
+  const removing = new Set(imageIds);
+  const graph = new Map(rootCrate.toJSON()['@graph'].map((node) => [node['@id'], node]));
+  const proxies = (album.hasPart ?? []).map((ref) => graph.get(ref['@id'])).filter(Boolean);
+  const kept = proxies.filter((proxy) => !removing.has(unwrap(proxy['prov:specializationOf'])?.['@id']));
+  if (kept.length === proxies.length) return albumMemberIds(rootCrate, id);
+
+  for (const proxy of proxies) rootCrate.deleteEntity(proxy['@id']);
+  kept.forEach((proxy, index) => {
+    rootCrate.addEntity({ ...proxy, '@id': `${id}#item-${index}` });
+  });
+  album.hasPart = kept.map((_, index) => ({ '@id': `${id}#item-${index}` }));
+  return albumMemberIds(rootCrate, id);
+}
+
+/**
  * Extracts an ISO 8601 date string from an EXIF DateTimeOriginal field, or
  * null if none is available. Shared by crate construction and by callers
  * that need the same date for HTML preview navigation, so the two never

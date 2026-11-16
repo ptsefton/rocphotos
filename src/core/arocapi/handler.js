@@ -12,8 +12,10 @@ import {
   crateRelativeEntityId,
   setEntityFacetValues,
   addEntityFacetValue,
+  removeEntityFacetValue,
   deleteEntityById,
   getEntityRating,
+  listFacetValuesForEntity,
   upsertEntity,
   crateEntityId,
   createOrUpdateAlbum,
@@ -34,6 +36,7 @@ import {
   removeImageEntity,
   setAlbumEntity,
   albumMemberIds,
+  removeAlbumMembers,
 } from '../crateBuilder.js';
 import { loadEntityFromCrate, loadRawCrate } from '../entityCrate.js';
 import { rescanImageMetadata } from '../scanImage.js';
@@ -76,7 +79,10 @@ function badRequest(message) {
 // own view of a search result, in particular) can show each image's
 // current star rating without a separate GET .../metadata request per
 // tile. Always null for a non-Object entity (a Collection, Person, or
-// Pet never has one).
+// Pet never has one). `albums` likewise: the names of the albums an
+// image is in, for the viewer's album tags — membership is recorded on
+// the album (its hasPart), not on the image, so the image's own
+// metadata document has no way to say.
 function entityToJson(store, row) {
   return {
     id: row.id,
@@ -90,6 +96,7 @@ function entityToJson(store, row) {
     contentLicenseId: row.content_license_id,
     access: { metadata: !!row.access_metadata, content: !!row.access_content },
     rating: getEntityRating(store, row.id),
+    albums: listFacetValuesForEntity(store, row.id, 'albums'),
   };
 }
 
@@ -683,6 +690,29 @@ export function createHandler({ store, fsAdapter, crateCache = new Map(), create
         await saveEditedCrates(cache);
         await persistStore(store);
         return json(200, { added: newIds.length, errors });
+      });
+    }
+
+    // An id that is not a member is ignored rather than reported, so
+    // removing twice is harmless.
+    if (method === 'POST' && parts[0] === 'albums' && parts.length === 3 && parts[2] === 'remove') {
+      const album = getAlbumById(store, decodeURIComponent(parts[1]));
+      if (!album) return notFound();
+      const ids = Array.isArray(body?.imageIds) ? body.imageIds : [];
+
+      return serializeWrites(async () => {
+        const cache = new Map();
+        const rootCrate = await loadCrateForEdit(cache, crateEntityId(''));
+        const before = albumMemberIds(rootCrate, album.id);
+        const after = removeAlbumMembers(rootCrate, album.id, ids);
+        const remaining = new Set(after);
+        const removed = before.filter((imageId) => !remaining.has(imageId));
+        for (const imageId of removed) {
+          removeEntityFacetValue(store, imageId, 'albums', album.name);
+        }
+        await saveEditedCrates(cache);
+        await persistStore(store);
+        return json(200, { removed: removed.length });
       });
     }
 

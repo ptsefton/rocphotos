@@ -14,6 +14,7 @@ import {
   removeImageEntity,
   setAlbumEntity,
   albumMemberIds,
+  removeAlbumMembers,
   addStandoffFaceRegion,
   renamePersonInCrate,
   subjectInstanceId,
@@ -136,6 +137,42 @@ describe('setAlbumEntity / albumMemberIds', () => {
 
     expect(crate.getEntity('album1#item-0').name).toEqual(['The best photo of the trip']);
     expect(albumMemberIds(crate, 'album1')).toEqual(['a.jpg', 'b.jpg']);
+  });
+});
+
+describe('removeAlbumMembers', () => {
+  it('renumbers the remaining proxies, keeping what is recorded on them', () => {
+    const crate = loadOrCreateCrate(null);
+    setAlbumEntity(crate, { id: 'album1', name: 'Road Trip', description: null, memberIds: ['a.jpg', 'b.jpg', 'c.jpg'] });
+    crate.getEntity('album1#item-2').name = 'Caption for c';
+
+    expect(removeAlbumMembers(crate, 'album1', ['b.jpg'])).toEqual(['a.jpg', 'c.jpg']);
+    expect(crate.getEntity('album1').hasPart.map((ref) => ref['@id'])).toEqual(['album1#item-0', 'album1#item-1']);
+    expect(crate.getEntity('album1#item-1').name).toEqual(['Caption for c']);
+    expect(crate.getEntity('album1#item-2')).toBeUndefined();
+  });
+
+  it('leaves the album in a state the next add extends correctly', () => {
+    const crate = loadOrCreateCrate(null);
+    setAlbumEntity(crate, { id: 'album1', name: 'Road Trip', description: null, memberIds: ['a.jpg', 'b.jpg', 'c.jpg'] });
+    const remaining = removeAlbumMembers(crate, 'album1', ['b.jpg']);
+    setAlbumEntity(crate, { id: 'album1', name: 'Road Trip', description: null, memberIds: [...remaining, 'd.jpg'] });
+    expect(albumMemberIds(crate, 'album1')).toEqual(['a.jpg', 'c.jpg', 'd.jpg']);
+  });
+
+  it('ignores an id that is not a member, and an album that does not exist', () => {
+    const crate = loadOrCreateCrate(null);
+    setAlbumEntity(crate, { id: 'album1', name: 'Road Trip', description: null, memberIds: ['a.jpg'] });
+    expect(removeAlbumMembers(crate, 'album1', ['nope.jpg'])).toEqual(['a.jpg']);
+    expect(removeAlbumMembers(crate, 'nope', ['a.jpg'])).toEqual([]);
+  });
+
+  it('can empty an album without removing the album itself', () => {
+    const crate = loadOrCreateCrate(null);
+    setAlbumEntity(crate, { id: 'album1', name: 'Road Trip', description: null, memberIds: ['a.jpg'] });
+    expect(removeAlbumMembers(crate, 'album1', ['a.jpg'])).toEqual([]);
+    expect(crate.getEntity('album1')).toBeDefined();
+    expect(crate.getEntity('album1#item-0')).toBeUndefined();
   });
 });
 

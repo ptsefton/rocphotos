@@ -251,6 +251,14 @@ describe('GET /entities', () => {
     expect(undated.rating).toBeNull();
   });
 
+  it('includes the names of the albums each entity is in, for the viewer\'s album tags', async () => {
+    setEntityFacetValues(db, '2025/03/10/photo.jpg', 'albums', ['Beach Trip', 'Birds']);
+    const res = await handleRequest({ method: 'GET', path: '/entities', query: { entityType: ENTITY_TYPE_IMAGE } });
+    const parsed = JSON.parse(res.body);
+    expect(parsed.entities.find((e) => e.id === '2025/03/10/photo.jpg').albums).toEqual(['Beach Trip', 'Birds']);
+    expect(parsed.entities.find((e) => e.id === '2025/03/10/undated.jpg').albums).toEqual([]);
+  });
+
   it('includes each entity\'s own title (falling back to its filename) and real caption', async () => {
     const res = await handleRequest({ method: 'GET', path: '/entities', query: { entityType: ENTITY_TYPE_IMAGE } });
     const parsed = JSON.parse(res.body);
@@ -773,6 +781,31 @@ describe('Albums', () => {
 
   it('404s adding to an unknown album', async () => {
     const res = await handleRequest({ method: 'POST', path: '/albums/nope/add', body: { imageIds: [] } });
+    expect(res.status).toEqual(404);
+  });
+
+  it('removes images from an album, and from its facet, leaving the rest in order', async () => {
+    const album = JSON.parse((await handleRequest({ method: 'POST', path: '/albums', body: { name: 'Favourites' } })).body);
+    const albumPath = `/albums/${encodeURIComponent(album.id)}`;
+    await handleRequest({ method: 'POST', path: `${albumPath}/add`, body: { imageIds: ['2025/03/10/photo.jpg', '2025/03/10/undated.jpg'] } });
+
+    const res = await handleRequest({ method: 'POST', path: `${albumPath}/remove`, body: { imageIds: ['2025/03/10/photo.jpg', 'nope.jpg'] } });
+    expect(JSON.parse(res.body)).toEqual({ removed: 1 });
+
+    const detail = JSON.parse((await handleRequest({ method: 'GET', path: albumPath })).body);
+    expect(detail.members.map((m) => m.id)).toEqual(['2025/03/10/undated.jpg']);
+
+    const entities = JSON.parse((await handleRequest({ method: 'GET', path: '/entities', query: { entityType: ENTITY_TYPE_IMAGE } })).body).entities;
+    expect(entities.find((e) => e.id === '2025/03/10/photo.jpg').albums).toEqual([]);
+    expect(entities.find((e) => e.id === '2025/03/10/undated.jpg').albums).toEqual(['Favourites']);
+
+    const rootGraph = JSON.parse(new TextDecoder().decode(await createNodeFsAdapter(currentRoot).readFile(CRATE_FILE_NAME)))['@graph'];
+    expect(rootGraph.find((entity) => entity['@id'] === album.id).hasPart).toEqual([{ '@id': `${album.id}#item-0` }]);
+    expect(rootGraph.find((entity) => entity['@id'] === `${album.id}#item-0`)).toMatchObject({ 'prov:specializationOf': { '@id': '2025/03/10/undated.jpg' } });
+  });
+
+  it('404s removing from an unknown album', async () => {
+    const res = await handleRequest({ method: 'POST', path: '/albums/nope/remove', body: { imageIds: [] } });
     expect(res.status).toEqual(404);
   });
 

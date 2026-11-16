@@ -495,6 +495,20 @@ export function addEntityFacetValue(driver, entityId, facetName, value) {
 }
 
 /**
+ * Removes one value of a multi-valued facet, leaving the entity's other
+ * values alone — addEntityFacetValue's counterpart, for taking an image
+ * out of one album without touching any other album it is in.
+ *
+ * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
+ * @param {string} entityId
+ * @param {string} facetName
+ * @param {string} value
+ */
+export function removeEntityFacetValue(driver, entityId, facetName, value) {
+  driver.run('DELETE FROM entity_facets WHERE entity_id = ? AND facet_name = ? AND value = ?', [entityId, facetName, value]);
+}
+
+/**
  * @param {import('../../adapters/nodeSqlite.js').SqliteDriver} driver
  * @param {string} entityId
  * @param {string} facetName
