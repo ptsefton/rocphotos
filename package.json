@@ -4,6 +4,7 @@
   "description": "RO-Crate based photo management SPA",
   "type": "module",
   "private": true,
+  "license": "Apache-2.0",
   "bin": {
     "rocphotos": "./bin/rocphotos.js"
   },
